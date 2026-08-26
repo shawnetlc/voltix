@@ -1,0 +1,739 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:voltix_design/voltix_design.dart';
+
+import '../../preference/preference_constants.dart';
+import '../../util/focus/dpad_keys.dart';
+import '../../util/focus/key_event_utils.dart';
+import 'bounded_network_image.dart';
+import 'marquee_text.dart';
+import '../mixins/focus_state_mixin.dart';
+
+class MediaCard extends StatefulWidget {
+  final String? title;
+  final String? subtitle;
+  final Widget? subtitleWidget;
+  final String? imageUrl;
+  final String? fallbackImageUrl;
+  final double width;
+  final double aspectRatio;
+  final VoidCallback? onTap;
+  final VoidCallback? onPressStart;
+  final VoidCallback? onPressEnd;
+  final VoidCallback? onFocus;
+  final VoidCallback? onFocusLost;
+  final VoidCallback? onHoverStart;
+  final VoidCallback? onHoverEnd;
+  final VoidCallback? onLongPress;
+  final bool isFavorite;
+  final bool isPlayed;
+  final int? unplayedCount;
+  final double? playedPercentage;
+  final WatchedIndicatorBehavior watchedBehavior;
+  final String? itemType;
+  final String? seerrMediaType;
+  final int? seerrStatus;
+  final Color? focusColor;
+  final bool cardFocusExpansion;
+  final FocusNode? focusNode;
+  final KeyEventResult Function(FocusNode, KeyEvent)? onKeyEvent;
+  final bool? externalIsFocused;
+  final bool autofocus;
+  final bool suppressImageFocusBorder;
+  final bool suppressFocusGlow;
+  final Color? titleColor;
+  final Color? subtitleColor;
+  final List<Widget> imageOverlays;
+  final bool overlayOccupiesTopLeft;
+
+  const MediaCard({
+    super.key,
+    this.title,
+    this.subtitle,
+    this.subtitleWidget,
+    this.imageUrl,
+    this.fallbackImageUrl,
+    this.width = 150,
+    this.aspectRatio = 2 / 3,
+    this.onTap,
+    this.onPressStart,
+    this.onPressEnd,
+    this.onFocus,
+    this.onFocusLost,
+    this.onHoverStart,
+    this.onHoverEnd,
+    this.onLongPress,
+    this.isFavorite = false,
+    this.isPlayed = false,
+    this.unplayedCount,
+    this.playedPercentage,
+    this.watchedBehavior = WatchedIndicatorBehavior.always,
+    this.itemType,
+    this.seerrMediaType,
+    this.seerrStatus,
+    this.focusColor,
+    this.cardFocusExpansion = true,
+    this.focusNode,
+    this.onKeyEvent,
+    this.externalIsFocused,
+    this.autofocus = false,
+    this.suppressImageFocusBorder = false,
+    this.suppressFocusGlow = false,
+    this.titleColor,
+    this.subtitleColor,
+    this.imageOverlays = const [],
+    this.overlayOccupiesTopLeft = false,
+  });
+
+  /// The genre name grows with the card, so it reads well both on a poster
+  /// and on a focused thumbnail. Long names shrink to fit.
+  static const _genreLabelRatio = 14 / 200;
+  static const _genreLabelMinSize = 14.0;
+  static const _genreLabelMaxSize = 24.0;
+
+  /// The Seerr genre rows draw their own label and call this, so both come out
+  /// the same size.
+  static double genreLabelFontSize(double cardWidth) =>
+      (cardWidth * _genreLabelRatio).clamp(
+        _genreLabelMinSize,
+        _genreLabelMaxSize,
+      );
+
+  /// Letter spacing grows with the text.
+  static double genreLabelLetterSpacing(double fontSize) => fontSize * 0.18;
+
+  static IconData iconForType(String? type) {
+    switch (type) {
+      case 'Folder':
+      case 'CollectionFolder':
+      case 'UserView':
+        return Icons.folder_rounded;
+      case 'Series':
+        return Icons.tv;
+      case 'Season':
+        return Icons.format_list_numbered;
+      case 'Movie':
+        return Icons.movie;
+      case 'Episode':
+      case 'Video':
+      case 'MusicVideo':
+        return Icons.play_circle_outline;
+      case 'Audio':
+        return Icons.music_note;
+      case 'MusicAlbum':
+        return Icons.album;
+      case 'MusicArtist':
+      case 'Person':
+        return Icons.person;
+      case 'Photo':
+        return Icons.photo;
+      case 'PhotoAlbum':
+        return Icons.photo_library;
+      case 'BoxSet':
+        return Icons.collections_bookmark;
+      case 'Playlist':
+        return Icons.playlist_play;
+      case 'Book':
+        return Icons.book;
+      default:
+        return Icons.movie;
+    }
+  }
+
+  static double aspectRatioForType(String? type) {
+    switch (type) {
+      case 'Episode':
+      case 'Program':
+      case 'Recording':
+      case 'Video':
+      case 'MusicVideo':
+        return 16 / 9;
+      case 'MusicAlbum':
+      case 'Audio':
+      case 'MusicArtist':
+      case 'Playlist':
+      case 'Person':
+        return 1;
+      default:
+        return 2 / 3;
+    }
+  }
+
+  @override
+  State<MediaCard> createState() => _MediaCardState();
+}
+
+class _MediaCardState extends State<MediaCard> with FocusStateMixin {
+  final _selectKeyHandler = LongPressSelectKeyHandler();
+
+  @override
+  void dispose() {
+    _selectKeyHandler.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isNeon = ThemeRegistry.active.id == ThemeRegistry.neonPulseId;
+    final baseTextStyle =
+        Theme.of(context).textTheme.bodySmall ?? const TextStyle(fontSize: 12);
+    final subtitleColor =
+        widget.subtitleColor ?? Theme.of(context).colorScheme.onSurface.withAlpha(153);
+    final titleStyle = baseTextStyle.copyWith(
+      color: widget.titleColor ?? (isNeon ? AppColorScheme.accent : baseTextStyle.color),
+      // Neon Pulse pairs a heavy display face with the accent colour, and at
+      // bodySmall the regular weight reads as washed out against it. Weight is
+      // not part of the line-height calculation below, so this cannot change
+      // card height or clip the subtitle.
+      fontWeight: isNeon ? FontWeight.bold : baseTextStyle.fontWeight,
+    );
+    final subtitleStyle = baseTextStyle.copyWith(color: subtitleColor);
+    final textScaler = MediaQuery.textScalerOf(context);
+
+    double lineHeightFor(TextStyle style) {
+      final fontSize = style.fontSize ?? 12;
+      final height = style.height ?? 1.2;
+      return (textScaler.scale(fontSize) * height) + 2;
+    }
+
+    final titleLineHeight = lineHeightFor(titleStyle);
+    final subtitleLineHeight = lineHeightFor(subtitleStyle);
+    final externallyDriven = widget.externalIsFocused != null;
+    final hasNodeFocus = widget.focusNode?.hasFocus ?? false;
+    final effectiveFocused = externallyDriven
+        ? (widget.externalIsFocused! || hovered)
+        : (focused || hasNodeFocus);
+    final showMarquee = hovered || effectiveFocused;
+    final inner = GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTapDown: (_) => widget.onPressStart?.call(),
+      onTapUp: (_) => widget.onPressEnd?.call(),
+      onTapCancel: widget.onPressEnd,
+      onTap: widget.onTap,
+      onLongPressStart: (_) {
+        widget.onPressEnd?.call();
+        widget.onLongPress?.call();
+      },
+      onSecondaryTap: widget.onLongPress == null
+          ? null
+          : () => widget.onLongPress!(),
+      child: RepaintBoundary(
+        child: AnimatedScale(
+        scale:
+            widget.cardFocusExpansion &&
+                (externallyDriven ? effectiveFocused : showFocusBorder)
+            ? 1.05
+            : 1.0,
+        duration: const Duration(milliseconds: 150),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _CardImage(
+              imageUrl: widget.imageUrl,
+              fallbackImageUrl: widget.fallbackImageUrl,
+              title: widget.title,
+              aspectRatio: widget.aspectRatio,
+              isFavorite: widget.isFavorite,
+              isPlayed: widget.isPlayed,
+              unplayedCount: widget.unplayedCount,
+              playedPercentage: widget.playedPercentage,
+              watchedBehavior: widget.watchedBehavior,
+              focused: effectiveFocused,
+              hovered: hovered,
+              focusColor: widget.focusColor,
+              suppressFocusBorder: widget.suppressImageFocusBorder,
+              suppressFocusGlow: widget.suppressFocusGlow,
+              isCircular: widget.itemType == 'Person',
+              itemType: widget.itemType,
+              seerrMediaType: widget.seerrMediaType,
+              seerrStatus: widget.seerrStatus,
+            ),
+            if (widget.title != null) ...[
+              const SizedBox(height: 6),
+              SizedBox(
+                height: titleLineHeight,
+                child: showMarquee
+                    ? MarqueeText(
+                        text: widget.title!,
+                        style: titleStyle,
+                      )
+                    : Text(
+                        widget.title!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: titleStyle,
+                      ),
+              ),
+            ],
+            if (widget.subtitleWidget != null) ...[
+              SizedBox(height: widget.title != null ? 2 : 6),
+              widget.subtitleWidget!,
+            ] else if (widget.subtitle != null && widget.subtitle!.isNotEmpty)
+              SizedBox(
+                height: subtitleLineHeight,
+                child: showMarquee
+                    ? MarqueeText(
+                        text: widget.subtitle!,
+                        style: subtitleStyle,
+                      )
+                    : Text(
+                        widget.subtitle!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: subtitleStyle,
+                      ),
+              ),
+          ],
+        ),
+        ),
+      ),
+    );
+
+    final mouseRegion = MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) {
+        setHovered(true);
+        widget.onHoverStart?.call();
+      },
+      onExit: (_) {
+        setHovered(false);
+        widget.onHoverEnd?.call();
+      },
+      child: externallyDriven
+          ? inner
+          : Focus(
+              focusNode: widget.focusNode,
+              autofocus: widget.autofocus,
+              onKeyEvent: (node, event) {
+                if (widget.onLongPress != null) {
+                  final handlerResult = _selectKeyHandler.handleKeyEvent(
+                    event,
+                    onTap: () => widget.onTap?.call(),
+                    onLongPress: () => widget.onLongPress?.call(),
+                  );
+                  if (handlerResult != KeyEventResult.ignored) {
+                    return handlerResult;
+                  }
+                } else if (event is KeyDownEvent && event.logicalKey.isSelectKey) {
+                  widget.onTap?.call();
+                  return KeyEventResult.handled;
+                }
+                return widget.onKeyEvent?.call(node, event) ??
+                    KeyEventResult.ignored;
+              },
+              onFocusChange: (hasFocus) {
+                setFocused(hasFocus);
+                if (hasFocus) {
+                  widget.onFocus?.call();
+                } else {
+                  widget.onFocusLost?.call();
+                }
+              },
+              child: inner,
+            ),
+    );
+
+    return SizedBox(width: widget.width, child: mouseRegion);
+  }
+}
+
+class _CardImage extends StatelessWidget {
+  final String? imageUrl;
+  final String? fallbackImageUrl;
+  final String? title;
+  final double aspectRatio;
+  final bool isFavorite;
+  final bool isPlayed;
+  final int? unplayedCount;
+  final double? playedPercentage;
+  final WatchedIndicatorBehavior watchedBehavior;
+  final bool focused;
+  final bool hovered;
+  final Color? focusColor;
+  final bool suppressFocusBorder;
+  final bool suppressFocusGlow;
+  final bool isCircular;
+  final String? itemType;
+  final String? seerrMediaType;
+  final int? seerrStatus;
+
+  const _CardImage({
+    this.imageUrl,
+    this.fallbackImageUrl,
+    this.title,
+    required this.aspectRatio,
+    required this.isFavorite,
+    required this.isPlayed,
+    this.unplayedCount,
+    this.playedPercentage,
+    required this.watchedBehavior,
+    required this.focused,
+    this.hovered = false,
+    this.focusColor,
+    this.suppressFocusBorder = false,
+    this.suppressFocusGlow = false,
+    this.isCircular = false,
+    this.itemType,
+    this.seerrMediaType,
+    this.seerrStatus,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final radius = isCircular ? 999.0 : 8.0;
+    final showBorder = !suppressFocusBorder && (focused || hovered);
+    final borderColor = focusColor ?? Theme.of(context).colorScheme.primary;
+    final borders = ThemeRegistry.active.borders;
+    final showGlow = showBorder && !suppressFocusGlow && borders.focusGlow.isNotEmpty;
+
+    return AspectRatio(
+      aspectRatio: aspectRatio,
+      child: Stack(
+        fit: StackFit.expand,
+        clipBehavior: Clip.none,
+        children: [
+          if (showGlow)
+            // Inset 0, not -1: the glow is a boxShadow and already paints
+            // outward from the box edge, so pushing the box out as well only
+            // moved it further into the region an ancestor list clips.
+            Positioned.fill(
+              child: IgnorePointer(
+                child: Container(
+                  decoration: BoxDecoration(
+                    borderRadius: isCircular
+                        ? BorderRadius.circular(radius)
+                        : borders.cardRadius,
+                    boxShadow: borders.focusGlow,
+                  ),
+                ),
+              ),
+            ),
+          ClipRRect(
+            borderRadius: isCircular
+                ? BorderRadius.circular(radius)
+                : borders.cardRadius,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Container(
+                  color: (itemType == 'Network' || itemType == 'Studio')
+                      ? Theme.of(context).colorScheme.surfaceContainerHighest
+                      : (imageUrl != null
+                          ? Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.2)
+                          : Colors.transparent),
+                  padding: (itemType == 'Network' || itemType == 'Studio')
+                      ? const EdgeInsets.all(8.0)
+                      : EdgeInsets.zero,
+                  child: imageUrl != null
+                      ? BoundedNetworkImage(
+                          imageUrl: imageUrl!,
+                          fit: (itemType == 'Network' || itemType == 'Studio')
+                              ? BoxFit.contain
+                              : BoxFit.cover,
+                          fadeInDuration: Duration.zero,
+                          scale: isCircular ? 0.8 : 0.9,
+                          maxWidth: aspectRatio > 1.2 ? 960 : 640,
+                          // If the injected (e.g. Voltix category) image fails
+                          // to load, fall back to the original image before
+                          // showing the placeholder icon.
+                          errorBuilder: (_, _, _) => fallbackImageUrl != null
+                              ? BoundedNetworkImage(
+                                  imageUrl: fallbackImageUrl!,
+                                  fit:
+                                      (itemType == 'Network' ||
+                                          itemType == 'Studio')
+                                      ? BoxFit.contain
+                                      : BoxFit.cover,
+                                  fadeInDuration: Duration.zero,
+                                  scale: isCircular ? 0.8 : 0.9,
+                                  maxWidth: aspectRatio > 1.2 ? 960 : 640,
+                                  errorBuilder: (_, _, _) => _PlaceholderIcon(
+                                    itemType: itemType,
+                                    title: title,
+                                  ),
+                                )
+                              : _PlaceholderIcon(
+                                  itemType: itemType,
+                                  title: title,
+                                ),
+                        )
+                      : _PlaceholderIcon(itemType: itemType, title: title),
+                ),
+                if (isFavorite)
+                  Positioned(
+                    top: _showSeerrMediaTypeBadge ? 28 : 4,
+                    left: 4,
+                    child: Icon(
+                      Icons.favorite,
+                      color: AppColorScheme.recordingActive,
+                      size: 18,
+                    ),
+                  ),
+                if (_showSeerrMediaTypeBadge)
+                  Positioned(
+                    top: 6,
+                    left: 6,
+                    child: _buildSeerrMediaTypeBadge(),
+                  ),
+                if (_showSeerrStatusIndicator)
+                  Positioned(
+                    top: 6,
+                    right: 6,
+                    child: _buildSeerrStatusIndicator(),
+                  )
+                else if (_showWatchedIndicator)
+                  Positioned(top: 4, right: 4, child: _buildWatchedIndicator()),
+                if (playedPercentage != null && playedPercentage! > 0)
+                  Positioned(
+                    left: 6,
+                    right: 6,
+                    bottom: 6,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(3),
+                      child: LinearProgressIndicator(
+                        value: playedPercentage! / 100,
+                        minHeight: 6,
+                        backgroundColor: AppColorScheme.scrim.withValues(alpha: 0.54),
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          AppColorScheme.accent,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          if (showBorder)
+            // Drawn INSIDE the card bounds rather than straddling them.
+            //
+            // Flutter paints a BorderSide inside its box, so with the old
+            // -1.0 inset a 1.4px border (Neon Pulse) put 1.0px outside the
+            // card and only 0.4px inside. The card image is the first child
+            // of the Column, so the card's top edge is the widget's top edge
+            // and the enclosing horizontal list clipped that outer pixel away
+            // - which is why the border read as missing along the top while
+            // the other three sides looked fine. At inset 0 the full stroke
+            // lands on the image edge, identically on all four sides, and
+            // nothing depends on an ancestor allowing overflow.
+            Positioned.fill(
+              child: IgnorePointer(
+                child: Container(
+                  decoration: BoxDecoration(
+                    borderRadius: isCircular
+                        ? BorderRadius.circular(radius)
+                        : borders.cardRadius,
+                    border: Border.fromBorderSide(
+                      borders.focusBorder.copyWith(color: borderColor),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  bool get _showWatchedIndicator {
+    switch (watchedBehavior) {
+      case WatchedIndicatorBehavior.always:
+        return isPlayed || (unplayedCount != null && unplayedCount! > 0);
+      case WatchedIndicatorBehavior.hideUnwatched:
+        return isPlayed;
+      case WatchedIndicatorBehavior.episodesOnly:
+        return itemType == 'Episode' &&
+            (isPlayed || (unplayedCount != null && unplayedCount! > 0));
+      case WatchedIndicatorBehavior.never:
+        return false;
+    }
+  }
+
+  bool get _showSeerrMediaTypeBadge {
+    final type = seerrMediaType?.toLowerCase();
+    return type == 'movie' || type == 'tv';
+  }
+
+  bool get _showSeerrStatusIndicator =>
+      seerrStatus == 2 ||
+      seerrStatus == 3 ||
+      seerrStatus == 4 ||
+      seerrStatus == 5;
+
+  Widget _buildSeerrMediaTypeBadge() {
+    final type = seerrMediaType?.toLowerCase();
+    final isMovie = type == 'movie';
+    final badgeColor = isMovie
+        ? AppColorScheme.mediaTypeBadgeMovie
+        : AppColorScheme.mediaTypeBadgeShow;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: badgeColor.withValues(alpha: 0.85),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        child: Text(
+          isMovie ? 'MOVIE' : 'SERIES',
+          style: TextStyle(
+            color: AppColorScheme.onBadge,
+            fontSize: 10,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.8,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSeerrStatusIndicator() {
+    if (seerrStatus == 5) {
+      return _buildStatusCircle(
+        borderColor: AppColorScheme.statusAvailable,
+        icon: Icon(
+          Icons.check_rounded,
+          size: 12,
+          color: AppColorScheme.statusAvailable,
+        ),
+      );
+    }
+
+    if (seerrStatus == 4) {
+      return _buildStatusCircle(
+        fillColor: AppColorScheme.statusAvailable,
+        icon: Icon(Icons.remove_rounded, size: 13, color: AppColorScheme.onBadge),
+      );
+    }
+
+    if (seerrStatus == 3) {
+      return _buildStatusCircle(
+        borderColor: AppColorScheme.statusRequested,
+        icon: Icon(
+          Icons.schedule_rounded,
+          size: 12,
+          color: AppColorScheme.statusRequested,
+        ),
+      );
+    }
+
+    return _buildStatusCircle(
+      borderColor: AppColorScheme.statusPending,
+      icon: Icon(
+        Icons.schedule_rounded,
+        size: 12,
+        color: AppColorScheme.statusPending,
+      ),
+    );
+  }
+
+  Widget _buildStatusCircle({
+    required Widget icon,
+    Color? fillColor,
+    Color? borderColor,
+  }) {
+    final effectiveFillColor = fillColor ?? AppColorScheme.onBadge;
+    return Container(
+      width: 20,
+      height: 20,
+      decoration: BoxDecoration(
+        color: effectiveFillColor,
+        shape: BoxShape.circle,
+        border: Border.fromBorderSide(
+          ThemeRegistry.active.borders.chipBorder.copyWith(
+            color: borderColor ?? effectiveFillColor,
+            width: 1.5,
+          ),
+        ),
+      ),
+      alignment: Alignment.center,
+      child: icon,
+    );
+  }
+
+  Widget _buildWatchedIndicator() {
+    if (isPlayed) {
+      return DecoratedBox(
+        decoration: BoxDecoration(
+          color: AppColorScheme.badgeWatched,
+          shape: BoxShape.circle,
+        ),
+        child: Padding(
+          padding: EdgeInsets.all(2),
+          child: Icon(Icons.check, color: AppColorScheme.onBadge, size: 12),
+        ),
+      );
+    }
+    if (unplayedCount != null && unplayedCount! > 0) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+        decoration: BoxDecoration(
+          color: AppColorScheme.badgeUnplayed,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          '$unplayedCount',
+          style: TextStyle(
+            color: AppColorScheme.onBadge,
+            fontSize: 10,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      );
+    }
+    return const SizedBox.shrink();
+  }
+}
+
+class _PlaceholderIcon extends StatelessWidget {
+  final String? itemType;
+  final String? title;
+
+  const _PlaceholderIcon({this.itemType, this.title});
+
+  @override
+  Widget build(BuildContext context) {
+    if (itemType != 'Person') {
+      return Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Theme.of(context).colorScheme.primary.withValues(alpha: 0.25),
+              Theme.of(context).colorScheme.secondary.withValues(alpha: 0.05),
+              Colors.transparent,
+            ],
+            stops: const [0.0, 0.5, 1.0],
+          ),
+        ),
+        child: title != null && title!.isNotEmpty
+            ? Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(12.0),
+                  child: Text(
+                    title!.toUpperCase(),
+                    textAlign: TextAlign.center,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 2.5,
+                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                    ),
+                  ),
+                ),
+              )
+            : null,
+      );
+    }
+
+    return Center(
+      child: Icon(
+        MediaCard.iconForType(itemType),
+        size: 32,
+        color: AppColorScheme.onSurface.withValues(alpha: 0.38),
+      ),
+    );
+  }
+}

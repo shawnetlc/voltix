@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "id": "cyberpunk_neon",
+  "displayName": "Cyberpunk Neon",
+  "description": "High-voltage Night City style — electric yellow glow, hot neon pink accents, and pitch-black gritty surfaces.",
+  "colors": {
+    "background": "#FF0D0D11",
+    "onBackground": "#FFFFFFFF",
+    "surface": "#FF161622",
+    "onSurface": "#FFFFFFFF",
+    "surfaceVariant": "#FF222233",
+    "scrim": "#CC0D0D11",
+    "accent": "#FFFCEE09",
+    "onAccent": "#FF0D0D11",
+    "buttonNormal": "#FF1E1E2E",
+    "buttonFocused": "#FFFCEE09",
+    "buttonDisabled": "#FF14141E",
+    "buttonActive": "#FF2A2A40",
+    "onButtonNormal": "#FFFFFFFF",
+    "onButtonFocused": "#FF0D0D11",
+    "onButtonDisabled": "#FF666680",
+    "inputBackground": "#FF1A1A28",
+    "inputFocused": "#FF26263C",
+    "inputBorder": "#FF383854",
+    "inputBorderFocused": "#FFFCEE09",
+    "rangeTrack": "#FF303048",
+    "rangeProgress": "#FFFCEE09",
+    "rangeThumb": "#FFFF0055",
+    "seekbarBuffered": "#80FCEE09",
+    "badgeBackground": "#FFFCEE09",
+    "onBadge": "#FF0D0D11",
+    "badgeUnplayed": "#FFFF0055",
+    "badgeWatched": "#FF00FFCC",
+    "recordingActive": "#FFFF0055",
+    "recordingScheduled": "#FFFCEE09"
+  },
+  "borders": {
+    "cardBorder": { "color": "#26FCEE09", "width": 1 },
+    "chipBorder": { "color": "#66FCEE09", "width": 1 },
+    "focusBorder": { "color": "#FFFCEE09", "width": 2 },
+    "cardRadius": 6,
+    "chipRadius": 6,
+    "chipBackground": "#1AFCEE09",
+    "focusGlow": [
+      {
+        "color": "#66FCEE09",
+        "blurRadius": 14.0,
+        "spreadRadius": 2.0
+      }
+    ]
+  },
+  "semantic": {
+    "statusAvailable": "#FF00FFCC",
+    "statusRequested": "#FFFF0055",
+    "statusPending": "#FFFCEE09",
+    "statusDownloading": "#FF00E5FF",
+    "mediaTypeBadgeMovie": "#FFFCEE09",
+    "mediaTypeBadgeSeries": "#FFFF0055"
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "id": "amethyst_dream",
+  "displayName": "Amethyst Dream",
+  "description": "Mystical royal violet, shimmering lilac mist, and deep starlit nebula backgrounds.",
+  "colors": {
+    "background": "#FF0F0A1C",
+    "onBackground": "#FFFFFFFF",
+    "surface": "#FF1A1230",
+    "onSurface": "#FFFFFFFF",
+    "surfaceVariant": "#FF251A44",
+    "scrim": "#CC0F0A1C",
+    "accent": "#FF8B5CF6",
+    "onAccent": "#FFFFFFFF",
+    "buttonNormal": "#FF241942",
+    "buttonFocused": "#FFA855F7",
+    "buttonDisabled": "#FF120D22",
+    "buttonActive": "#FF352561",
+    "onButtonNormal": "#FFFFFFFF",
+    "onButtonFocused": "#FFFFFFFF",
+    "onButtonDisabled": "#FF615380",
+    "inputBackground": "#FF1E1438",
+    "inputFocused": "#FF2C1E52",
+    "inputBorder": "#FF442E7D",
+    "inputBorderFocused": "#FFA855F7",
+    "rangeTrack": "#FF362563",
+    "rangeProgress": "#FF8B5CF6",
+    "rangeThumb": "#FFC084FC",
+    "seekbarBuffered": "#808B5CF6",
+    "badgeBackground": "#FF8B5CF6",
+    "onBadge": "#FFFFFFFF",
+    "badgeUnplayed": "#FFA855F7",
+    "badgeWatched": "#FF10B981",
+    "recordingActive": "#FFEF4444",
+    "recordingScheduled": "#FFF59E0B"
+  },
+  "borders": {
+    "cardBorder": { "color": "#1A8B5CF6", "width": 1 },
+    "chipBorder": { "color": "#408B5CF6", "width": 1 },
+    "focusBorder": { "color": "#FFA855F7", "width": 2 },
+    "cardRadius": 10,
+    "chipRadius": 999,
+    "chipBackground": "#1A8B5CF6",
+    "focusGlow": [
+      {
+        "color": "#558B5CF6",
+        "blurRadius": 12.0,
+        "spreadRadius": 2.0
+      }
+    ]
+  },
+  "semantic": {
+    "statusAvailable": "#FF10B981",
+    "statusRequested": "#FFA855F7",
+    "statusPending": "#FFF59E0B",
+    "statusDownloading": "#FFC084FC",
+    "mediaTypeBadgeMovie": "#FF8B5CF6",
+    "mediaTypeBadgeSeries": "#FFC084FC"
+  }
+}

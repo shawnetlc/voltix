@@ -1,0 +1,107 @@
+// GENERATED CODE - DO NOT MODIFY BY HAND
+
+part of 'seerr_models.dart';
+
+// **************************************************************************
+// JsonSerializableGenerator
+// **************************************************************************
+
+VoltixStatusResponse _$VoltixStatusResponseFromJson(
+  Map<String, dynamic> json,
+) => VoltixStatusResponse(
+  enabled: json['enabled'] as bool? ?? false,
+  authenticated: json['authenticated'] as bool? ?? false,
+  url: json['url'] as String?,
+  jellyseerrUserId: (json['jellyseerrUserId'] as num?)?.toInt(),
+  displayName: json['displayName'] as String?,
+  avatar: json['avatar'] as String?,
+  permissions: (json['permissions'] as num?)?.toInt() ?? 0,
+  sessionCreated: (json['sessionCreated'] as num?)?.toInt(),
+  lastValidated: (json['lastValidated'] as num?)?.toInt(),
+);
+
+Map<String, dynamic> _$VoltixStatusResponseToJson(
+  VoltixStatusResponse instance,
+) => <String, dynamic>{
+  'enabled': instance.enabled,
+  'authenticated': instance.authenticated,
+  'url': instance.url,
+  'jellyseerrUserId': instance.jellyseerrUserId,
+  'displayName': instance.displayName,
+  'avatar': instance.avatar,
+  'permissions': instance.permissions,
+  'sessionCreated': instance.sessionCreated,
+  'lastValidated': instance.lastValidated,
+};
+
+VoltixLoginRequest _$VoltixLoginRequestFromJson(Map<String, dynamic> json) =>
+    VoltixLoginRequest(
+      username: json['username'] as String,
+      password: json['password'] as String,
+      authType: json['authType'] as String? ?? 'jellyfin',
+    );
+
+Map<String, dynamic> _$VoltixLoginRequestToJson(
+  VoltixLoginRequest instance,
+) => <String, dynamic>{
+  'username': instance.username,
+  'password': instance.password,
+  'authType': instance.authType,
+};
+
+VoltixLoginResponse _$VoltixLoginResponseFromJson(
+  Map<String, dynamic> json,
+) => VoltixLoginResponse(
+  success: json['success'] as bool? ?? false,
+  error: json['error'] as String?,
+  jellyseerrUserId: (json['jellyseerrUserId'] as num?)?.toInt(),
+  displayName: json['displayName'] as String?,
+  avatar: json['avatar'] as String?,
+  permissions: (json['permissions'] as num?)?.toInt() ?? 0,
+);
+
+Map<String, dynamic> _$VoltixLoginResponseToJson(
+  VoltixLoginResponse instance,
+) => <String, dynamic>{
+  'success': instance.success,
+  'error': instance.error,
+  'jellyseerrUserId': instance.jellyseerrUserId,
+  'displayName': instance.displayName,
+  'avatar': instance.avatar,
+  'permissions': instance.permissions,
+};
+
+VoltixValidateResponse _$VoltixValidateResponseFromJson(
+  Map<String, dynamic> json,
+) => VoltixValidateResponse(
+  valid: json['valid'] as bool? ?? false,
+  lastValidated: (json['lastValidated'] as num?)?.toInt(),
+);
+
+Map<String, dynamic> _$VoltixValidateResponseToJson(
+  VoltixValidateResponse instance,
+) => <String, dynamic>{
+  'valid': instance.valid,
+  'lastValidated': instance.lastValidated,
+};
+
+SeerrMainSettings _$SeerrMainSettingsFromJson(Map<String, dynamic> json) =>
+    SeerrMainSettings(apiKey: json['apiKey'] as String);
+
+Map<String, dynamic> _$SeerrMainSettingsToJson(SeerrMainSettings instance) =>
+    <String, dynamic>{'apiKey': instance.apiKey};
+
+SeerrStatus _$SeerrStatusFromJson(Map<String, dynamic> json) => SeerrStatus(
+  version: json['version'] as String?,
+  commitTag: (json['commitTag'] as num?)?.toInt(),
+  updateAvailable: (json['updateAvailable'] as num?)?.toInt(),
+  commitsBehind: (json['commitsBehind'] as num?)?.toInt(),
+);
+
+Map<String, dynamic> _$SeerrStatusToJson(SeerrStatus instance) =>
+    <String, dynamic>{
+      'version': instance.version,
+      'commitTag': instance.commitTag,
+      'updateAvailable': instance.updateAvailable,
+      'commitsBehind': instance.commitsBehind,
+    };

@@ -1,0 +1,27 @@
+import 'package:flutter/material.dart';
+import 'package:voltix_design/voltix_design.dart';
+
+import '../../../l10n/app_localizations.dart';
+import '../../widgets/navigation_layout.dart';
+import '../../widgets/focus/request_initial_focus.dart';
+
+class MusicFavoritesScreen extends StatelessWidget {
+  final String parentId;
+
+  const MusicFavoritesScreen({super.key, required this.parentId});
+
+  @override
+  Widget build(BuildContext context) =>
+      RequestInitialFocus(child: _buildContent(context));
+
+  Widget _buildContent(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    return Scaffold(
+      backgroundColor: AppColorScheme.background,
+      body: NavigationLayout(
+        showBackButton: true,
+        child: Center(child: Text(l10n.favoriteTracksPlaceholder)),
+      ),
+    );
+  }
+}

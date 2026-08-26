@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "id": "tokyo_drift",
+  "displayName": "Tokyo Drift",
+  "description": "Underground street racing aesthetics — hot magenta-pink underglow, electric cyan headlights, and dark asphalt.",
+  "colors": {
+    "background": "#FF0A0F1D",
+    "onBackground": "#FFFFFFFF",
+    "surface": "#FF131B33",
+    "onSurface": "#FFFFFFFF",
+    "surfaceVariant": "#FF1C274A",
+    "scrim": "#CC0A0F1D",
+    "accent": "#FFEC4899",
+    "onAccent": "#FFFFFFFF",
+    "buttonNormal": "#FF1B2544",
+    "buttonFocused": "#FF06B6D4",
+    "buttonDisabled": "#FF0E1426",
+    "buttonActive": "#FF26345F",
+    "onButtonNormal": "#FFFFFFFF",
+    "onButtonFocused": "#FF0A0F1D",
+    "onButtonDisabled": "#FF4E5E8A",
+    "inputBackground": "#FF151E38",
+    "inputFocused": "#FF1F2C52",
+    "inputBorder": "#FF30437A",
+    "inputBorderFocused": "#FF06B6D4",
+    "rangeTrack": "#FF273663",
+    "rangeProgress": "#FFEC4899",
+    "rangeThumb": "#FF06B6D4",
+    "seekbarBuffered": "#80EC4899",
+    "badgeBackground": "#FFEC4899",
+    "onBadge": "#FFFFFFFF",
+    "badgeUnplayed": "#FF06B6D4",
+    "badgeWatched": "#FF10B981",
+    "recordingActive": "#FFEC4899",
+    "recordingScheduled": "#FFF59E0B"
+  },
+  "borders": {
+    "cardBorder": { "color": "#1AEC4899", "width": 1 },
+    "chipBorder": { "color": "#40EC4899", "width": 1 },
+    "focusBorder": { "color": "#FF06B6D4", "width": 2 },
+    "cardRadius": 10,
+    "chipRadius": 999,
+    "chipBackground": "#1AEC4899",
+    "focusGlow": [
+      {
+        "color": "#5506B6D4",
+        "blurRadius": 12.0,
+        "spreadRadius": 2.0
+      }
+    ]
+  },
+  "semantic": {
+    "statusAvailable": "#FF10B981",
+    "statusRequested": "#FFEC4899",
+    "statusPending": "#FFF59E0B",
+    "statusDownloading": "#FF06B6D4",
+    "mediaTypeBadgeMovie": "#FFEC4899",
+    "mediaTypeBadgeSeries": "#FF06B6D4"
+  }
+}

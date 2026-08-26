@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "id": "sunset_boulevard",
+  "displayName": "Sunset Boulevard",
+  "description": "Vibrant California dusk — warm coral pink, golden apricot, and deep twilight plum.",
+  "colors": {
+    "background": "#FF140C1A",
+    "onBackground": "#FFFFFFFF",
+    "surface": "#FF22132B",
+    "onSurface": "#FFFFFFFF",
+    "surfaceVariant": "#FF2E1B3A",
+    "scrim": "#CC140C1A",
+    "accent": "#FFF43F5E",
+    "onAccent": "#FFFFFFFF",
+    "buttonNormal": "#FF2C1A37",
+    "buttonFocused": "#FFFB923C",
+    "buttonDisabled": "#FF170E1E",
+    "buttonActive": "#FF3E244E",
+    "onButtonNormal": "#FFFFFFFF",
+    "onButtonFocused": "#FF140C1A",
+    "onButtonDisabled": "#FF6B5375",
+    "inputBackground": "#FF25162F",
+    "inputFocused": "#FF342042",
+    "inputBorder": "#FF4E3161",
+    "inputBorderFocused": "#FFFB923C",
+    "rangeTrack": "#FF3D264C",
+    "rangeProgress": "#FFF43F5E",
+    "rangeThumb": "#FFFB923C",
+    "seekbarBuffered": "#80F43F5E",
+    "badgeBackground": "#FFF43F5E",
+    "onBadge": "#FFFFFFFF",
+    "badgeUnplayed": "#FFFB923C",
+    "badgeWatched": "#FF10B981",
+    "recordingActive": "#FFEF4444",
+    "recordingScheduled": "#FFFB923C"
+  },
+  "borders": {
+    "cardBorder": { "color": "#1AF43F5E", "width": 1 },
+    "chipBorder": { "color": "#40F43F5E", "width": 1 },
+    "focusBorder": { "color": "#FFFB923C", "width": 2 },
+    "cardRadius": 10,
+    "chipRadius": 999,
+    "chipBackground": "#1AF43F5E",
+    "focusGlow": [
+      {
+        "color": "#55F43F5E",
+        "blurRadius": 12.0,
+        "spreadRadius": 2.0
+      }
+    ]
+  },
+  "semantic": {
+    "statusAvailable": "#FF10B981",
+    "statusRequested": "#FFF43F5E",
+    "statusPending": "#FFFB923C",
+    "statusDownloading": "#FFF43F5E",
+    "mediaTypeBadgeMovie": "#FFF43F5E",
+    "mediaTypeBadgeSeries": "#FFFB923C"
+  }
+}

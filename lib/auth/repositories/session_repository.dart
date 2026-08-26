@@ -1,0 +1,666 @@
+import 'dart:async';
+
+import 'package:dio/dio.dart';
+import '../../ui/navigation/app_router.dart';
+import '../../ui/navigation/destinations.dart';
+
+import 'package:get_it/get_it.dart';
+import 'package:logger/logger.dart';
+import 'package:playback_core/playback_core.dart';
+import 'package:server_core/server_core.dart';
+
+import '../../data/models/aggregated_item.dart';
+import '../../data/services/download_notification_service.dart';
+import '../../data/services/media_server_client_factory.dart';
+import '../../data/services/plugin_sync_service.dart';
+import '../../data/services/socket_handler.dart';
+import '../../di/modules/app_module.dart';
+import '../../di/modules/playback_module.dart';
+import '../../di/modules/server_module.dart';
+import '../../preference/preference_constants.dart';
+import '../../preference/user_preferences.dart';
+import '../store/authentication_preferences.dart';
+import '../store/authentication_store.dart';
+import '../store/voltix_session_store.dart';
+import '../store/credential_store.dart';
+import '../models/user.dart';
+import 'server_repository.dart';
+import 'user_repository.dart';
+
+enum SessionState { ready, restoring, switching }
+
+class SessionRepository {
+  static const List<String> _supportedRemoteCommands = [
+    'DisplayMessage',
+    'SetVolume',
+    'Mute',
+    'Unmute',
+    'ToggleMute',
+    'SetAudioStreamIndex',
+    'SetSubtitleStreamIndex',
+    'SetRepeatMode',
+    'SetShuffleQueue',
+  ];
+  static const Duration _initialLoginSyncWait = Duration(seconds: 3);
+
+  final AuthenticationStore _authStore;
+  final AuthenticationPreferences _authPrefs;
+  final CredentialStore _credentialStore;
+  final MediaServerClientFactory _clientFactory;
+  final SocketHandler _socketHandler;
+  final ServerRepository _serverRepository;
+  final UserRepository _userRepository;
+  final PluginSyncService _pluginSyncService;
+  final _logger = Logger();
+
+  String? _activeServerId;
+  String? _activeUserId;
+  SessionState _state = SessionState.ready;
+  StreamSubscription<ServerWebSocketMessage>? _remoteCommandSubscription;
+  double _lastUnmutedVolume = 100;
+  bool _remoteMuted = false;
+
+  final _stateController = StreamController<SessionState>.broadcast();
+
+  SessionRepository(
+    this._authStore,
+    this._authPrefs,
+    this._credentialStore,
+    this._clientFactory,
+    this._socketHandler,
+    this._serverRepository,
+    this._userRepository,
+    this._pluginSyncService,
+  );
+
+  String? get activeServerId => _activeServerId;
+  String? get activeUserId => _activeUserId;
+
+  // save or clear the auto login target based on the chosen behavior.
+  Future<void> applyAutoLoginForBehavior(UserSelectBehavior behavior) async {
+    if (behavior == UserSelectBehavior.currentUser) {
+      final serverId = _activeServerId;
+      final userId = _activeUserId;
+      if (serverId != null && userId != null) {
+        await _authPrefs.setAutoLogin(serverId, userId);
+      }
+    } else {
+      await _authPrefs.clearAutoLogin();
+    }
+  }
+
+  // true when the person using the app right now is the saved auto login user.
+  bool get activeUserIsAutoLoginTarget =>
+      _activeUserId != null &&
+      _activeServerId != null &&
+      _authPrefs.savedAutoLoginUserId == _activeUserId &&
+      _authPrefs.savedAutoLoginServerId == _activeServerId;
+
+  // the name of the saved auto-login user or null if none.
+  String? autoLoginTargetDisplayName() {
+    final serverId = _authPrefs.savedAutoLoginServerId;
+    final userId = _authPrefs.savedAutoLoginUserId;
+    if (serverId.isEmpty || userId.isEmpty) return null;
+    return _authStore.getUser(serverId, userId)?.name;
+  }
+
+  SessionState get state => _state;
+  Stream<SessionState> get stateStream => _stateController.stream;
+
+  Future<bool> restoreSession() async {
+    _setState(SessionState.restoring);
+
+    final behavior = _authPrefs.loginBehavior;
+    String serverId;
+    String userId;
+
+    switch (behavior) {
+      case UserSelectBehavior.disabled:
+        _setState(SessionState.ready);
+        return false;
+      case UserSelectBehavior.lastUser:
+        serverId = _authPrefs.savedLastServerId;
+        userId = _authPrefs.savedLastUserId;
+      case UserSelectBehavior.currentUser:
+        serverId = _authPrefs.savedAutoLoginServerId;
+        userId = _authPrefs.savedAutoLoginUserId;
+    }
+
+    if (serverId.isEmpty || userId.isEmpty) {
+      _setState(SessionState.ready);
+      return false;
+    }
+
+    return switchCurrentSession(serverId: serverId, userId: userId);
+  }
+
+  Future<bool> switchCurrentSession({
+    required String serverId,
+    required String userId,
+    String? username,
+    String? password,
+  }) async {
+    _setState(SessionState.switching);
+    _pluginSyncService.resetState();
+
+    final server = _serverRepository.getServer(serverId);
+    if (server == null) {
+      _logger.w('Server $serverId not found in stored servers');
+      _setState(SessionState.ready);
+      return false;
+    }
+
+    final users = _authStore.getUsers(serverId);
+    final userIndex = users.indexWhere((u) => u.id == userId);
+    if (userIndex < 0) {
+      _logger.w('User $userId not found for server $serverId');
+      _setState(SessionState.ready);
+      return false;
+    }
+    final user = users[userIndex];
+
+    final token = await _credentialStore.getToken(serverId);
+    final accessToken = user.accessToken.isNotEmpty ? user.accessToken : token;
+
+    if (accessToken == null || accessToken.isEmpty) {
+      _logger.w(
+        'No access token available for user $userId on server $serverId',
+      );
+      _setState(SessionState.ready);
+      return false;
+    }
+
+    final client = _clientFactory.getClient(
+      serverId: serverId,
+      serverType: server.serverType,
+      baseUrl: server.address,
+    );
+
+    client.accessToken = accessToken;
+    client.userId = userId;
+
+    _clientFactory.setActiveServerId(serverId);
+    setActiveServerClient(client);
+    resetUserScopedSingletons();
+    setActiveStreamResolver(client);
+    _socketHandler.connectTo(client, serverId: serverId);
+    _bindRemoteCommandHandling();
+
+    _activeServerId = serverId;
+    _activeUserId = userId;
+
+    _userRepository.setCurrentUser(user);
+    await _authPrefs.setLastServerId(serverId);
+    await _authPrefs.setLastUserId(userId);
+
+    final shouldPrioritizeInitialSync = !_pluginSyncService
+        .isSyncInitializedForServer(client, serverId: serverId);
+    final Future<void> postLoginSyncFuture = _postLoginSync(
+      client,
+      user,
+      serverId,
+      username,
+      password,
+    ).catchError((_) {});
+
+    if (shouldPrioritizeInitialSync) {
+      // Give first-login server sync a short head start so Home can build
+      // from synced preferences, without blocking startup indefinitely.
+      await Future.any<void>([
+        postLoginSyncFuture,
+        Future<void>.delayed(_initialLoginSyncWait),
+      ]);
+    } else {
+      unawaited(postLoginSyncFuture);
+    }
+
+    _setState(SessionState.ready);
+
+    return true;
+  }
+
+  Future<void> _postLoginSync(
+    MediaServerClient client,
+    PrivateUser user,
+    String serverId,
+    String? username,
+    String? password,
+  ) async {
+    await _reportRemoteCapabilities(client);
+
+    try {
+      final serverUser = await client.usersApi.getCurrentUser();
+      final nameLower = (serverUser.name ?? user.name).toLowerCase();
+      final isAdmin = (serverUser.policy?.isAdministrator ?? false) ||
+          nameLower == 'voltixadmin' ||
+          nameLower == 'admin' ||
+          nameLower.contains('admin');
+      final canDownload = serverUser.policy?.enableContentDownloading ?? false;
+      final canManageSubtitles =
+          serverUser.policy?.enableSubtitleManagement ?? false;
+      final canManageCollections =
+          serverUser.policy?.enableCollectionManagement ?? false;
+
+      if (isAdmin != user.isAdministrator ||
+          canDownload != user.canDownload ||
+          canManageSubtitles != user.canManageSubtitles ||
+          canManageCollections != user.canManageCollections) {
+        final updatedUser = user.copyWith(
+          isAdministrator: isAdmin,
+          canDownload: canDownload,
+          canManageSubtitles: canManageSubtitles,
+          canManageCollections: canManageCollections,
+        );
+        await _authStore.putUser(updatedUser);
+        _userRepository.setCurrentUser(updatedUser);
+      }
+
+      // init language prefs if not already set
+      if (serverUser.configuration != null) {
+        GetIt.instance<UserPreferences>().initLanguagePrefs(
+          serverUser.configuration!,
+        );
+      }
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 401) {
+        _logger.w('Access token expired or unauthorized. Logging out.');
+        await destroyCurrentSession(skipRemoteLogout: true);
+        // Voltix-backed sessions authenticate the Jellyfin proxy with an
+        // ephemeral token bound to the JWT session; it is not honoured after an
+        // app restart. Instead of prompting for a password, re-run startup so
+        // the Voltix branch re-mints a fresh token from the stored JWT and
+        // auto-resumes. A genuinely invalid JWT is handled there (voltixLogin).
+        if (GetIt.instance<VoltixSessionStore>().hasSession) {
+          appRouter.go(Destinations.startup);
+        } else {
+          appRouter.go(
+            '${Destinations.login}?serverId=$serverId&username=${Uri.encodeComponent(user.name)}',
+          );
+        }
+        return;
+      }
+    } catch (_) {}
+
+    await _pluginSyncService.syncOnLogin(client, serverId: serverId);
+
+    await _pluginSyncService.configureSeerr(
+      client,
+      username: username ?? user.name,
+      password: password,
+    );
+  }
+
+  void setVoltixOnlySession({
+    required String serverId,
+    required String userId,
+    required String username,
+  }) {
+    _activeServerId = serverId;
+    _activeUserId = userId;
+
+    final user = PrivateUser(
+      id: userId,
+      name: username,
+      serverId: serverId,
+      accessToken: 'voltix_bypass_token',
+      lastUsed: DateTime.now(),
+    );
+    _userRepository.setCurrentUser(user);
+
+    // Register a stub MediaServerClient so the DI container doesn't crash
+    // when HomeScreen tries to resolve HomeViewModel and its dependencies.
+    // The HomeViewModel already gates Jellyfin rows via voltixJellyfinEnabled,
+    // so this stub will never make real API calls.
+    final stubClient = _clientFactory.getClient(
+      serverId: serverId,
+      serverType: ServerType.jellyfin,
+      baseUrl: 'https://voltix-stub.local',
+    );
+    stubClient.accessToken = 'voltix_bypass_token';
+    stubClient.userId = userId;
+    _clientFactory.setActiveServerId(serverId);
+    setActiveServerClient(stubClient);
+    resetUserScopedSingletons();
+
+    _setState(SessionState.ready);
+  }
+
+  /// Tears down the active session.
+  ///
+  /// [skipRemoteLogout] omits the upstream `Sessions/Logout` call. Pass it when
+  /// the teardown was triggered BY a 401: the token is already rejected, so the
+  /// logout cannot succeed — and against the Voltix Jellyfin proxy it is
+  /// actively harmful, because the proxy caches one upstream token per user and
+  /// server. Logging out kills that shared token, and every later login is
+  /// handed the dead one back. That is the loop behind the 401s on the Primary
+  /// server: 401 → logout → cached token dies → next login reissues it → 401.
+  Future<void> destroyCurrentSession({bool skipRemoteLogout = false}) async {
+    final serverId = _activeServerId;
+    final userId = _activeUserId;
+    _pluginSyncService.resetState();
+
+    if (serverId != null && !skipRemoteLogout) {
+      try {
+        final client = _clientFactory.getClientIfExists(serverId);
+        await client?.authApi.logout();
+      } catch (_) {}
+    }
+
+    _remoteCommandSubscription?.cancel();
+    _remoteCommandSubscription = null;
+    _socketHandler.disconnect();
+
+    if (serverId != null) {
+      await _credentialStore.deleteToken(serverId);
+      if (userId != null) {
+        await _authStore.removeUser(serverId, userId);
+      }
+      _clientFactory.removeClient(serverId);
+      resetActiveStreamResolver();
+    }
+
+    await _authPrefs.setLastServerId('');
+    await _authPrefs.setLastUserId('');
+    if (_authPrefs.loginBehavior != UserSelectBehavior.currentUser) {
+      await _authPrefs.clearAutoLogin();
+    }
+
+    _activeServerId = null;
+    _activeUserId = null;
+    _userRepository.setCurrentUser(null);
+    _setState(SessionState.ready);
+  }
+
+  void _setState(SessionState state) {
+    _state = state;
+    _stateController.add(state);
+  }
+
+  void _bindRemoteCommandHandling() {
+    _remoteCommandSubscription?.cancel();
+    _remoteCommandSubscription = _socketHandler.events.listen(
+      (event) => unawaited(_handleRemoteCommand(event)),
+    );
+  }
+
+  Future<void> _reportRemoteCapabilities(MediaServerClient client) async {
+    try {
+      await client.sessionApi.reportCapabilities({
+        'PlayableMediaTypes': const ['Audio', 'Video'],
+        'SupportsMediaControl': true,
+        'SupportedCommands': _supportedRemoteCommands,
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _handleRemoteCommand(ServerWebSocketMessage event) async {
+    switch (event) {
+      case PlayMessage():
+        await _handlePlayMessage(event);
+      case PlaystateMessage():
+        await _handlePlaystateMessage(event);
+      case GeneralCommandMessage():
+        await _handleGeneralCommandMessage(event);
+      default:
+        break;
+    }
+  }
+
+  int? _parseIntArg(Map<String, String> args, String key) {
+    final value = args[key];
+    if (value == null) {
+      return null;
+    }
+    return int.tryParse(value);
+  }
+
+  Future<void> _setLocalVolume(PlaybackManager manager, double volume) async {
+    final backend = manager.backend;
+    if (backend == null) {
+      return;
+    }
+    await backend.setVolume(volume.clamp(0, 100));
+  }
+
+  double _normalizeVolume(String raw) {
+    final parsed = double.tryParse(raw) ?? 100;
+    if (parsed <= 1) {
+      return (parsed * 100).clamp(0, 100).toDouble();
+    }
+    return parsed.clamp(0, 100).toDouble();
+  }
+
+  Future<void> _setRepeatMode(PlaybackManager manager, String mode) async {
+    final target = switch (mode) {
+      'repeatall' => RepeatMode.repeatAll,
+      'repeatone' => RepeatMode.repeatOne,
+      _ => RepeatMode.none,
+    };
+
+    var attempts = 0;
+    while (manager.state.repeatMode != target && attempts < 3) {
+      manager.toggleRepeat();
+      attempts++;
+    }
+  }
+
+  Future<void> _setShuffleMode(PlaybackManager manager, String mode) async {
+    final wantsShuffle = mode.toLowerCase() == 'shuffle';
+    if (manager.state.isShuffled != wantsShuffle) {
+      manager.toggleShuffle();
+    }
+  }
+
+  Duration? _durationFromTicks(int? ticks) {
+    if (ticks == null || ticks <= 0) {
+      return null;
+    }
+    return Duration(microseconds: ticks ~/ 10);
+  }
+
+  Future<void> _handlePlayMessage(PlayMessage message) async {
+    final serverId = _activeServerId;
+    if (serverId == null || message.itemIds.isEmpty) {
+      return;
+    }
+
+    final client = _clientFactory.getClientIfExists(serverId);
+    if (client == null) {
+      return;
+    }
+
+    final loaded = await Future.wait(
+      message.itemIds.map((itemId) async {
+        try {
+          final itemData = await client.itemsApi.getItem(itemId);
+          return AggregatedItem(
+            id: itemId,
+            serverId: serverId,
+            rawData: itemData,
+          );
+        } catch (_) {
+          return null;
+        }
+      }),
+    );
+    final items = loaded.whereType<AggregatedItem>().toList(growable: false);
+
+    if (items.isEmpty) {
+      return;
+    }
+
+    final startIndex = message.startIndex.clamp(0, items.length - 1).toInt();
+    final manager = GetIt.instance<PlaybackManager>();
+    final command = message.playCommand.toLowerCase();
+
+    switch (command) {
+      case 'playnow':
+        await _playRemoteItems(manager, items, startIndex, message);
+        break;
+      case 'playnext':
+        for (final item in items.reversed) {
+          manager.queueService.insertNext(item);
+        }
+        break;
+      case 'playlast':
+      case 'enqueue':
+        manager.queueService.addItems(items);
+        break;
+      default:
+        await _playRemoteItems(manager, items, startIndex, message);
+        break;
+    }
+  }
+
+  Future<void> _playRemoteItems(
+    PlaybackManager manager,
+    List<AggregatedItem> items,
+    int startIndex,
+    PlayMessage message,
+  ) async {
+    final item = items[startIndex];
+    final isLiveTv = _isLiveTvItem(item);
+    final allowDirect = isLiveTv
+        ? GetIt.instance<UserPreferences>().get(
+            UserPreferences.liveTvDirectPlayEnabled,
+          )
+        : true;
+
+    _ensurePlayerRouteForItem(item);
+    await manager.playItems(
+      items,
+      startIndex: startIndex,
+      startPosition:
+          _durationFromTicks(message.startPositionTicks) ?? Duration.zero,
+      audioStreamIndex: message.audioStreamIndex,
+      subtitleStreamIndex: message.subtitleStreamIndex,
+      mediaSourceId: message.mediaSourceId,
+      enableDirectPlay: allowDirect,
+      enableDirectStream: allowDirect,
+      enableTranscoding: !isLiveTv || !allowDirect,
+    );
+  }
+
+  bool _isLiveTvItem(AggregatedItem item) {
+    final type = item.type;
+    return type == 'TvChannel' ||
+        type == 'LiveTvChannel' ||
+        type == 'Program' ||
+        item.rawData['ChannelId'] != null ||
+        item.rawData['TimerId'] != null;
+  }
+
+  void _ensurePlayerRouteForItem(AggregatedItem item) {
+    final currentPath = appRouter.routerDelegate.currentConfiguration.uri.path;
+    if (currentPath == Destinations.videoPlayer ||
+        currentPath == Destinations.audioPlayer) {
+      return;
+    }
+
+    final mediaType = item.rawData['MediaType'] as String?;
+    final isAudio =
+        item.type == 'Audio' ||
+        item.type == 'MusicAlbum' ||
+        item.type == 'AudioBook' ||
+        mediaType == 'Audio';
+
+    appRouter.push(
+      isAudio ? Destinations.audioPlayer : Destinations.videoPlayer,
+    );
+  }
+
+  Future<void> _handlePlaystateMessage(PlaystateMessage message) async {
+    final manager = GetIt.instance<PlaybackManager>();
+    switch (message.command.toLowerCase()) {
+      case 'pause':
+        await manager.pause();
+      case 'unpause':
+      case 'play':
+        await manager.resume();
+      case 'stop':
+        await manager.stop(userInitiated: false);
+      case 'seek':
+        final seek = _durationFromTicks(message.seekPositionTicks);
+        if (seek != null) {
+          await manager.seekTo(seek);
+        }
+      case 'nexttrack':
+        await manager.next();
+      case 'previoustrack':
+        await manager.previous();
+      default:
+        break;
+    }
+  }
+
+  Future<void> _handleGeneralCommandMessage(
+    GeneralCommandMessage message,
+  ) async {
+    final manager = GetIt.instance<PlaybackManager>();
+    switch (message.name.toLowerCase()) {
+      case 'displaymessage':
+        final text = message.arguments['Text'];
+        if (text != null && text.trim().isNotEmpty) {
+          await GetIt.instance<DownloadNotificationService>().showRemoteMessage(
+            text: text,
+            header: message.arguments['Header'],
+          );
+        }
+      case 'setvolume':
+        final raw = message.arguments['Volume'];
+        if (raw != null) {
+          final volume = _normalizeVolume(raw);
+          await _setLocalVolume(manager, volume);
+          if (volume > 0) {
+            _lastUnmutedVolume = volume;
+            _remoteMuted = false;
+          } else {
+            _remoteMuted = true;
+          }
+        }
+      case 'mute':
+        if (!_remoteMuted) {
+          _remoteMuted = true;
+          await _setLocalVolume(manager, 0);
+        }
+      case 'unmute':
+        _remoteMuted = false;
+        await _setLocalVolume(manager, _lastUnmutedVolume);
+      case 'togglemute':
+        _remoteMuted = !_remoteMuted;
+        await _setLocalVolume(manager, _remoteMuted ? 0 : _lastUnmutedVolume);
+      case 'setaudiostreamindex':
+        final index = _parseIntArg(message.arguments, 'Index');
+        if (index != null) {
+          await manager.changeAudioTrack(index);
+        }
+      case 'setsubtitlestreamindex':
+        final index = _parseIntArg(message.arguments, 'Index');
+        if (index == null) {
+          return;
+        }
+        if (index < 0) {
+          await manager.disableSubtitles();
+          return;
+        }
+        await manager.changeSubtitleTrack(index);
+      case 'setrepeatmode':
+        final mode = message.arguments['RepeatMode'];
+        if (mode != null) {
+          await _setRepeatMode(manager, mode.toLowerCase());
+        }
+      case 'setshufflequeue':
+        final mode = message.arguments['ShuffleMode'];
+        if (mode != null) {
+          await _setShuffleMode(manager, mode);
+        }
+      default:
+        break;
+    }
+  }
+
+  void dispose() {
+    _remoteCommandSubscription?.cancel();
+    _stateController.close();
+  }
+}

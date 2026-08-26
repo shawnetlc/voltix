@@ -1,0 +1,915 @@
+import 'dart:async';
+
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:get_it/get_it.dart';
+import 'package:go_router/go_router.dart';
+import 'package:voltix_design/voltix_design.dart';
+
+import '../../../data/services/seerr/seerr_api_models.dart';
+import '../../../data/viewmodels/seerr_discover_view_model.dart';
+import '../../../preference/preference_constants.dart';
+import '../../../preference/user_preferences.dart';
+import '../../../ui/mixins/focus_state_mixin.dart';
+import '../../../util/focus/dpad_keys.dart';
+import '../../../util/platform_detection.dart';
+import '../../navigation/destinations.dart';
+import '../../widgets/library_row.dart';
+import '../../widgets/media_card.dart';
+import '../../widgets/navigation_layout.dart';
+import '../../widgets/fullscreen_backdrop_switcher.dart';
+import '../../../l10n/app_localizations.dart';
+import '../../widgets/focus/request_initial_focus.dart';
+
+const _tmdbPosterBase = 'https://image.tmdb.org/t/p/w300';
+const _tmdbBackdropBase = 'https://image.tmdb.org/t/p/w1280';
+
+class SeerrDiscoverScreen extends StatefulWidget {
+  const SeerrDiscoverScreen({super.key});
+
+  @override
+  State<SeerrDiscoverScreen> createState() =>
+      _SeerrDiscoverScreenState();
+}
+
+class _SeerrDiscoverScreenState extends State<SeerrDiscoverScreen> {
+  SeerrDiscoverViewModel? _viewModel;
+  final _prefs = GetIt.instance<UserPreferences>();
+  final _scrollController = ScrollController();
+
+  SeerrDiscoverItem? _selectedItem;
+  Timer? _selectionDebounce;
+  Timer? _backdropDebounce;
+  String? _backdropUrl;
+  final _initialFocusNode = FocusNode(debugLabel: 'seerrDiscoverInitial');
+  final _loadingHoldFocusNode =
+      FocusNode(debugLabel: 'seerrDiscoverLoadingHold', skipTraversal: true);
+  bool _initialFocusResolved = false;
+  bool _isFirstRowFocused = false;
+
+  static const _selectionDelay = Duration(milliseconds: 150);
+  static const _backdropDelay = Duration(milliseconds: 200);
+
+  @override
+  void initState() {
+    super.initState();
+    _prefs.addListener(_onPrefsChanged);
+    _initialFocusNode.addListener(_onInitialFocusNodeChanged);
+    _initViewModel();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _initialFocusResolved) return;
+      if (_loadingHoldFocusNode.context == null) return;
+      _loadingHoldFocusNode.requestFocus();
+    });
+  }
+
+  Future<void> _initViewModel() async {
+    final vm = await GetIt.instance.getAsync<SeerrDiscoverViewModel>();
+    if (!mounted) return;
+    vm.addListener(_onChanged);
+    setState(() => _viewModel = vm);
+    vm.load();
+  }
+
+  @override
+  void dispose() {
+    _selectionDebounce?.cancel();
+    _backdropDebounce?.cancel();
+    _scrollController.dispose();
+    _viewModel?.removeListener(_onChanged);
+    _prefs.removeListener(_onPrefsChanged);
+    _initialFocusNode.removeListener(_onInitialFocusNodeChanged);
+    _initialFocusNode.dispose();
+    _loadingHoldFocusNode.dispose();
+    super.dispose();
+  }
+
+  void _restoreNavbarToNormalPosition() {
+    if (!_scrollController.hasClients || _scrollController.offset <= 0) return;
+    _scrollController.animateTo(
+      0,
+      duration: const Duration(milliseconds: 140),
+      curve: Curves.easeOut,
+    );
+  }
+
+  void _setFirstRowFocused(bool focused) {
+    _isFirstRowFocused = focused;
+  }
+
+  void _onInitialFocusNodeChanged() {
+    if (!_initialFocusNode.hasFocus) return;
+    _initialFocusResolved = true;
+    _initialFocusNode.removeListener(_onInitialFocusNodeChanged);
+    final targetContext = _initialFocusNode.context;
+    if (!mounted || targetContext == null) return;
+    Scrollable.ensureVisible(
+      targetContext,
+      alignment: 0.0,
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+    );
+  }
+
+  KeyEventResult _onContentKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    if (!_initialFocusResolved && _loadingHoldFocusNode.hasFocus) {
+      final key = event.logicalKey;
+      if (key == LogicalKeyboardKey.arrowUp ||
+          key == LogicalKeyboardKey.arrowDown ||
+          key == LogicalKeyboardKey.arrowLeft ||
+          key == LogicalKeyboardKey.arrowRight) {
+        return KeyEventResult.handled;
+      }
+    }
+    if (!event.logicalKey.isUpKey) return KeyEventResult.ignored;
+    if (!_isFirstRowFocused) return KeyEventResult.ignored;
+
+    _restoreNavbarToNormalPosition();
+    NavigationLayout.focusNavbarNotifier.value?.call();
+    return KeyEventResult.handled;
+  }
+
+  void _onPrefsChanged() {
+    _viewModel?.applyRowConfig();
+  }
+
+  void _onChanged() {
+    if (!mounted) return;
+    setState(() {});
+    if (_initialFocusResolved) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _initialFocusResolved || _initialFocusNode.hasFocus) {
+        return;
+      }
+      final targetContext = _initialFocusNode.context;
+      if (targetContext == null) return;
+      FocusScope.of(targetContext).requestFocus(_initialFocusNode);
+    });
+  }
+
+  bool _rowHasFocusableContent(SeerrDiscoverRow row) {
+    if (row.isGenreRow) return row.genres.isNotEmpty;
+    if (row.isNetworkRow) return row.networks.isNotEmpty;
+    if (row.isStudioRow) return row.studios.isNotEmpty;
+    return row.items.isNotEmpty;
+  }
+
+  void _onItemSelected(SeerrDiscoverItem item) {
+    _selectionDebounce?.cancel();
+    _selectionDebounce = Timer(_selectionDelay, () {
+      if (!mounted) return;
+      setState(() => _selectedItem = item);
+
+      _backdropDebounce?.cancel();
+      _backdropDebounce = Timer(_backdropDelay, () {
+        if (!mounted) return;
+        final backdrop = item.backdropPath;
+        setState(() {
+          _backdropUrl = backdrop != null ? '$_tmdbBackdropBase$backdrop' : null;
+        });
+      });
+    });
+  }
+
+  void _onItemTap(SeerrDiscoverItem item) {
+    final mediaType = item.mediaType ?? 'movie';
+    context.push(
+      Destinations.seerrMedia(item.id.toString()),
+      extra: {'mediaType': mediaType},
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      RequestInitialFocus(
+        targetNode: _initialFocusNode,
+        child: _buildScreenContent(context),
+      );
+
+  Widget _buildScreenContent(BuildContext context) {
+    final topPad = MediaQuery.of(context).padding.top;
+    final prefs = GetIt.instance<UserPreferences>();
+    final navbarPosition = prefs.get(UserPreferences.navbarPosition);
+    final backdropEnabled = prefs.get(UserPreferences.backdropEnabled);
+    final navbarHeight = navbarPosition == NavbarPosition.top
+        ? (PlatformDetection.isTV ? 95.0 : PlatformDetection.useMobileUi ? 60.0 : 80.0)
+        : 0.0;
+    final navbarIsLeft = navbarPosition == NavbarPosition.left;
+    final rowLeftInset =
+      (navbarIsLeft && !PlatformDetection.useMobileUi) ? 56.0 : 0.0;
+    final infoPanelLeft =
+      (navbarIsLeft && !PlatformDetection.useMobileUi) ? 80.0 : 48.0;
+    final infoTopInset = topPad + navbarHeight + 8;
+    return Scaffold(
+      backgroundColor: AppColorScheme.background,
+      body: NavigationLayout(
+        showBackButton: true,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (backdropEnabled) _Backdrop(url: _backdropUrl),
+            const _GradientScrim(),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _InfoPanel(item: _selectedItem, topInset: infoTopInset, leftInset: infoPanelLeft),
+                Expanded(
+                  child: Focus(
+                    focusNode: _loadingHoldFocusNode,
+                    canRequestFocus: !_initialFocusResolved,
+                    skipTraversal: true,
+                    onKeyEvent: _onContentKeyEvent,
+                    child: _buildContent(rowLeftInset: rowLeftInset),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildContent({double rowLeftInset = 0.0}) {
+    final l10n = AppLocalizations.of(context);
+    final vm = _viewModel;
+    if (vm == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (vm.error != null && vm.rows.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              vm.error!,
+              style: TextStyle(
+                color: AppColorScheme.onSurface.withValues(alpha: 0.7),
+              ),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: vm.refresh,
+              child: Text(l10n.retry),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final rows = vm.rows;
+    if (rows.isEmpty && vm.isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    var firstFocusableVisibleIndex = -1;
+    for (var i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.isLoading) break;
+      if (_rowHasFocusableContent(row)) {
+        firstFocusableVisibleIndex = i;
+        break;
+      }
+    }
+
+    return ListView.builder(
+      controller: _scrollController,
+      padding: EdgeInsets.only(left: rowLeftInset, bottom: 32),
+      itemCount: rows.length,
+      itemBuilder: (context, index) {
+        final row = rows[index];
+        if (!row.isLoading && !_rowHasFocusableContent(row)) {
+          return const SizedBox.shrink();
+        }
+        final isFirstFocusableRow = index == firstFocusableVisibleIndex;
+        final firstNode = isFirstFocusableRow ? _initialFocusNode : null;
+        if (row.isGenreRow) {
+          return _buildGenreRow(
+            row,
+            isFirstVisibleRow: isFirstFocusableRow,
+            autofocusFirst: isFirstFocusableRow,
+            firstFocusNode: firstNode,
+          );
+        }
+        if (row.isNetworkRow) {
+          return _buildNetworkRow(
+            row,
+            isFirstVisibleRow: isFirstFocusableRow,
+            autofocusFirst: isFirstFocusableRow,
+            firstFocusNode: firstNode,
+          );
+        }
+        if (row.isStudioRow) {
+          return _buildStudioRow(
+            row,
+            isFirstVisibleRow: isFirstFocusableRow,
+            autofocusFirst: isFirstFocusableRow,
+            firstFocusNode: firstNode,
+          );
+        }
+        return _buildMediaRow(
+          row,
+          index,
+          isFirstVisibleRow: isFirstFocusableRow,
+          autofocusFirst: isFirstFocusableRow,
+          firstFocusNode: firstNode,
+        );
+      },
+    );
+  }
+
+  Widget _buildMediaRow(
+    SeerrDiscoverRow row,
+    int rowIndex, {
+    bool isFirstVisibleRow = false,
+    bool autofocusFirst = false,
+    FocusNode? firstFocusNode,
+  }) {
+    final suppressFocusGlow = ThemeRegistry.active.borders.focusGlow.isNotEmpty;
+    final focusColor =
+      Color(GetIt.instance<UserPreferences>().get(UserPreferences.focusColor).colorValue);
+    final cardExpansion =
+      GetIt.instance<UserPreferences>().get(UserPreferences.cardFocusExpansion);
+    final children = <Widget>[];
+    for (var i = 0; i < row.items.length; i++) {
+      final item = row.items[i];
+      children.add(MediaCard(
+        title: item.displayTitle,
+        subtitle: _yearFromItem(item),
+        imageUrl: item.posterPath != null
+            ? '$_tmdbPosterBase${item.posterPath}'
+            : null,
+        width: 130,
+        aspectRatio: 2 / 3,
+        seerrMediaType: item.mediaType,
+        seerrStatus: item.mediaInfo?.status,
+        focusColor: focusColor,
+        cardFocusExpansion: cardExpansion,
+        suppressFocusGlow: suppressFocusGlow,
+        autofocus: autofocusFirst && i == 0,
+        focusNode: (autofocusFirst && i == 0) ? firstFocusNode : null,
+        onTap: () => _onItemTap(item),
+        onFocus: () {
+          _onItemSelected(item);
+          if (isFirstVisibleRow) {
+            _setFirstRowFocused(true);
+            _restoreNavbarToNormalPosition();
+          }
+        },
+        onFocusLost: () {
+          if (isFirstVisibleRow) {
+            _setFirstRowFocused(false);
+          }
+        },
+        onHoverStart: () => _onItemSelected(item),
+      ));
+    }
+
+    if (row.isLoading) {
+      children.add(const SizedBox(
+        width: 130,
+        child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+      ));
+    }
+
+    return NotificationListener<ScrollNotification>(
+      onNotification: (notification) {
+        if (notification is ScrollUpdateNotification &&
+            notification.metrics.extentAfter < 300 &&
+            row.hasMore &&
+            !row.isLoading) {
+          _viewModel?.loadMore(rowIndex);
+        }
+        return false;
+      },
+      child: LibraryRow(
+        title: row.title,
+        rowHeight: 237,
+        children: children,
+      ),
+    );
+  }
+
+  Widget _buildGenreRow(
+    SeerrDiscoverRow row, {
+    bool isFirstVisibleRow = false,
+    bool autofocusFirst = false,
+    FocusNode? firstFocusNode,
+  }) {
+    final mediaType = row.type == SeerrRowType.movieGenres ? 'movie' : 'tv';
+    final children = row.genres.indexed.map((entry) {
+      final index = entry.$1;
+      final genre = entry.$2;
+      final backdrop = genre.backdrops.isNotEmpty
+          ? '$_tmdbBackdropBase${genre.backdrops.first}'
+          : null;
+      return _GenreCard(
+        name: genre.name,
+        imageUrl: backdrop,
+        autofocus: autofocusFirst && index == 0,
+        focusNode: (autofocusFirst && index == 0) ? firstFocusNode : null,
+        onFocused: isFirstVisibleRow
+            ? () {
+                _setFirstRowFocused(true);
+                _restoreNavbarToNormalPosition();
+              }
+            : null,
+        onFocusLost: isFirstVisibleRow
+            ? () => _setFirstRowFocused(false)
+            : null,
+        onTap: () {
+          final uri = Uri(
+            path: Destinations.seerrBrowse,
+            queryParameters: {
+              'filterId': genre.id.toString(),
+              'filterName': genre.name,
+              'mediaType': mediaType,
+              'filterType': 'genre',
+            },
+          );
+          context.push(uri.toString());
+        },
+      );
+    }).toList();
+
+    return LibraryRow(
+      title: row.title,
+      rowHeight: 100,
+      children: children,
+    );
+  }
+
+  Widget _buildNetworkRow(
+    SeerrDiscoverRow row, {
+    bool isFirstVisibleRow = false,
+    bool autofocusFirst = false,
+    FocusNode? firstFocusNode,
+  }) {
+    final children = row.networks.indexed.map((entry) {
+      final index = entry.$1;
+      final network = entry.$2;
+      return _LogoCard(
+        name: network.name,
+        logoUrl: network.logoPath,
+        autofocus: autofocusFirst && index == 0,
+        focusNode: (autofocusFirst && index == 0) ? firstFocusNode : null,
+        onFocused: isFirstVisibleRow
+            ? () {
+                _setFirstRowFocused(true);
+                _restoreNavbarToNormalPosition();
+              }
+            : null,
+        onFocusLost: isFirstVisibleRow
+            ? () => _setFirstRowFocused(false)
+            : null,
+        onTap: () {
+          final uri = Uri(
+            path: Destinations.seerrBrowse,
+            queryParameters: {
+              'filterId': network.id.toString(),
+              'filterName': network.name,
+              'mediaType': 'tv',
+              'filterType': 'network',
+            },
+          );
+          context.push(uri.toString());
+        },
+      );
+    }).toList();
+
+    return LibraryRow(
+      title: row.title,
+      rowHeight: 100,
+      children: children,
+    );
+  }
+
+  Widget _buildStudioRow(
+    SeerrDiscoverRow row, {
+    bool isFirstVisibleRow = false,
+    bool autofocusFirst = false,
+    FocusNode? firstFocusNode,
+  }) {
+    final children = row.studios.indexed.map((entry) {
+      final index = entry.$1;
+      final studio = entry.$2;
+      return _LogoCard(
+        name: studio.name,
+        logoUrl: studio.logoPath,
+        autofocus: autofocusFirst && index == 0,
+        focusNode: (autofocusFirst && index == 0) ? firstFocusNode : null,
+        onFocused: isFirstVisibleRow
+            ? () {
+                _setFirstRowFocused(true);
+                _restoreNavbarToNormalPosition();
+              }
+            : null,
+        onFocusLost: isFirstVisibleRow
+            ? () => _setFirstRowFocused(false)
+            : null,
+        onTap: () {
+          final uri = Uri(
+            path: Destinations.seerrBrowse,
+            queryParameters: {
+              'filterId': studio.id.toString(),
+              'filterName': studio.name,
+              'mediaType': 'movie',
+              'filterType': 'studio',
+            },
+          );
+          context.push(uri.toString());
+        },
+      );
+    }).toList();
+
+    return LibraryRow(
+      title: row.title,
+      rowHeight: 100,
+      children: children,
+    );
+  }
+
+  static String? _yearFromItem(SeerrDiscoverItem item) {
+    final date = item.releaseDate ?? item.firstAirDate;
+    if (date == null || date.length < 4) return null;
+    return date.substring(0, 4);
+  }
+}
+class _Backdrop extends StatelessWidget {
+  final String? url;
+  const _Backdrop({this.url});
+
+  @override
+  Widget build(BuildContext context) {
+    return FullscreenBackdropSwitcher(
+      imageUrl: url,
+      duration: const Duration(milliseconds: 600),
+      fadeInDuration: Duration.zero,
+    );
+  }
+}
+
+class _GradientScrim extends StatelessWidget {
+  const _GradientScrim();
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            AppColorScheme.scrim.withValues(alpha: 0.8),
+            AppColorScheme.scrim.withValues(alpha: 0.33),
+            AppColorScheme.scrim.withValues(alpha: 0.87),
+          ],
+          stops: [0.0, 0.25, 0.6],
+        ),
+      ),
+      child: const SizedBox.expand(),
+    );
+  }
+}
+
+class _InfoPanel extends StatelessWidget {
+  final SeerrDiscoverItem? item;
+  final double topInset;
+  final double leftInset;
+  const _InfoPanel({this.item, required this.topInset, this.leftInset = 48.0});
+
+  @override
+  Widget build(BuildContext context) {
+    if (item == null) return const SizedBox(height: 140);
+
+    final theme = Theme.of(context);
+    final shadows = [
+      Shadow(
+        blurRadius: 4,
+        color: AppColorScheme.scrim.withValues(alpha: 0.54),
+      ),
+    ];
+    final year = _SeerrDiscoverScreenState._yearFromItem(item!);
+    final rating = item!.voteAverage;
+    final l10n = AppLocalizations.of(context);
+    final mediaType = item!.mediaType == 'tv' ? l10n.series : l10n.movie;
+
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 300),
+      child: Padding(
+        key: ValueKey(item!.id),
+        padding: EdgeInsets.fromLTRB(leftInset, topInset, 48, 8),
+        child: SizedBox(
+          width: double.infinity,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                item!.displayTitle,
+                style: theme.textTheme.headlineSmall?.copyWith(
+                  color: AppColorScheme.onSurface,
+                  fontWeight: FontWeight.bold,
+                  shadows: shadows,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  if (year != null)
+                    Text(year,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: AppColorScheme.onSurface.withValues(alpha: 0.7),
+                          shadows: shadows,
+                        )),
+                  if (year != null && rating != null)
+                    const SizedBox(width: 12),
+                  if (rating != null)
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.star, size: 16, color: AppColors.orange500),
+                        const SizedBox(width: 4),
+                        Text(
+                          rating.toStringAsFixed(1),
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: AppColorScheme.onSurface.withValues(alpha: 0.7),
+                            shadows: shadows,
+                          ),
+                        ),
+                      ],
+                    ),
+                  const SizedBox(width: 12),
+                  Text(mediaType,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: AppColorScheme.onSurface.withValues(alpha: 0.54),
+                        shadows: shadows,
+                      )),
+                ],
+              ),
+              const SizedBox(height: 6),
+              SizedBox(
+                height: (theme.textTheme.bodySmall?.fontSize ?? 12) * 1.4 * 3,
+                child: item!.overview != null && item!.overview!.isNotEmpty
+                    ? Text(
+                        item!.overview!,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: AppColorScheme.onSurface.withValues(alpha: 0.8),
+                          shadows: shadows,
+                        ),
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                      )
+                    : const SizedBox.shrink(),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _GenreCard extends StatefulWidget {
+  final String name;
+  final String? imageUrl;
+  final VoidCallback? onTap;
+  final VoidCallback? onFocused;
+  final VoidCallback? onFocusLost;
+  final bool autofocus;
+  final FocusNode? focusNode;
+
+  const _GenreCard({
+    required this.name,
+    this.imageUrl,
+    this.onTap,
+    this.onFocused,
+    this.onFocusLost,
+    this.autofocus = false,
+    this.focusNode,
+  });
+
+  @override
+  State<_GenreCard> createState() => _GenreCardState();
+}
+
+class _GenreCardState extends State<_GenreCard> with FocusStateMixin {
+
+  @override
+  Widget build(BuildContext context) {
+    final focusColor =
+        Color(GetIt.instance<UserPreferences>().get(UserPreferences.focusColor).colorValue);
+    return Focus(
+      focusNode: widget.focusNode,
+      autofocus: widget.autofocus,
+      onKeyEvent: (_, event) {
+        if (!event.logicalKey.isSelectKey) return KeyEventResult.ignored;
+        if (event is KeyDownEvent) {
+          widget.onTap?.call();
+        }
+        return KeyEventResult.handled;
+      },
+      onFocusChange: (focused) {
+        setFocused(focused);
+        if (focused) {
+          widget.onFocused?.call();
+        } else {
+          widget.onFocusLost?.call();
+        }
+      },
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          onEnter: (_) => setHovered(true),
+          onExit: (_) => setHovered(false),
+          child: AnimatedScale(
+            scale: showFocusBorder ? 1.05 : 1.0,
+            duration: const Duration(milliseconds: 150),
+            child: SizedBox(
+              width: 180,
+              height: 90,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    if (widget.imageUrl != null)
+                      CachedNetworkImage(
+                        imageUrl: widget.imageUrl!,
+                        fit: BoxFit.cover,
+                        errorWidget: (_, _, _) => Container(
+                          color: AppColorScheme.surfaceVariant,
+                        ),
+                      )
+                    else
+                      Container(color: AppColorScheme.surfaceVariant),
+                    Container(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            AppColorScheme.scrim.withValues(alpha: 0),
+                            AppColorScheme.scrim.withValues(alpha: 0.73),
+                          ],
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      bottom: 8,
+                      left: 8,
+                      right: 8,
+                      child: Text(
+                        widget.name,
+                        style: TextStyle(
+                          color: AppColorScheme.onSurface,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 14,
+                          shadows: [
+                            Shadow(
+                              blurRadius: 4,
+                              color: AppColorScheme.scrim,
+                            ),
+                          ],
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (showFocusBorder)
+                      Container(
+                        decoration: BoxDecoration(
+                          border: Border.fromBorderSide(
+                            ThemeRegistry.active.borders.focusBorder.copyWith(
+                              color: focusColor,
+                              width: 2,
+                            ),
+                          ),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LogoCard extends StatefulWidget {
+  final String name;
+  final String? logoUrl;
+  final VoidCallback? onTap;
+  final VoidCallback? onFocused;
+  final VoidCallback? onFocusLost;
+  final bool autofocus;
+  final FocusNode? focusNode;
+
+  const _LogoCard({
+    required this.name,
+    this.logoUrl,
+    this.onTap,
+    this.onFocused,
+    this.onFocusLost,
+    this.autofocus = false,
+    this.focusNode,
+  });
+
+  @override
+  State<_LogoCard> createState() => _LogoCardState();
+}
+
+class _LogoCardState extends State<_LogoCard> with FocusStateMixin {
+
+  @override
+  Widget build(BuildContext context) {
+    final focusColor =
+        Color(GetIt.instance<UserPreferences>().get(UserPreferences.focusColor).colorValue);
+    return Focus(
+      focusNode: widget.focusNode,
+      autofocus: widget.autofocus,
+      onKeyEvent: (_, event) {
+        if (!event.logicalKey.isSelectKey) return KeyEventResult.ignored;
+        if (event is KeyDownEvent) {
+          widget.onTap?.call();
+        }
+        return KeyEventResult.handled;
+      },
+      onFocusChange: (focused) {
+        setFocused(focused);
+        if (focused) {
+          widget.onFocused?.call();
+        } else {
+          widget.onFocusLost?.call();
+        }
+      },
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          onEnter: (_) => setHovered(true),
+          onExit: (_) => setHovered(false),
+          child: AnimatedScale(
+            scale: showFocusBorder ? 1.05 : 1.0,
+            duration: const Duration(milliseconds: 150),
+            child: SizedBox(
+              width: 180,
+              height: 90,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: AppColorScheme.surface,
+                  borderRadius: BorderRadius.circular(8),
+                  border: showFocusBorder
+                      ? Border.fromBorderSide(
+                          ThemeRegistry.active.borders.focusBorder.copyWith(
+                            color: focusColor,
+                            width: 2,
+                          ),
+                        )
+                      : null,
+                ),
+                child: widget.logoUrl != null
+                    ? Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: CachedNetworkImage(
+                          imageUrl: widget.logoUrl!,
+                          fit: BoxFit.contain,
+                          errorWidget: (_, _, _) => Center(
+                            child: Text(
+                              widget.name,
+                              style: TextStyle(
+                                color: AppColorScheme.onSurface.withValues(alpha: 0.7),
+                                fontSize: 13,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        ),
+                      )
+                    : Center(
+                        child: Text(
+                          widget.name,
+                          style: TextStyle(
+                            color: AppColorScheme.onSurface.withValues(alpha: 0.7),
+                            fontSize: 13,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

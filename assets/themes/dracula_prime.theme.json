@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "id": "dracula_prime",
+  "displayName": "Dracula Prime",
+  "description": "The legendary dark palette — pastel purple, vampire cyan, lush green, and charcoal slate.",
+  "colors": {
+    "background": "#FF1E1F29",
+    "onBackground": "#FFFFFFFF",
+    "surface": "#FF282A36",
+    "onSurface": "#FFFFFFFF",
+    "surfaceVariant": "#FF343746",
+    "scrim": "#CC1E1F29",
+    "accent": "#FFBD93F9",
+    "onAccent": "#FF1E1F29",
+    "buttonNormal": "#FF383A59",
+    "buttonFocused": "#FF8BE9FD",
+    "buttonDisabled": "#FF191A23",
+    "buttonActive": "#FF44475A",
+    "onButtonNormal": "#FFFFFFFF",
+    "onButtonFocused": "#FF1E1F29",
+    "onButtonDisabled": "#FF6272A4",
+    "inputBackground": "#FF21222C",
+    "inputFocused": "#FF313444",
+    "inputBorder": "#FF44475A",
+    "inputBorderFocused": "#FF8BE9FD",
+    "rangeTrack": "#FF44475A",
+    "rangeProgress": "#FFBD93F9",
+    "rangeThumb": "#FF50FA7B",
+    "seekbarBuffered": "#80BD93F9",
+    "badgeBackground": "#FFBD93F9",
+    "onBadge": "#FF1E1F29",
+    "badgeUnplayed": "#FF8BE9FD",
+    "badgeWatched": "#FF50FA7B",
+    "recordingActive": "#FFFF5555",
+    "recordingScheduled": "#FFFFB86C"
+  },
+  "borders": {
+    "cardBorder": { "color": "#1ABD93F9", "width": 1 },
+    "chipBorder": { "color": "#40BD93F9", "width": 1 },
+    "focusBorder": { "color": "#FF8BE9FD", "width": 2 },
+    "cardRadius": 8,
+    "chipRadius": 999,
+    "chipBackground": "#1ABD93F9",
+    "focusGlow": [
+      {
+        "color": "#558BE9FD",
+        "blurRadius": 12.0,
+        "spreadRadius": 2.0
+      }
+    ]
+  },
+  "semantic": {
+    "statusAvailable": "#FF50FA7B",
+    "statusRequested": "#FFBD93F9",
+    "statusPending": "#FFFFB86C",
+    "statusDownloading": "#FF8BE9FD",
+    "mediaTypeBadgeMovie": "#FFBD93F9",
+    "mediaTypeBadgeSeries": "#FF8BE9FD"
+  }
+}

@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "id": "midnight",
+  "displayName": "Midnight",
+  "description": "Deep navy dark theme with cyan accents.",
+  "colors": {
+    "background": "#FF0B1020",
+    "onBackground": "#FFE8EDF7",
+    "surface": "#FF131A2E",
+    "onSurface": "#FFE8EDF7",
+    "surfaceVariant": "#FF1C2740",
+    "scrim": "#CC000000",
+    "accent": "#FF4F9DFF",
+    "onAccent": "#FF05080F",
+    "buttonNormal": "#FF1C2740",
+    "buttonFocused": "#FF4F9DFF",
+    "buttonDisabled": "#FF141A2A",
+    "buttonActive": "#FF26314D",
+    "onButtonNormal": "#FFE8EDF7",
+    "onButtonFocused": "#FF05080F",
+    "onButtonDisabled": "#FF5B6680",
+    "inputBackground": "#FF1C2740",
+    "inputFocused": "#FF26314D",
+    "inputBorder": "#FF33405C",
+    "inputBorderFocused": "#FF4F9DFF",
+    "rangeTrack": "#FF33405C",
+    "rangeProgress": "#FF4F9DFF",
+    "rangeThumb": "#FF4F9DFF",
+    "seekbarBuffered": "#80E8EDF7",
+    "badgeBackground": "#FF4F9DFF",
+    "onBadge": "#FF05080F",
+    "badgeUnplayed": "#FF4F9DFF",
+    "badgeWatched": "#FF4CAF50",
+    "recordingActive": "#FFEF4444",
+    "recordingScheduled": "#FFFF9800"
+  },
+  "borders": {
+    "cardBorder": { "color": "#00000000", "width": 1 },
+    "chipBorder": { "color": "#554F9DFF", "width": 1 },
+    "focusBorder": { "color": "#FF4F9DFF", "width": 2 },
+    "cardRadius": 10,
+    "chipRadius": 999,
+    "chipBackground": "#1F4F9DFF",
+    "focusGlow": []
+  },
+  "semantic": {
+    "statusAvailable": "#FF22C55E",
+    "statusRequested": "#FF9333EA",
+    "statusPending": "#FFEAB308",
+    "statusDownloading": "#FF6366F1",
+    "mediaTypeBadgeMovie": "#FF3B82F6",
+    "mediaTypeBadgeShow": "#FF8B5CF6"
+  },
+  "book": {
+    "background": "#FF0B1020",
+    "accent": "#FF4F9DFF",
+    "mutedText": "#FF9EDBFF",
+    "primaryText": "#FFDCEFFF",
+    "sectionTitle": "#FFFFE6C3",
+    "divider": "#223E5F82",
+    "placeholder": "#FF2C77B7",
+    "shadow": "#24000000",
+    "gradientTop": "#FF18263D",
+    "gradientBottom": "#FF0B1424",
+    "inactiveChip": "#556388A8",
+    "placeholderPalette": [
+      "#FF1A5C9A", "#FF2E7D32", "#FF6A1B9A", "#FF00695C", "#FFC62828",
+      "#FF4527A0", "#FF558B2F", "#FF283593", "#FF4E342E", "#FF00838F"
+    ]
+  }
+}

@@ -1,0 +1,1829 @@
+import 'dart:async';
+import 'package:dio/dio.dart';
+import 'package:webview_flutter/webview_flutter.dart';
+import 'package:custom_tv_text_field/custom_tv_text_field.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:get_it/get_it.dart';
+import 'package:go_router/go_router.dart';
+import 'package:voltix_design/voltix_design.dart';
+import 'package:server_core/server_core.dart';
+
+import '../../../auth/models/server.dart';
+import '../../../auth/models/user.dart';
+import '../../../auth/repositories/server_repository.dart';
+import '../../../auth/repositories/session_repository.dart';
+import '../../../auth/repositories/user_repository.dart';
+import '../../../auth/store/authentication_preferences.dart';
+import '../../../auth/store/authentication_store.dart';
+import '../../../auth/store/voltix_session_store.dart';
+import '../../../data/services/device_id_service.dart';
+import '../../../data/services/media_server_client_factory.dart';
+import '../../../data/services/user_settings_sync_service.dart';
+import '../../../data/services/voltix_api_service.dart';
+import '../../../data/services/voltix_session_service.dart';
+import '../../../preference/user_preferences.dart';
+import '../../../util/platform_detection.dart';
+import '../../navigation/app_router.dart';
+import '../../navigation/destinations.dart';
+import '../../widgets/login_scaffold.dart';
+import 'voltix_register_screen.dart';
+import 'package:logger/logger.dart';
+
+
+final _kAccent = AppColorScheme.accent;
+
+/// Login screen for Voltix credentials.
+///
+/// Users enter their Voltix username and password. The screen calls
+/// [VoltixApiService.directLogin] which authenticates against the Voltix
+/// backend, resolves the user's Lumistream streaming account, and returns
+/// a session token plus a Jellyfin proxy URL.
+///
+/// On success the screen auto-adds the Lumistream server to
+/// [ServerRepository], creates a local Jellyfin session, and navigates
+/// to [Destinations.home].
+class VoltixLoginScreen extends StatefulWidget {
+  const VoltixLoginScreen({super.key});
+
+  @override
+  State<VoltixLoginScreen> createState() => _VoltixLoginScreenState();
+}
+
+class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
+  final _usernameController = TextEditingController();
+  final _passwordController = TextEditingController();
+  final _logger = Logger();
+
+  final _usernameFocus = FocusNode();
+  final _passwordFocus = FocusNode();
+  final _signInFocus = FocusNode();
+  final _macRefreshFocus = FocusNode();
+  final _macConnectFocus = FocusNode();
+  final _envToggleFocus = FocusNode(debugLabel: 'LoginEnvToggle');
+  final _usernameTvFieldKey = GlobalKey<CustomTVTextFieldState>();
+  final _passwordTvFieldKey = GlobalKey<CustomTVTextFieldState>();
+
+  int _wizardStep = 0; // 0: Welcome, 2: Choose Login/Register, 3: Register WebView, 4: Link Code, 5: Username/Password
+  String? _pairingCode;
+  Timer? _pairingTimer;
+  late final WebViewController _webViewController;
+
+  final _nextWelcomeFocus = FocusNode(debugLabel: 'NextWelcomeFocus');
+  final _loginChooseFocus = FocusNode(debugLabel: 'LoginChooseFocus');
+  final _registerChooseFocus = FocusNode(debugLabel: 'RegisterChooseFocus');
+  final _backRegisterFocus = FocusNode(debugLabel: 'BackRegisterFocus');
+  final _usePasswordFocus = FocusNode(debugLabel: 'UsePasswordFocus');
+  final _getNewCodeFocus = FocusNode(debugLabel: 'GetNewCodeFocus');
+  final _backLoginFocus = FocusNode(debugLabel: 'BackLoginFocus');
+
+  bool _isLoading = false;
+  Timer? _postLoginWatchdog;
+  String? _errorMessage;
+  bool _tvKeyboardVisible = false;
+  String _deviceMac = '...';
+  bool _useTestServer = false;
+
+  bool get _isVoltix => ThemeRegistry.active.id == ThemeRegistry.voltixId;
+
+  Color _loginForeground(double alpha) {
+    return (_isVoltix ? Colors.white : AppColorScheme.onSurface).withValues(
+      alpha: alpha,
+    );
+  }
+
+  Color get _loginForegroundSolid {
+    return _isVoltix ? Colors.white : AppColorScheme.onSurface;
+  }
+
+  Color get _loginErrorColor {
+    return _isVoltix
+        ? const Color(0xFFef4444)
+        : AppColorScheme.statusRequested;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    final userPrefs = GetIt.instance<UserPreferences>();
+    _useTestServer = userPrefs.get(UserPreferences.voltixUseTestServer);
+    
+    _webViewController = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onProgress: (int progress) {},
+          onPageStarted: (String url) {},
+          onPageFinished: (String url) {},
+          onWebResourceError: (WebResourceError error) {},
+        ),
+      );
+
+    _setupFocusHandlers();
+    _loadDeviceMac();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _nextWelcomeFocus.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _pairingTimer?.cancel();
+    _postLoginWatchdog?.cancel();
+    _usernameController.dispose();
+    _passwordController.dispose();
+    _usernameFocus.dispose();
+    _passwordFocus.dispose();
+    _signInFocus.dispose();
+    _macRefreshFocus.dispose();
+    _macConnectFocus.dispose();
+    _envToggleFocus.dispose();
+    
+    _nextWelcomeFocus.dispose();
+    _loginChooseFocus.dispose();
+    _registerChooseFocus.dispose();
+    _backRegisterFocus.dispose();
+    _usePasswordFocus.dispose();
+    _getNewCodeFocus.dispose();
+    _backLoginFocus.dispose();
+    super.dispose();
+  }
+
+  void _toggleEnvironment() async {
+    final nextVal = !_useTestServer;
+    final userPrefs = GetIt.instance<UserPreferences>();
+    await userPrefs.set(UserPreferences.voltixUseTestServer, nextVal);
+    setState(() {
+      _useTestServer = nextVal;
+    });
+    // Restore focus to the toggle after the rebuild
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && !_envToggleFocus.hasFocus) {
+        _envToggleFocus.requestFocus();
+      }
+    });
+  }
+
+  // ───────────────────── Focus / D-pad ─────────────────────
+
+  void _setupFocusHandlers() {
+    _nextWelcomeFocus.onKeyEvent = (node, event) {
+      if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
+      if (event.logicalKey == LogicalKeyboardKey.enter || event.logicalKey == LogicalKeyboardKey.select) {
+        setState(() {
+          _wizardStep = 2;
+        });
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    };
+
+    _loginChooseFocus.onKeyEvent = (node, event) {
+      if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
+      if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+        _registerChooseFocus.requestFocus();
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.enter || event.logicalKey == LogicalKeyboardKey.select) {
+        setState(() {
+          _wizardStep = 4;
+        });
+        _startPairing();
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _usePasswordFocus.requestFocus();
+        });
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    };
+
+    _registerChooseFocus.onKeyEvent = (node, event) {
+      if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
+      if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+        _loginChooseFocus.requestFocus();
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.enter || event.logicalKey == LogicalKeyboardKey.select) {
+        _startRegisterWizard();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    };
+
+    _backRegisterFocus.onKeyEvent = (node, event) {
+      if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
+      if (event.logicalKey == LogicalKeyboardKey.enter || event.logicalKey == LogicalKeyboardKey.select) {
+        setState(() {
+          _wizardStep = 2;
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _registerChooseFocus.requestFocus();
+        });
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    };
+
+    _usePasswordFocus.onKeyEvent = (node, event) {
+      if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
+      if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+        _getNewCodeFocus.requestFocus();
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+        _backLoginFocus.requestFocus();
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.enter || event.logicalKey == LogicalKeyboardKey.select) {
+        setState(() {
+          _wizardStep = 5;
+          _errorMessage = null;
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _usernameFocus.requestFocus();
+        });
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    };
+
+    _getNewCodeFocus.onKeyEvent = (node, event) {
+      if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
+      if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+        _usePasswordFocus.requestFocus();
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.enter || event.logicalKey == LogicalKeyboardKey.select) {
+        _startPairing();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    };
+
+    _backLoginFocus.onKeyEvent = (node, event) {
+      if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
+      if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+        _usePasswordFocus.requestFocus();
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.enter || event.logicalKey == LogicalKeyboardKey.select) {
+        _pairingTimer?.cancel();
+        setState(() {
+          _wizardStep = 2;
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _loginChooseFocus.requestFocus();
+        });
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    };
+
+    _envToggleFocus.onKeyEvent = (node, event) {
+      if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
+      if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+        _usernameFocus.requestFocus();
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+        _backLoginFocus.requestFocus();
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.select || event.logicalKey == LogicalKeyboardKey.enter) {
+        _toggleEnvironment();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    };
+
+    _usernameFocus.onKeyEvent = (node, event) {
+      if (_handleTvFieldOpen(event, _usernameFocus)) return KeyEventResult.handled;
+      return _verticalNav(event, up: _envToggleFocus, down: _passwordFocus);
+    };
+
+    _passwordFocus.onKeyEvent = (node, event) {
+      if (_handleTvFieldOpen(event, _passwordFocus)) return KeyEventResult.handled;
+      return _verticalNav(event, up: _usernameFocus, down: _signInFocus);
+    };
+
+    _signInFocus.onKeyEvent = (node, event) {
+      if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
+      if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+        _passwordFocus.requestFocus();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    };
+  }
+
+  bool _handleTvFieldOpen(KeyEvent event, FocusNode focusNode) {
+    if (!PlatformDetection.isTV || _isLoading) return false;
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return false;
+
+    if (event.logicalKey == LogicalKeyboardKey.goBack ||
+        event.logicalKey == LogicalKeyboardKey.escape) {
+      final tvFieldKey = focusNode == _usernameFocus
+          ? _usernameTvFieldKey
+          : _passwordTvFieldKey;
+      if (event is KeyDownEvent &&
+          (tvFieldKey.currentState?.isKeyboardVisible ?? false)) {
+        tvFieldKey.currentState?.closeKeyboard();
+        focusNode.requestFocus();
+        return true;
+      }
+      return false;
+    }
+
+    if (event.logicalKey == LogicalKeyboardKey.enter ||
+        event.logicalKey == LogicalKeyboardKey.select) {
+      if (!focusNode.hasFocus) focusNode.requestFocus();
+      if (focusNode == _usernameFocus) {
+        _usernameTvFieldKey.currentState?.openKeyboard();
+      } else if (focusNode == _passwordFocus) {
+        _passwordTvFieldKey.currentState?.openKeyboard();
+      }
+      return true;
+    }
+    return false;
+  }
+
+  KeyEventResult _verticalNav(
+    KeyEvent event, {
+    FocusNode? up,
+    FocusNode? down,
+  }) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.arrowUp && up != null) {
+      up.requestFocus();
+      return KeyEventResult.handled;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.arrowDown && down != null) {
+      down.requestFocus();
+      return KeyEventResult.handled;
+    }
+    // Block left/right arrows to prevent unexpected focus jumps on TV
+    if (event.logicalKey == LogicalKeyboardKey.arrowLeft ||
+        event.logicalKey == LogicalKeyboardKey.arrowRight) {
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  void _handleTvKeyboardVisibility(
+    bool visible,
+    GlobalKey<CustomTVTextFieldState> fieldKey,
+  ) {
+    if (_tvKeyboardVisible != visible) {
+      setState(() => _tvKeyboardVisible = visible);
+    }
+    if (!visible) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final fieldContext = fieldKey.currentContext;
+      if (fieldContext == null || !mounted) return;
+      Scrollable.ensureVisible(
+        fieldContext,
+        alignment: 0.12,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
+  // ───────────────────── MAC / Device ID ─────────────────────
+
+  Future<void> _loadDeviceMac() async {
+    final deviceIdService = GetIt.instance<DeviceIdService>();
+    final mac = await deviceIdService.getDeviceMac();
+    if (mounted) setState(() => _deviceMac = mac);
+  }
+
+
+
+  Future<void> _startPairing() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+      _pairingCode = null;
+    });
+
+    try {
+      final voltixApi = GetIt.instance<VoltixApiService>();
+      final deviceInfo = GetIt.instance<DeviceInfo>();
+      final dio = Dio();
+      final response = await dio.post(
+        '${voltixApi.baseUrl}/api/auth/pair/code',
+        data: {
+          'deviceId': _deviceMac,
+          // Send the real device name (e.g. "Samsung QN75…") so the pairing
+          // approval page and connectivity management show the actual device
+          // this code was generated on, instead of a generic "Android App".
+          'deviceName': deviceInfo.name,
+          'deviceType': PlatformDetection.isTV ? 'tv' : 'mobile',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final data = response.data as Map<String, dynamic>;
+        setState(() {
+          _pairingCode = data['code'] as String?;
+          _isLoading = false;
+        });
+
+        // Start polling
+        _startPolling(_pairingCode!);
+      } else {
+        throw Exception('Failed to generate pairing code');
+      }
+    } catch (e) {
+      _logger.e('[VoltixLogin] Failed to start pairing: $e');
+      setState(() {
+        _isLoading = false;
+        _errorMessage = 'Failed to generate code. Please try again.';
+      });
+    }
+  }
+
+  void _startPolling(String code) {
+    _pairingTimer?.cancel();
+    _pairingTimer = Timer.periodic(const Duration(seconds: 4), (timer) async {
+      try {
+        final voltixApi = GetIt.instance<VoltixApiService>();
+        final dio = Dio();
+        final response = await dio.get(
+          '${voltixApi.baseUrl}/api/auth/pair/status',
+          queryParameters: {
+            'code': code,
+            'deviceId': _deviceMac,
+          },
+        );
+
+        if (response.statusCode == 200) {
+          final data = response.data as Map<String, dynamic>;
+          final status = data['status'] as String?;
+          final token = data['token'] as String?;
+
+          if (status == 'APPROVED' && token != null) {
+            timer.cancel();
+            _onPairingApproved(token);
+          } else if (status == 'EXPIRED') {
+            timer.cancel();
+            setState(() {
+              _errorMessage = 'Pairing code expired. Please get a new code.';
+              _pairingCode = null;
+            });
+          }
+        }
+      } catch (e) {
+        _logger.w('[VoltixLogin] Error polling pairing status: $e');
+      }
+    });
+  }
+
+  Future<void> _onPairingApproved(String token, {bool forceReplace = false}) async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    // Pairing must always end on a screen. Post-login does a lot of optional
+    // work — multi-server auth, cloud-settings prompt, taste-profile sync —
+    // and any one of those stalling used to leave this screen spinning
+    // indefinitely. If nothing has navigated in 45s, force it.
+    _postLoginWatchdog?.cancel();
+    _postLoginWatchdog = Timer(const Duration(seconds: 45), () {
+      if (!_isLoading) return;
+      _logger.w('[VoltixLogin] Post-login watchdog fired — forcing navigation');
+      final username =
+          GetIt.instance<VoltixSessionStore>().username ?? '';
+      _navigatePostLogin(username);
+    });
+
+    try {
+      final voltixApi = GetIt.instance<VoltixApiService>();
+      final voltixStore = GetIt.instance<VoltixSessionStore>();
+      
+      final sessionResult = await voltixApi.validateSession(
+        token,
+        forceReplace: forceReplace,
+      );
+      final loginResult = VoltixLoginResult(
+        sessionToken: token,
+        user: sessionResult.user,
+        activeServer: sessionResult.activeServer ?? sessionResult.servers.first,
+        servers: sessionResult.servers,
+        jellyfinReady: sessionResult.jellyfinReady,
+        iptvReady: sessionResult.iptvReady,
+      );
+
+      // Save session in VoltixSessionStore
+      await voltixStore.save(
+        sessionToken: token,
+        userId: sessionResult.user.id,
+        username: sessionResult.user.username,
+        displayName: sessionResult.user.displayName,
+        activeServerId: loginResult.activeServer.id,
+        activeServerName: loginResult.activeServer.name,
+        activeServerProxyUrl: loginResult.activeServer.proxyUrl,
+        isAdmin: sessionResult.user.isAdmin,
+      );
+
+      // Complete login configuration using the loginResult
+      await _configureJellyfinServer(loginResult, token);
+    } on VoltixApiException catch (e) {
+      if (!mounted) return;
+      if (!forceReplace && _isDeviceLimitError(e.message)) {
+        setState(() => _isLoading = false);
+        _promptDeviceLimit(
+          e.message,
+          onConfirm: () => unawaited(_onPairingApproved(token, forceReplace: true)),
+        );
+        return;
+      }
+      _finishWithError(e.message);
+    } catch (e) {
+      _logger.e('[VoltixLogin] Failed to validate paired session: $e');
+      if (!mounted) return;
+      if (!forceReplace && _isDeviceLimitError('$e')) {
+        setState(() => _isLoading = false);
+        _promptDeviceLimit(
+          '$e',
+          onConfirm: () => unawaited(_onPairingApproved(token, forceReplace: true)),
+        );
+        return;
+      }
+      setState(() {
+        _isLoading = false;
+        _errorMessage = 'Failed to complete pairing authentication.';
+      });
+    }
+  }
+
+  void _startRegisterWizard() {
+    final voltixApi = GetIt.instance<VoltixApiService>();
+    _webViewController.loadRequest(Uri.parse('${voltixApi.baseUrl}/register'));
+    setState(() {
+      _wizardStep = 3;
+    });
+  }
+
+
+  void _navigatePostLogin(String username) {
+    _postLoginWatchdog?.cancel();
+    const target = Destinations.home;
+
+    // Route through the router, not this widget's context.
+    //
+    // The old `if (!mounted) return;` made login's final step conditional on
+    // the screen still being alive. Anything that disposed it mid-flow — a
+    // router redirect after the session was torn down, a rebuild while the
+    // cloud-data dialog was open — silently skipped navigation and left the
+    // user on the logo-and-spinner state with no error and no way forward.
+    if (mounted) {
+      context.go(target);
+    } else {
+      debugPrint('⚡🎯 [VoltixLogin] Screen disposed mid-login — navigating via router to $target');
+      appRouter.go(target);
+    }
+  }
+
+  // ───────────────────── Login logic ─────────────────────
+
+  Future<void> _login() => _doLogin();
+
+  Future<void> _doLogin({bool forceReplace = false}) async {
+    final username = _usernameController.text.trim();
+    final password = _passwordController.text;
+
+    if (username.isEmpty || password.isEmpty) {
+      setState(() => _errorMessage = 'Please enter your username and password');
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final voltixApi = GetIt.instance<VoltixApiService>();
+      final deviceInfo = GetIt.instance<DeviceInfo>();
+
+      final deviceType = PlatformDetection.isTV
+          ? 'tv'
+          : (PlatformDetection.isAndroid || PlatformDetection.isIOS)
+              ? 'mobile'
+              : 'desktop';
+
+      final result = await voltixApi.directLogin(
+        username: username,
+        password: password,
+        deviceName: deviceInfo.name,
+        deviceType: deviceType,
+        macAddress: _deviceMac != '...' ? _deviceMac : null,
+        forceReplace: forceReplace,
+      );
+
+      if (!mounted) return;
+
+      // Persist the Voltix session. Store Voltix Primary as the active server
+      // when it's assigned, so users always land there rather than Extra/4K.
+      final primaryForSave =
+          preferPrimaryServer(result.servers, fallback: result.activeServer) ??
+              result.activeServer;
+      final sessionStore = GetIt.instance<VoltixSessionStore>();
+      await sessionStore.save(
+        sessionToken: result.sessionToken,
+        userId: result.user.id,
+        username: result.user.username,
+        displayName: result.user.displayName,
+        activeServerId: primaryForSave.id,
+        activeServerName: primaryForSave.name,
+        activeServerProxyUrl: primaryForSave.proxyUrl,
+      );
+
+      // Auto-configure the Lumistream Jellyfin server
+      await _configureJellyfinServer(result);
+    } on VoltixApiException catch (e) {
+      if (!mounted) return;
+      // Device limit reached: notify and offer to disconnect the other device
+      // and continue here (backend enforces the actual limit + resume).
+      if (!forceReplace && _isDeviceLimitError(e.message)) {
+        setState(() => _isLoading = false);
+        _promptDeviceLimit(e.message);
+        return;
+      }
+      _finishWithError(e.message);
+    } catch (e) {
+      if (!mounted) return;
+      _finishWithError('Connection failed. Please check your internet.');
+    }
+  }
+
+  bool _isDeviceLimitError(String msg) {
+    final m = msg.toLowerCase();
+    return m.contains('device limit') ||
+        m.contains('limit reached') ||
+        m.contains('active connection') ||
+        m.contains('already connected') ||
+        (m.contains('too many') &&
+            (m.contains('device') || m.contains('connection'))) ||
+        (m.contains('maximum') && m.contains('device'));
+  }
+
+  void _promptDeviceLimit(String message, {VoidCallback? onConfirm}) {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF0F141C),
+        title: const Text('Device limit reached',
+            style: TextStyle(color: Colors.white)),
+        content: Text(
+          '$message\n\nThis account already has an active connection on another '
+          'device. Disconnect it and continue on this device?',
+          style: const TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              if (onConfirm != null) {
+                onConfirm();
+              } else {
+                unawaited(_doLogin(forceReplace: true));
+              }
+            },
+            child: const Text('Disconnect & Continue'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _configureJellyfinServer(VoltixLoginResult result, [String? password]) async {
+    final voltixApi = GetIt.instance<VoltixApiService>();
+    final serverRepo = GetIt.instance<ServerRepository>();
+    final sessionRepo = GetIt.instance<SessionRepository>();
+    final authStore = GetIt.instance<AuthenticationStore>();
+    final authPrefs = GetIt.instance<AuthenticationPreferences>();
+    final clientFactory = GetIt.instance<MediaServerClientFactory>();
+    final userRepo = GetIt.instance<UserRepository>();
+    final userPrefs = GetIt.instance<UserPreferences>();
+    final logger = Logger();
+    final authPassword = password ?? _passwordController.text;
+
+    // Determine service availability from server response
+    final hasJellyfin = result.jellyfinReady;
+    final hasLiveTv = result.iptvReady;
+
+    // ── STATE: Neither service assigned ─────────────────────────────────
+    if (!hasJellyfin && !hasLiveTv) {
+      logger.w('[VoltixLogin] No streaming services assigned to this user.');
+      _finishWithError(
+        'No streaming services are assigned to your account.\nPlease contact your administrator.',
+      );
+      return;
+    }
+
+    // Save IPTV/Live TV state regardless of Jellyfin outcome
+    await userPrefs.set(UserPreferences.voltixLiveTvEnabled, hasLiveTv);
+
+    // ── STATE: Live TV only (no Jellyfin) ───────────────────────────────
+    if (!hasJellyfin) {
+      logger.i('[VoltixLogin] Live TV only mode — Jellyfin not assigned.');
+      sessionRepo.setVoltixOnlySession(
+        serverId: result.activeServer.id.toString(),
+        userId: result.user.id.toString(),
+        username: result.user.username,
+      );
+      await userPrefs.set(UserPreferences.voltixJellyfinEnabled, false);
+      if (mounted) {
+        GetIt.instance<VoltixSessionService>().start();
+        // Never let the cloud-data prompt decide whether login finishes. A
+        // throw here used to escape past _navigatePostLogin, stranding the
+        // user on the login screen's logo-and-spinner state.
+        try {
+          await GetIt.instance<UserSettingsSyncService>()
+              .checkAndPromptForRemoteSettings(context, result.user.username);
+        } catch (e) {
+          logger.w('[VoltixLogin] Cloud data prompt failed: $e');
+        }
+        if (mounted) {
+          _navigatePostLogin(result.user.username);
+        }
+      }
+      return;
+    }
+
+    // ── Jellyfin IS assigned — attempt proxy connection ─────────────────
+    // Add all assigned servers to the local server list in parallel.
+    // Users land on Voltix Primary by default (not the shared Extra/4K
+    // servers), whatever combination is assigned.
+    final preferredActive =
+        preferPrimaryServer(result.servers, fallback: result.activeServer) ??
+            result.activeServer;
+    Server? server;
+    final addedServersMap = <int, Server>{};
+    final addFutures = result.servers.map((vServer) async {
+      try {
+        final serverUrl = vServer.absoluteProxyUrl(voltixApi.baseUrl);
+        final added = await serverRepo.addServer(serverUrl);
+        if (added != null) {
+          addedServersMap[vServer.id] = added;
+        }
+        if (vServer.id == preferredActive.id) {
+          server = added;
+        }
+      } catch (e) {
+        logger.e('[VoltixLogin] Failed to add server ${vServer.name}: $e');
+      }
+    }).toList();
+
+    await Future.wait(addFutures);
+    final activeServer = server;
+    if (activeServer == null) {
+      logger.w('[VoltixLogin] Could not connect to streaming server proxy, falling back.');
+      // FIX: Must call setVoltixOnlySession to prevent white screen!
+      sessionRepo.setVoltixOnlySession(
+        serverId: result.activeServer.id.toString(),
+        userId: result.user.id.toString(),
+        username: result.user.username,
+      );
+      await userPrefs.set(UserPreferences.voltixJellyfinEnabled, false);
+      if (mounted) {
+        _navigatePostLogin(result.user.username);
+      }
+      return;
+    }
+
+    // Now we need to authenticate with Jellyfin through the proxy.
+    // The Voltix backend has already authenticated us, but we need a
+    // local Jellyfin access token for the voltix client to operate.
+    final client = clientFactory.getClient(
+      serverId: activeServer.id,
+      serverType: activeServer.serverType,
+      baseUrl: activeServer.address,
+    );
+
+    try {
+      Map<String, dynamic> authResult;
+      try {
+        authResult = await client.authApi.authenticateByName(
+          result.user.username,
+          authPassword,
+        );
+      } catch (e) {
+        // If authenticateByName failed (e.g. authPassword is a JWT session token from link code pairing),
+        // validate authPassword directly as a proxy access token via getCurrentUser()!
+        client.accessToken = authPassword;
+        final serverUser = await client.usersApi.getCurrentUser();
+        authResult = {
+          'AccessToken': authPassword,
+          'User': {
+            'Id': serverUser.id,
+            'Name': serverUser.name,
+            'PrimaryImageTag': serverUser.primaryImageTag,
+            'Policy': {
+              'IsAdministrator': serverUser.policy?.isAdministrator ?? false,
+              'EnableContentDownloading': serverUser.policy?.enableContentDownloading ?? false,
+              'EnableSubtitleManagement': serverUser.policy?.enableSubtitleManagement ?? false,
+              'EnableCollectionManagement': serverUser.policy?.enableCollectionManagement ?? false,
+            },
+          },
+          'UserId': serverUser.id,
+        };
+      }
+
+      final accessToken = authResult['AccessToken'] as String?;
+      final userJson = authResult['User'] as Map<String, dynamic>?;
+      final userId =
+          userJson?['Id'] as String? ?? authResult['UserId'] as String?;
+      final userName = userJson?['Name'] as String? ?? result.user.username;
+      final imageTag = (userJson?['PrimaryImageTag'] as String?) ??
+          ((userJson?['ImageTags'] as Map<String, dynamic>?)?['Primary']
+              as String?);
+      final policyJson = userJson?['Policy'] as Map<String, dynamic>?;
+      final roleStr = (userJson?['role'] ?? userJson?['serverRole'])?.toString().toLowerCase();
+      final isAdmin = (policyJson?['IsAdministrator'] as bool? ?? false) ||
+          (userJson?['isAdmin'] == true) ||
+          roleStr == 'admin' ||
+          roleStr == 'voltixadmin' ||
+          userName.toLowerCase() == 'voltixadmin' ||
+          userName.toLowerCase() == 'admin' ||
+          userName.toLowerCase().contains('admin');
+
+      if (accessToken == null || userId == null) {
+        throw Exception('AccessToken or UserId is null');
+      }
+
+      client.accessToken = accessToken;
+      client.userId = userId;
+
+      final user = PrivateUser(
+        id: userId,
+        name: userName,
+        serverId: activeServer.id,
+        accessToken: accessToken,
+        lastUsed: DateTime.now(),
+        imageTag: imageTag,
+        isAdministrator: isAdmin,
+      );
+
+      await authStore.putUser(user);
+      await authPrefs.setLastServerId(activeServer.id);
+      await authPrefs.setLastUserId(userId);
+      userRepo.setCurrentUser(user);
+
+      // ── Multi-server: authenticate remaining servers in parallel ──
+      final otherServers = result.servers
+          .where((s) => s.id != result.activeServer.id)
+          .toList();
+
+      if (otherServers.isNotEmpty) {
+        logger.i('[VoltixLogin] Authenticating ${otherServers.length} additional server(s)...');
+        final password = authPassword;
+
+        await Future.wait(
+          otherServers.map((vServer) async {
+            try {
+              final addedServer = addedServersMap[vServer.id];
+              if (addedServer == null) {
+                logger.w('[VoltixLogin] Server ${vServer.name} not found in addedServersMap, skipping');
+                return;
+              }
+
+              final otherClient = clientFactory.getClient(
+                serverId: addedServer.id,
+                serverType: addedServer.serverType,
+                baseUrl: addedServer.address,
+              );
+
+              Map<String, dynamic> otherAuthResult;
+              try {
+                otherAuthResult = await otherClient.authApi
+                    .authenticateByName(result.user.username, password)
+                    .timeout(const Duration(seconds: 10));
+              } catch (_) {
+                otherClient.accessToken = password;
+                final oUser = await otherClient.usersApi
+                    .getCurrentUser()
+                    .timeout(const Duration(seconds: 10));
+                otherAuthResult = {
+                  'AccessToken': password,
+                  'User': {
+                    'Id': oUser.id,
+                    'Name': oUser.name,
+                    'PrimaryImageTag': oUser.primaryImageTag,
+                    'Policy': {
+                      'IsAdministrator': oUser.policy?.isAdministrator ?? false,
+                    },
+                  },
+                  'UserId': oUser.id,
+                };
+              }
+
+              final otherAccessToken = otherAuthResult['AccessToken'] as String?;
+              final otherUserJson = otherAuthResult['User'] as Map<String, dynamic>?;
+              final otherUserId = otherUserJson?['Id'] as String? ??
+                  otherAuthResult['UserId'] as String?;
+              final otherUserName = otherUserJson?['Name'] as String? ??
+                  result.user.username;
+              final otherImageTag = (otherUserJson?['PrimaryImageTag'] as String?) ??
+                  ((otherUserJson?['ImageTags'] as Map<String, dynamic>?)?['Primary'] as String?);
+              final otherPolicyJson = otherUserJson?['Policy'] as Map<String, dynamic>?;
+              final otherNameLower = otherUserName.toLowerCase();
+              final otherIsAdmin = (otherPolicyJson?['IsAdministrator'] as bool? ?? false) ||
+                  otherNameLower == 'voltixadmin' ||
+                  otherNameLower == 'admin' ||
+                  otherNameLower.contains('admin');
+
+              if (otherAccessToken == null || otherUserId == null) {
+                logger.w('[VoltixLogin] Missing token/userId for ${vServer.name}, skipping');
+                return;
+              }
+
+              otherClient.accessToken = otherAccessToken;
+              otherClient.userId = otherUserId;
+
+              final otherUser = PrivateUser(
+                id: otherUserId,
+                name: otherUserName,
+                serverId: addedServer.id,
+                accessToken: otherAccessToken,
+                lastUsed: DateTime.now(),
+                imageTag: otherImageTag,
+                isAdministrator: otherIsAdmin,
+              );
+
+              await authStore.putUser(otherUser);
+              logger.i('[VoltixLogin] ✓ Authenticated with ${vServer.name} (userId=$otherUserId)');
+            } catch (e) {
+              logger.w('[VoltixLogin] ✗ Failed to authenticate with ${vServer.name}: $e');
+              // Non-fatal — partial multi-server is fine
+            }
+          }),
+        );
+      }
+
+      final switched = await sessionRepo.switchCurrentSession(
+        serverId: activeServer.id,
+        userId: userId,
+        username: result.user.username,
+        password: authPassword,
+      );
+
+      if (switched) {
+        // ── STATE: Jellyfin only or Both ────────────────────────────────
+        await userPrefs.set(UserPreferences.voltixJellyfinEnabled, true);
+        if (!mounted) return;
+        GetIt.instance<VoltixSessionService>().start();
+        // Never let the cloud-data prompt decide whether login finishes. A
+        // throw here used to escape past _navigatePostLogin, stranding the
+        // user on the login screen's logo-and-spinner state.
+        try {
+          await GetIt.instance<UserSettingsSyncService>()
+              .checkAndPromptForRemoteSettings(context, result.user.username);
+        } catch (e) {
+          logger.w('[VoltixLogin] Cloud data prompt failed: $e');
+        }
+        if (mounted) {
+          _navigatePostLogin(result.user.username);
+        }
+      } else {
+        throw Exception('Failed to switch current session');
+      }
+    } on Exception catch (e) {
+      logger.w('[VoltixLogin] Streaming server authentication failed: $e. Falling back.');
+      sessionRepo.setVoltixOnlySession(
+        serverId: result.activeServer.id.toString(),
+        userId: result.user.id.toString(),
+        username: result.user.username,
+      );
+      await userPrefs.set(UserPreferences.voltixJellyfinEnabled, false);
+      if (mounted) {
+        _navigatePostLogin(result.user.username);
+      }
+    }
+  }
+
+
+  void _finishWithError(String message) {
+    setState(() {
+      _isLoading = false;
+      _errorMessage = message;
+    });
+
+    if (!PlatformDetection.isTV) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _passwordFocus.requestFocus();
+    });
+  }
+
+  // ───────────────────── Build ─────────────────────
+
+  @override
+  Widget build(BuildContext context) {
+    if (_wizardStep == 3) {
+      // Native Register Wizard (24h Trial / Subscription & In-App Payment)
+      return VoltixRegisterScreen(
+        onBackToLogin: () {
+          setState(() {
+            _wizardStep = 2;
+          });
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _registerChooseFocus.requestFocus();
+          });
+        },
+      );
+    }
+
+    Widget stepWidget;
+    double cardWidth = 500;
+    
+    switch (_wizardStep) {
+      case 0:
+        stepWidget = _buildWelcomeStep();
+        cardWidth = 500;
+        break;
+      case 2:
+        stepWidget = _buildChooseStep();
+        cardWidth = MediaQuery.of(context).size.width > 600 ? 700 : 500;
+        break;
+      case 4:
+        stepWidget = _buildLinkStep();
+        cardWidth = 500;
+        break;
+      case 5:
+      default:
+        stepWidget = _buildPasswordStep();
+        cardWidth = 500;
+        break;
+    }
+
+    return LoginScaffold(
+      maxWidth: cardWidth,
+      header: Padding(
+        padding: EdgeInsets.only(bottom: PlatformDetection.isTV ? 12 : 24),
+        child: Image.asset(
+          'assets/images/logo_and_text.png',
+          height: PlatformDetection.isTV ? 48 : 72,
+        ),
+      ),
+      footer: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        height: PlatformDetection.isTV && _tvKeyboardVisible ? 280 : 0,
+      ),
+      child: FocusTraversalGroup(
+        policy: OrderedTraversalPolicy(),
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 300),
+          transitionBuilder: (child, animation) {
+            final isEntering = child.key == ValueKey(_wizardStep);
+            final offsetAnimation = Tween<Offset>(
+              begin: isEntering ? const Offset(0.1, 0) : const Offset(-0.1, 0),
+              end: Offset.zero,
+            ).animate(CurvedAnimation(
+              parent: animation,
+              curve: Curves.easeOutCubic,
+            ));
+            return FadeTransition(
+              opacity: animation,
+              child: SlideTransition(
+                position: offsetAnimation,
+                child: child,
+              ),
+            );
+          },
+          child: KeyedSubtree(
+            key: ValueKey(_wizardStep),
+            child: stepWidget,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWelcomeStep() {
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 600),
+      builder: (context, value, child) {
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Transform.scale(
+              scale: 0.5 + 0.5 * value,
+              child: Opacity(
+                opacity: value,
+                child: Icon(Icons.movie_filter, size: 72, color: AppColorScheme.accent),
+              ),
+            ),
+            const SizedBox(height: 24),
+            Transform.translate(
+              offset: Offset(0, 20 * (1 - value)),
+              child: Opacity(
+                opacity: (value * 1.5).clamp(0.0, 1.0),
+                child: Text(
+                  'Welcome to Voltix',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Opacity(
+              opacity: (value * 2.0 - 1.0).clamp(0.0, 1.0),
+              child: Text(
+                'Your ultimate entertainment hub. Stream your favorite movies, series, and live TV channels all in one premium app.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: _loginForeground(0.7),
+                  fontSize: 15,
+                  height: 1.5,
+                ),
+              ),
+            ),
+            const SizedBox(height: 32),
+            Transform.scale(
+              scale: 0.8 + 0.2 * (value * 1.5).clamp(0.0, 1.0),
+              child: Opacity(
+                opacity: (value * 2.0 - 1.0).clamp(0.0, 1.0),
+                child: Focus(
+                  focusNode: _nextWelcomeFocus,
+                  child: ListenableBuilder(
+                    listenable: _nextWelcomeFocus,
+                    builder: (context, _) {
+                      final isFocused = _nextWelcomeFocus.hasFocus;
+                      return ElevatedButton(
+                        onPressed: () {
+                          setState(() => _wizardStep = 2);
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: isFocused ? Colors.white : AppColorScheme.accent,
+                          foregroundColor: isFocused ? Colors.black : Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(30),
+                          ),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text('Next', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                            SizedBox(width: 8),
+                            Icon(Icons.arrow_forward),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildChooseStep() {
+    final bool isLargeScreen = MediaQuery.of(context).size.width > 600;
+
+    final loginSection = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.login, size: 48, color: AppColorScheme.accent),
+        const SizedBox(height: 16),
+        const Text(
+          'Have an existing account?',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.white),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Sign in to access your library, progress, and favorites.',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: _loginForeground(0.5), fontSize: 13),
+        ),
+        const SizedBox(height: 20),
+        Focus(
+          focusNode: _loginChooseFocus,
+          child: ListenableBuilder(
+            listenable: _loginChooseFocus,
+            builder: (context, _) {
+              final isFocused = _loginChooseFocus.hasFocus;
+              return ElevatedButton(
+                onPressed: () {
+                  setState(() => _wizardStep = 4);
+                  _startPairing();
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    _usePasswordFocus.requestFocus();
+                  });
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: isFocused ? Colors.white : AppColorScheme.accent,
+                  foregroundColor: isFocused ? Colors.black : Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(24),
+                  ),
+                ),
+                child: const Text('Login', style: TextStyle(fontWeight: FontWeight.bold)),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+
+    final registerSection = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.app_registration, size: 48, color: AppColorScheme.accent),
+        const SizedBox(height: 16),
+        const Text(
+          'New here?',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.white),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Click Register to sign up!',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: _loginForeground(0.5), fontSize: 13),
+        ),
+        const SizedBox(height: 20),
+        Focus(
+          focusNode: _registerChooseFocus,
+          child: ListenableBuilder(
+            listenable: _registerChooseFocus,
+            builder: (context, _) {
+              final isFocused = _registerChooseFocus.hasFocus;
+              return ElevatedButton(
+                onPressed: _startRegisterWizard,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: isFocused ? Colors.white : AppColorScheme.accent,
+                  foregroundColor: isFocused ? Colors.black : Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(24),
+                  ),
+                ),
+                child: const Text('Register', style: TextStyle(fontWeight: FontWeight.bold)),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 0.96, end: 1.0),
+      duration: const Duration(milliseconds: 600),
+      curve: Curves.elasticOut,
+      builder: (context, value, child) {
+        return Transform.scale(
+          scale: value,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Get Started',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+              ),
+              const SizedBox(height: 32),
+              if (isLargeScreen)
+                IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(child: Padding(padding: const EdgeInsets.all(16), child: loginSection)),
+                      VerticalDivider(color: _loginForeground(0.1), thickness: 1),
+                      Expanded(child: Padding(padding: const EdgeInsets.all(16), child: registerSection)),
+                    ],
+                  ),
+                )
+              else
+                Column(
+                  children: [
+                    loginSection,
+                    const SizedBox(height: 32),
+                    Divider(color: _loginForeground(0.1)),
+                    const SizedBox(height: 16),
+                    registerSection,
+                  ],
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildLinkStep() {
+    final isTV = PlatformDetection.isTV;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Icon(Icons.tv_outlined, size: isTV ? 44 : 64, color: AppColorScheme.accent),
+        SizedBox(height: isTV ? 8 : 16),
+        Text(
+          'Link Your Device',
+          textAlign: TextAlign.center,
+          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+                fontSize: isTV ? 20 : null,
+              ),
+        ),
+        SizedBox(height: isTV ? 6 : 12),
+        Text(
+          'Navigate to www.voltixstudio.com/link on your computer or phone and enter the code below to pair your device:',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: _loginForeground(0.7),
+            fontSize: isTV ? 12 : 14,
+            height: 1.4,
+          ),
+        ),
+        SizedBox(height: isTV ? 12 : 24),
+        if (_isLoading && _pairingCode == null)
+          Column(
+            children: [
+              CircularProgressIndicator(color: AppColorScheme.accent),
+              const SizedBox(height: 12),
+              const Text('Generating code...', style: TextStyle(color: Colors.white70)),
+            ],
+          )
+        else if (_errorMessage != null && _pairingCode == null)
+          Column(
+            children: [
+              Text(
+                _errorMessage!,
+                style: TextStyle(color: _loginErrorColor, fontSize: 14),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 12),
+              Focus(
+                focusNode: _getNewCodeFocus,
+                child: ListenableBuilder(
+                  listenable: _getNewCodeFocus,
+                  builder: (context, _) {
+                    final isFocused = _getNewCodeFocus.hasFocus;
+                    return ElevatedButton.icon(
+                      icon: const Icon(Icons.refresh),
+                      onPressed: _startPairing,
+                      label: const Text('Try Again'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: isFocused ? Colors.white : AppColorScheme.accent,
+                        foregroundColor: isFocused ? Colors.black : Colors.white,
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          )
+        else
+          Column(
+            children: [
+              Container(
+                padding: EdgeInsets.symmetric(
+                  horizontal: isTV ? 24 : 32,
+                  vertical: isTV ? 10 : 16,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.4),
+                  border: Border.all(color: AppColorScheme.accent.withValues(alpha: 0.3)),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Text(
+                  _pairingCode ?? '.....',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: isTV ? 36 : 48,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 8,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+              ),
+              SizedBox(height: isTV ? 10 : 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: AppColorScheme.accent),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'This window will disappear once your device is linked...',
+                    style: TextStyle(color: AppColorScheme.accent, fontWeight: FontWeight.bold, fontSize: isTV ? 11 : 13),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        SizedBox(height: isTV ? 16 : 32),
+        Divider(color: _loginForeground(0.1)),
+        SizedBox(height: isTV ? 12 : 24),
+        Text(
+          'Codes not working? Click here to use a username and password.',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: _loginForeground(0.5), fontSize: isTV ? 11 : 13),
+        ),
+        SizedBox(height: isTV ? 8 : 12),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Focus(
+              focusNode: _backLoginFocus,
+              child: ListenableBuilder(
+                listenable: _backLoginFocus,
+                builder: (context, _) {
+                  final isFocused = _backLoginFocus.hasFocus;
+                  return OutlinedButton.icon(
+                    onPressed: () {
+                      _pairingTimer?.cancel();
+                      setState(() => _wizardStep = 2);
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        _loginChooseFocus.requestFocus();
+                      });
+                    },
+                    icon: const Icon(Icons.arrow_back, size: 16),
+                    label: const Text('Back'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: isFocused ? Colors.black : Colors.white,
+                      backgroundColor: isFocused ? Colors.white : Colors.transparent,
+                      side: const BorderSide(color: Colors.white30),
+                      padding: isTV ? const EdgeInsets.symmetric(horizontal: 16, vertical: 8) : null,
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(width: 12),
+            Focus(
+              focusNode: _usePasswordFocus,
+              child: ListenableBuilder(
+                listenable: _usePasswordFocus,
+                builder: (context, _) {
+                  final isFocused = _usePasswordFocus.hasFocus;
+                  return ElevatedButton(
+                    onPressed: () {
+                      _pairingTimer?.cancel();
+                      setState(() => _wizardStep = 5);
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        _usernameFocus.requestFocus();
+                      });
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: isFocused ? Colors.white : AppColorScheme.accent,
+                      foregroundColor: isFocused ? Colors.black : Colors.white,
+                      padding: isTV ? const EdgeInsets.symmetric(horizontal: 16, vertical: 8) : null,
+                    ),
+                    child: const Text('Use Password'),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPasswordStep() {
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 400),
+      builder: (context, value, child) {
+        final children = <Widget>[
+          Row(
+            children: [
+              IconButton(
+                icon: const Icon(Icons.arrow_back, color: Colors.white),
+                onPressed: () {
+                  setState(() => _wizardStep = 4);
+                  _startPairing();
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    _usePasswordFocus.requestFocus();
+                  });
+                },
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Sign In',
+                style: Theme.of(context)
+                    .textTheme
+                    .headlineSmall
+                    ?.copyWith(fontWeight: FontWeight.bold, color: Colors.white),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Enter your Voltix credentials',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: _loginForeground(0.5),
+                ),
+          ),
+          const SizedBox(height: 24),
+
+          _buildEnvironmentToggle(),
+          const SizedBox(height: 20),
+
+          // Username
+          _buildTextField(
+            controller: _usernameController,
+            focusNode: _usernameFocus,
+            tvFieldKey: _usernameTvFieldKey,
+            label: 'Username',
+            textInputAction: TextInputAction.next,
+            onSubmitted: (_) => _passwordFocus.requestFocus(),
+          ),
+          const SizedBox(height: 16),
+
+          // Password
+          _buildTextField(
+            controller: _passwordController,
+            focusNode: _passwordFocus,
+            tvFieldKey: _passwordTvFieldKey,
+            label: 'Password',
+            obscureText: true,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => _login(),
+          ),
+
+          // Error
+          if (_errorMessage != null) ...[
+            const SizedBox(height: 12),
+            Text(
+              _errorMessage!,
+              style: TextStyle(color: _loginErrorColor, fontSize: 13),
+              textAlign: TextAlign.center,
+            ),
+          ],
+
+          const SizedBox(height: 28),
+
+          // Sign-in button
+          Center(
+            child: _buildSignInButton(),
+          ),
+        ];
+
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: List.generate(children.length, (index) {
+            // Sequential slide offset
+            final slideOffset = 20.0 * (1 - value) + (index * 5.0 * (1 - value));
+            return Transform.translate(
+              offset: Offset(0, slideOffset),
+              child: Opacity(
+                opacity: value.clamp(0.0, 1.0),
+                child: children[index],
+              ),
+            );
+          }),
+        );
+      },
+    );
+  }
+
+  Widget _buildTextField({
+    required TextEditingController controller,
+    required FocusNode focusNode,
+    required GlobalKey<CustomTVTextFieldState> tvFieldKey,
+    required String label,
+    bool obscureText = false,
+    TextInputAction? textInputAction,
+    ValueChanged<String>? onSubmitted,
+  }) {
+    if (PlatformDetection.isTV) {
+      return Focus(
+        focusNode: focusNode,
+        child: ListenableBuilder(
+          listenable: focusNode,
+          builder: (_, _) {
+            final focused = focusNode.hasFocus;
+            return CustomTVTextField(
+              key: tvFieldKey,
+              controller: controller,
+              isFocused: focused,
+              hint: label,
+              filled: true,
+              fillColor:
+                  focused ? _loginForegroundSolid : _loginForeground(0.08),
+              borderRadius: 12,
+              borderColor: _loginForeground(0.1),
+              focusedBorderColor: _kAccent,
+              hintStyle: TextStyle(
+                color: focused
+                    ? AppColors.black.withValues(alpha: 0.5)
+                    : _loginForeground(0.5),
+              ),
+              textStyle: TextStyle(
+                color: focused ? AppColors.black : _loginForegroundSolid,
+              ),
+              prefixIcon: Icon(
+                obscureText ? Icons.lock_outline : Icons.person_outline,
+                color: focused ? AppColors.black : _loginForegroundSolid,
+              ),
+              textFieldType: obscureText
+                  ? TextFieldType.password
+                  : TextFieldType.other,
+              popParentOnKeyboardClose: false,
+              onFieldSubmitted: onSubmitted,
+              onVisibilityChanged: (visible) =>
+                  _handleTvKeyboardVisibility(visible, tvFieldKey),
+            );
+          },
+        ),
+      );
+    }
+
+    return TextField(
+      controller: controller,
+      focusNode: focusNode,
+      obscureText: obscureText,
+      textInputAction: textInputAction,
+      onSubmitted: onSubmitted,
+      style: TextStyle(color: _loginForegroundSolid),
+      decoration: InputDecoration(
+        labelText: label,
+        labelStyle: TextStyle(color: _loginForeground(0.6)),
+        prefixIcon: Icon(
+          obscureText ? Icons.lock_outline : Icons.person_outline,
+          color: _loginForeground(0.5),
+        ),
+        filled: true,
+        fillColor: _loginForeground(0.06),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: _loginForeground(0.1)),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: _kAccent, width: 2),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: _loginForeground(0.1)),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSignInButton() {
+    return SizedBox(
+      width: 200,
+      height: 48,
+      child: FilledButton(
+        focusNode: _signInFocus,
+        onPressed: _isLoading ? null : _login,
+        style: FilledButton.styleFrom(
+          backgroundColor: _kAccent,
+          foregroundColor: Colors.black,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+        ).copyWith(
+          side: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) {
+              return BorderSide(color: _loginForegroundSolid, width: 2);
+            }
+            return null;
+          }),
+        ),
+        child: _isLoading
+            ? const SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.black,
+                ),
+              )
+            : const Text(
+                'Sign In',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+      ),
+    );
+  }
+
+  Widget _buildEnvironmentToggle() {
+    return Focus(
+      focusNode: _envToggleFocus,
+      descendantsAreFocusable: false,
+      child: ListenableBuilder(
+        listenable: _envToggleFocus,
+        builder: (context, _) {
+          final focused = _envToggleFocus.hasFocus;
+          return GestureDetector(
+            onTap: _toggleEnvironment,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: focused
+                    ? _loginForegroundSolid
+                    : _loginForeground(0.04),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: focused ? _kAccent : _loginForeground(0.08),
+                  width: focused ? 2 : 1,
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.dns_outlined,
+                    size: 20,
+                    color: focused
+                        ? AppColors.black.withValues(alpha: 0.8)
+                        : _loginForeground(0.6),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Server Environment',
+                          style: TextStyle(
+                            color: focused
+                                ? AppColors.black.withValues(alpha: 0.5)
+                                : _loginForeground(0.5),
+                            fontSize: 10,
+                            fontWeight: FontWeight.w500,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _useTestServer ? 'Local Test Server' : 'Production Server',
+                          style: TextStyle(
+                            color: focused
+                                ? AppColors.black
+                                : _loginForegroundSolid,
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 1),
+                        Text(
+                          _useTestServer
+                              ? 'http://192.168.0.31:3000'
+                              : 'https://www.voltixstudio.com',
+                          style: TextStyle(
+                            color: focused
+                                ? AppColors.black.withValues(alpha: 0.6)
+                                : _loginForeground(0.5),
+                            fontSize: 11,
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Switch(
+                    focusNode: FocusNode(canRequestFocus: false),
+                    value: _useTestServer,
+                    onChanged: (val) => _toggleEnvironment(),
+                    activeThumbColor: _kAccent,
+                    activeTrackColor: _kAccent.withValues(alpha: 0.5),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}

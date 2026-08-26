@@ -1,0 +1,437 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+import 'package:get_it/get_it.dart';
+import 'package:jellyfin_preference/jellyfin_preference.dart';
+import 'package:logger/logger.dart';
+
+import '../../auth/repositories/session_repository.dart';
+import '../../auth/store/authentication_store.dart';
+import '../../auth/store/voltix_session_store.dart';
+import '../../preference/user_preferences.dart';
+import '../../ui/widgets/overlay_sheet.dart';
+import 'azure_blob_storage_service.dart';
+import 'voltix_api_service.dart';
+import 'voltix_watch_registry_service.dart';
+
+class UserSettingsSyncService {
+  final Logger _logger = Logger();
+  Timer? _debounceTimer;
+
+  static const String _hasSyncedKeyPrefix = 'pref_has_synced_user_settings_';
+  static const String _lastSyncedTimeKeyPrefix = 'pref_last_synced_time_';
+
+  String _hasSyncedKey(String username) => '$_hasSyncedKeyPrefix${username.toLowerCase()}';
+  String _lastSyncedTimeKey(String username) => '$_lastSyncedTimeKeyPrefix${username.toLowerCase()}';
+
+  (String, String) _resolveCredentials(String? targetUsername) {
+    final voltixStore = GetIt.instance<VoltixSessionStore>();
+    final token = voltixStore.sessionToken ?? 'voltix_user_session';
+
+    if (targetUsername != null && targetUsername.trim().isNotEmpty) {
+      return (targetUsername.trim(), token);
+    }
+    if (voltixStore.username != null && voltixStore.username!.trim().isNotEmpty) {
+      return (voltixStore.username!.trim(), token);
+    }
+    if (voltixStore.displayName != null && voltixStore.displayName!.trim().isNotEmpty) {
+      return (voltixStore.displayName!.trim(), token);
+    }
+    try {
+      final sessionRepo = GetIt.instance<SessionRepository>();
+      final serverId = sessionRepo.activeServerId;
+      final userId = sessionRepo.activeUserId;
+      if (serverId != null && userId != null) {
+        final authStore = GetIt.instance<AuthenticationStore>();
+        final user = authStore.getUser(serverId, userId);
+        final name = user?.name;
+        if (name != null && name.trim().isNotEmpty) {
+          return (name.trim(), token);
+        }
+      }
+    } catch (_) {}
+    _logger.i('[UserSettingsSync] Resolving fallback user identifier: voltix_user');
+    return ('voltix_user', token);
+  }
+
+  /// Last failure reason from [backupSettingsToServer], for the UI to show.
+  ///
+  /// The backend distinguishes "no blob container configured", "wrote to the
+  /// database fallback" and "nothing was stored at all", but that detail was
+  /// being collapsed into a bare false and thrown away - leaving the user with
+  /// "Failed to backup settings to server." and nothing to act on.
+  String? lastBackupError;
+
+  /// Saves current local settings to Azure Blob Storage / Voltix Server for the logged-in user.
+  Future<bool> backupSettingsToServer({String? targetUsername}) async {
+    final (username, token) = _resolveCredentials(targetUsername);
+    lastBackupError = null;
+
+    try {
+      final userPrefs = GetIt.instance<UserPreferences>();
+      final settingsData = userPrefs.exportSettingsJson();
+
+      final azureBlobService = AzureBlobStorageService();
+      bool success = await azureBlobService.uploadUserSettingsBlob(
+        username: username,
+        settingsData: settingsData,
+      );
+
+      if (!success) {
+        final apiService = VoltixApiService();
+        success = await apiService.saveUserSettings(
+          sessionToken: token,
+          username: username,
+          settingsData: settingsData,
+        );
+      }
+
+      if (success) {
+        final prefStore = GetIt.instance<PreferenceStore>();
+        final nowIso = DateTime.now().toIso8601String();
+        await prefStore.setString(_hasSyncedKey(username), 'true');
+        await prefStore.setString(_lastSyncedTimeKey(username), nowIso);
+        _logger.i('[UserSettingsSync] Successfully backed up settings to server for @$username');
+        return true;
+      }
+      lastBackupError =
+          'The server accepted the request but reported nothing was stored. '
+          'Check AZURE_STORAGE_CONNECTION_STRING is set and that the '
+          'voltix_user_settings table exists.';
+    } catch (e) {
+      lastBackupError = e.toString();
+      _logger.e('[UserSettingsSync] Failed to backup settings to server', error: e);
+    }
+    return false;
+  }
+
+  /// Downloads settings from Azure Blob Storage / Voltix Server for [username] and applies them locally.
+  Future<bool> restoreSettingsFromServer({String? targetUsername}) async {
+    final (username, token) = _resolveCredentials(targetUsername);
+
+    try {
+      final azureBlobService = AzureBlobStorageService();
+      Map<String, dynamic>? remoteData = await azureBlobService.downloadUserSettingsBlob(
+        username: username,
+      );
+
+      if (remoteData == null || remoteData.isEmpty) {
+        final apiService = VoltixApiService();
+        remoteData = await apiService.getUserSettings(
+          sessionToken: token,
+          username: username,
+        );
+      }
+
+      if (remoteData != null && remoteData.isNotEmpty) {
+        final userPrefs = GetIt.instance<UserPreferences>();
+        await userPrefs.importSettingsJson(remoteData);
+
+        final prefStore = GetIt.instance<PreferenceStore>();
+        final nowIso = DateTime.now().toIso8601String();
+        await prefStore.setString(_hasSyncedKey(username), 'true');
+        await prefStore.setString(_lastSyncedTimeKey(username), nowIso);
+        _logger.i('[UserSettingsSync] Successfully restored settings from server for @$username');
+        return true;
+      }
+    } catch (e) {
+      _logger.e('[UserSettingsSync] Failed to restore settings from server', error: e);
+    }
+    return false;
+  }
+
+  /// Deletes all cloud data (settings + taste profile) for the user.
+  Future<void> deleteAllCloudData({String? targetUsername}) async {
+    final (username, _) = _resolveCredentials(targetUsername);
+    final azureBlobService = AzureBlobStorageService();
+
+    await Future.wait([
+      azureBlobService.deleteUserSettingsBlob(username: username),
+    ]);
+    _logger.i('[UserSettingsSync] Deleted all cloud data for @$username');
+  }
+
+  /// Schedules a debounced backup to server whenever settings change locally.
+  /// (Disabled per user requirement: Cloud sync occurs strictly when the user pushes the explicit Sync button).
+  void scheduleAutoSync() {
+    _debounceTimer?.cancel();
+  }
+
+  /// Uploads user watch registry to server.
+  Future<bool> uploadWatchRegistryToServer({String? targetUsername}) async {
+    final (username, _) = _resolveCredentials(targetUsername);
+    try {
+      if (GetIt.instance.isRegistered<VoltixWatchRegistryService>()) {
+        final registry = GetIt.instance<VoltixWatchRegistryService>();
+        final registryData = registry.exportRegistryData();
+        final azureBlobService = AzureBlobStorageService();
+        final success = await azureBlobService.uploadWatchRegistryBlob(
+          username: username,
+          registryData: registryData,
+        );
+        if (success) {
+          _logger.i('[UserSettingsSync] Watch registry blob uploaded for @$username');
+        }
+        return success;
+      }
+    } catch (e) {
+      _logger.w('[UserSettingsSync] Failed to upload watch registry: $e');
+    }
+    return false;
+  }
+
+  /// Restores user watch registry from server.
+  Future<bool> restoreWatchRegistryFromServer({String? targetUsername}) async {
+    final (username, _) = _resolveCredentials(targetUsername);
+    try {
+      final azureBlobService = AzureBlobStorageService();
+      final remoteData = await azureBlobService.downloadWatchRegistryBlob(username: username);
+      if (remoteData != null && GetIt.instance.isRegistered<VoltixWatchRegistryService>()) {
+        final registry = GetIt.instance<VoltixWatchRegistryService>();
+        await registry.importRegistryData(remoteData);
+        _logger.i('[UserSettingsSync] Restored remote watch registry for @$username');
+        return true;
+      }
+    } catch (e) {
+      _logger.w('[UserSettingsSync] Failed to restore watch registry: $e');
+    }
+    return false;
+  }
+
+  /// Checks if remote settings and/or taste profile exist on the server for a
+  /// newly logged-in or fresh install user.
+  /// If remote data exists and local hasn't been linked yet, prompts the user
+  /// to import, delete, or skip.
+  Future<void> checkAndPromptForRemoteSettings(
+    BuildContext context,
+    String username,
+  ) async {
+    final voltixStore = GetIt.instance<VoltixSessionStore>();
+    final token = voltixStore.sessionToken;
+    if (token == null || token.isEmpty) return;
+
+    final prefStore = GetIt.instance<PreferenceStore>();
+    final hasSyncedLocally = prefStore.getString(_hasSyncedKey(username)) == 'true';
+
+    if (hasSyncedLocally) {
+      // User has previously synced: automatically restore latest cloud data on app restart
+      try {
+        await restoreSettingsFromServer(targetUsername: username);
+        await restoreWatchRegistryFromServer(targetUsername: username);
+        _logger.i('[UserSettingsSync] Restored latest synced cloud settings + watch registry on startup for @$username');
+      } catch (e) {
+        _logger.w('[UserSettingsSync] Could not restore latest data on startup: $e');
+      }
+      return;
+    }
+
+    try {
+      final azureBlobService = AzureBlobStorageService();
+
+      // Bounded: this runs while the login screen sits on its logo-and-spinner
+      // loading state, and every await here delays the user reaching a screen.
+      // A slow or unreachable blob endpoint must degrade to "no cloud data",
+      // never to an indefinite spinner.
+      final remoteSettings = await _checkForRemoteSettings(
+        azureBlobService,
+        username,
+        token,
+      ).timeout(
+        const Duration(seconds: 12),
+        onTimeout: () {
+          _logger.w('[UserSettingsSync] Cloud data check timed out for @$username');
+          return null;
+        },
+      );
+
+      final hasSettings = remoteSettings != null && remoteSettings.isNotEmpty;
+
+      if (!hasSettings) {
+        // No remote data exists: perform initial once-off cloud backup
+        // This sends a snapshot of default settings so new users always have
+        // a cloud baseline to restore from.
+        _logger.i('[UserSettingsSync] No cloud data found. Performing once-off initial backup for @$username');
+        await backupSettingsToServer(targetUsername: username);
+        return;
+      }
+
+      if (!context.mounted) return;
+
+      // Build a description of what was found
+      final foundItems = <String>[];
+      if (hasSettings) foundItems.add('Application settings');
+
+      final action = await showFocusRestoringDialog<_CloudDataAction>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF0F141C),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: Color(0xFF1E293B)),
+          ),
+          title: const Row(
+            children: [
+              Icon(Icons.cloud_download_rounded, color: Color(0xFF3B82F6)),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Cloud Data Found',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Saved cloud data for Voltix user "@$username" was found on the server:\n',
+                style: const TextStyle(color: Colors.white70, fontSize: 14, height: 1.4),
+              ),
+              ...foundItems.map((item) => Padding(
+                padding: const EdgeInsets.only(left: 8, bottom: 4),
+                child: Row(
+                  children: [
+                    const Icon(Icons.check_circle_outline, color: Color(0xFF10B981), size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        item,
+                        style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500),
+                      ),
+                    ),
+                  ],
+                ),
+              )),
+              const SizedBox(height: 12),
+              const Text(
+                'Would you like to import this data, or start fresh?',
+                style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+              ),
+            ],
+          ),
+          actionsAlignment: MainAxisAlignment.spaceBetween,
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(_CloudDataAction.delete),
+              child: const Text(
+                'Delete Cloud Data',
+                style: TextStyle(color: Color(0xFFEF4444), fontSize: 13),
+              ),
+            ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(_CloudDataAction.skip),
+                  child: const Text('Skip', style: TextStyle(color: Colors.white54)),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF3B82F6),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  onPressed: () => Navigator.of(ctx).pop(_CloudDataAction.importAll),
+                  child: const Text('Import All'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      );
+
+      switch (action) {
+        case _CloudDataAction.importAll:
+          // Bounded for the same reason as the check above: the caller cannot
+          // navigate until this returns.
+          if (hasSettings) {
+            await restoreSettingsFromServer(targetUsername: username)
+                .timeout(const Duration(seconds: 20), onTimeout: () => false);
+          }
+          await prefStore.setString(_hasSyncedKey(username), 'true');
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Cloud data successfully imported!'),
+                backgroundColor: Color(0xFF10B981),
+              ),
+            );
+          }
+        case _CloudDataAction.delete:
+          // The local reset is what the user is waiting on — it is instant.
+          //
+          // The cloud delete is not: the blob deletion falls back from the
+          // Voltix proxy to Azure directly, so a bad endpoint can burn ~35s.
+          // Awaiting it left the caller
+          // parked on the Voltix logo and spinner with no feedback, which is
+          // indistinguishable from a hang. Fire it off instead — nothing
+          // downstream depends on its result, and each request carries its own
+          // timeout.
+          await prefStore.setString(_hasSyncedKey(username), 'true');
+          unawaited(
+            deleteAllCloudData(targetUsername: username).catchError((Object e) {
+              _logger.w('[UserSettingsSync] Background cloud delete failed: $e');
+            }),
+          );
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Cloud data deleted. Starting fresh.'),
+                backgroundColor: Color(0xFF3B82F6),
+              ),
+            );
+          }
+        case _CloudDataAction.skip:
+        case null:
+          // Mark as synced so we don't prompt again
+          await prefStore.setString(_hasSyncedKey(username), 'true');
+      }
+    } catch (e) {
+      _logger.w('[UserSettingsSync] Error checking remote data: $e');
+    }
+  }
+
+  /// Helper to check for remote settings via Azure blob or Voltix API.
+  Future<Map<String, dynamic>?> _checkForRemoteSettings(
+    AzureBlobStorageService azureBlobService,
+    String username,
+    String token,
+  ) async {
+    Map<String, dynamic>? remoteSettings = await azureBlobService.downloadUserSettingsBlob(
+      username: username,
+    );
+    if (remoteSettings == null || remoteSettings.isEmpty) {
+      final apiService = VoltixApiService();
+      remoteSettings = await apiService.getUserSettings(
+        sessionToken: token,
+        username: username,
+      );
+    }
+    return remoteSettings;
+  }
+
+  /// Returns string representation of last sync time for [username].
+  String getLastSyncedTime(String username) {
+    try {
+      final prefStore = GetIt.instance<PreferenceStore>();
+      final raw = prefStore.getString(_lastSyncedTimeKey(username));
+      if (raw == null || raw.isEmpty) return 'Never synced';
+      final dt = DateTime.parse(raw).toLocal();
+      return '${dt.month}/${dt.day}/${dt.year} at ${dt.hour}:${dt.minute.toString().padLeft(2, '0')}';
+    } catch (_) {
+      return 'Never synced';
+    }
+  }
+}
+
+enum _CloudDataAction { importAll, delete, skip }

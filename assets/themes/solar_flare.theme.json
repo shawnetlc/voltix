@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "id": "solar_flare",
+  "displayName": "Solar Flare",
+  "description": "Radiant sunburst amber and molten gold accents on charred charcoal space rock.",
+  "colors": {
+    "background": "#FF140E0A",
+    "onBackground": "#FFFFFFFF",
+    "surface": "#FF1F1610",
+    "onSurface": "#FFFFFFFF",
+    "surfaceVariant": "#FF2B1E16",
+    "scrim": "#CC140E0A",
+    "accent": "#FFF59E0B",
+    "onAccent": "#FF140E0A",
+    "buttonNormal": "#FF2C1F17",
+    "buttonFocused": "#FFFBBF24",
+    "buttonDisabled": "#FF160F0B",
+    "buttonActive": "#FF3D2C21",
+    "onButtonNormal": "#FFFFFFFF",
+    "onButtonFocused": "#FF140E0A",
+    "onButtonDisabled": "#FF735C4E",
+    "inputBackground": "#FF221812",
+    "inputFocused": "#FF32231A",
+    "inputBorder": "#FF4D3628",
+    "inputBorderFocused": "#FFFBBF24",
+    "rangeTrack": "#FF3A281E",
+    "rangeProgress": "#FFF59E0B",
+    "rangeThumb": "#FFFBBF24",
+    "seekbarBuffered": "#80F59E0B",
+    "badgeBackground": "#FFF59E0B",
+    "onBadge": "#FF140E0A",
+    "badgeUnplayed": "#FFF97316",
+    "badgeWatched": "#FF10B981",
+    "recordingActive": "#FFEF4444",
+    "recordingScheduled": "#FFFBBF24"
+  },
+  "borders": {
+    "cardBorder": { "color": "#1AF59E0B", "width": 1 },
+    "chipBorder": { "color": "#40F59E0B", "width": 1 },
+    "focusBorder": { "color": "#FFFBBF24", "width": 2 },
+    "cardRadius": 10,
+    "chipRadius": 999,
+    "chipBackground": "#1AF59E0B",
+    "focusGlow": [
+      {
+        "color": "#55F59E0B",
+        "blurRadius": 12.0,
+        "spreadRadius": 2.0
+      }
+    ]
+  },
+  "semantic": {
+    "statusAvailable": "#FF10B981",
+    "statusRequested": "#FFF97316",
+    "statusPending": "#FFF59E0B",
+    "statusDownloading": "#FFFBBF24",
+    "mediaTypeBadgeMovie": "#FFF59E0B",
+    "mediaTypeBadgeSeries": "#FFF97316"
+  }
+}

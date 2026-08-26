@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "id": "emerald_luxury",
+  "displayName": "Emerald Luxury",
+  "description": "Prestigious deep forest green and polished jade highlights against velvety dark obsidian.",
+  "colors": {
+    "background": "#FF07140E",
+    "onBackground": "#FFFFFFFF",
+    "surface": "#FF0E241B",
+    "onSurface": "#FFFFFFFF",
+    "surfaceVariant": "#FF153629",
+    "scrim": "#CC07140E",
+    "accent": "#FF10B981",
+    "onAccent": "#FF07140E",
+    "buttonNormal": "#FF133326",
+    "buttonFocused": "#FF34D399",
+    "buttonDisabled": "#FF0A1D15",
+    "buttonActive": "#FF1D4736",
+    "onButtonNormal": "#FFFFFFFF",
+    "onButtonFocused": "#FF07140E",
+    "onButtonDisabled": "#FF4D7563",
+    "inputBackground": "#FF0F291F",
+    "inputFocused": "#FF183D2F",
+    "inputBorder": "#FF235742",
+    "inputBorderFocused": "#FF34D399",
+    "rangeTrack": "#FF1B4232",
+    "rangeProgress": "#FF10B981",
+    "rangeThumb": "#FF34D399",
+    "seekbarBuffered": "#8010B981",
+    "badgeBackground": "#FF10B981",
+    "onBadge": "#FF07140E",
+    "badgeUnplayed": "#FF34D399",
+    "badgeWatched": "#FF6EE7B7",
+    "recordingActive": "#FFEF4444",
+    "recordingScheduled": "#FFF59E0B"
+  },
+  "borders": {
+    "cardBorder": { "color": "#1A10B981", "width": 1 },
+    "chipBorder": { "color": "#4010B981", "width": 1 },
+    "focusBorder": { "color": "#FF34D399", "width": 2 },
+    "cardRadius": 10,
+    "chipRadius": 999,
+    "chipBackground": "#1A10B981",
+    "focusGlow": [
+      {
+        "color": "#5510B981",
+        "blurRadius": 12.0,
+        "spreadRadius": 2.0
+      }
+    ]
+  },
+  "semantic": {
+    "statusAvailable": "#FF34D399",
+    "statusRequested": "#FF8B5CF6",
+    "statusPending": "#FFF59E0B",
+    "statusDownloading": "#FF10B981",
+    "mediaTypeBadgeMovie": "#FF10B981",
+    "mediaTypeBadgeSeries": "#FF6EE7B7"
+  }
+}

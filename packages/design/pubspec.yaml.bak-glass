@@ -1,0 +1,11 @@
+name: voltix_design
+description: Shared design system - theme tokens, colors, typography, and reusable widgets.
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  flutter:
+    sdk: flutter

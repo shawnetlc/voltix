@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "id": "studio_oled",
+  "displayName": "Studio OLED",
+  "description": "Pure zero-luminance infinite black, precision titanium silver lines, and cool monochrome minimalism.",
+  "colors": {
+    "background": "#FF000000",
+    "onBackground": "#FFFFFFFF",
+    "surface": "#FF121212",
+    "onSurface": "#FFFFFFFF",
+    "surfaceVariant": "#FF1E1E1E",
+    "scrim": "#CC000000",
+    "accent": "#FFE5E7EB",
+    "onAccent": "#FF000000",
+    "buttonNormal": "#FF1E1E1E",
+    "buttonFocused": "#FFFFFFFF",
+    "buttonDisabled": "#FF0D0D0D",
+    "buttonActive": "#FF2C2C2C",
+    "onButtonNormal": "#FFFFFFFF",
+    "onButtonFocused": "#FF000000",
+    "onButtonDisabled": "#FF555555",
+    "inputBackground": "#FF171717",
+    "inputFocused": "#FF242424",
+    "inputBorder": "#FF383838",
+    "inputBorderFocused": "#FFFFFFFF",
+    "rangeTrack": "#FF333333",
+    "rangeProgress": "#FFE5E7EB",
+    "rangeThumb": "#FFFFFFFF",
+    "seekbarBuffered": "#80FFFFFF",
+    "badgeBackground": "#FFE5E7EB",
+    "onBadge": "#FF000000",
+    "badgeUnplayed": "#FF9CA3AF",
+    "badgeWatched": "#FF10B981",
+    "recordingActive": "#FFEF4444",
+    "recordingScheduled": "#FFF59E0B"
+  },
+  "borders": {
+    "cardBorder": { "color": "#26FFFFFF", "width": 1 },
+    "chipBorder": { "color": "#40FFFFFF", "width": 1 },
+    "focusBorder": { "color": "#FFFFFFFF", "width": 2 },
+    "cardRadius": 8,
+    "chipRadius": 999,
+    "chipBackground": "#1AFFFFFF",
+    "focusGlow": [
+      {
+        "color": "#40FFFFFF",
+        "blurRadius": 10.0,
+        "spreadRadius": 1.0
+      }
+    ]
+  },
+  "semantic": {
+    "statusAvailable": "#FF10B981",
+    "statusRequested": "#FF9CA3AF",
+    "statusPending": "#FFF59E0B",
+    "statusDownloading": "#FFE5E7EB",
+    "mediaTypeBadgeMovie": "#FFE5E7EB",
+    "mediaTypeBadgeSeries": "#FF9CA3AF"
+  }
+}

@@ -1,0 +1,57 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Android TV flavor overlay.
+
+      leanback is REQUIRED here. That is deliberate and it is what the dedicated
+      Android TV track demands:
+
+        "APKs or Android App Bundles in this track must require the following
+         features: android.software.leanback."
+
+      Do not "fix" this back to false. The two Play errors are mirror images of
+      each other and the correct value depends entirely on the track:
+
+        Standard / mobile track -> leanback must NOT be required
+          "APKs and bundles must not require following features:
+           android.software.leanback. Some features can only be required in
+           dedicated tracks."
+
+        Dedicated Android TV track -> leanback MUST be required (this file)
+
+      That is why the value lives in the flavor overlay and not in the main
+      manifest: src/main stays required="false" so the mobile flavor remains
+      valid on the standard track, and only this flavor flips it. android:required
+      merges with a logical OR, so "true" here wins over the "false" in the main
+      manifest without needing tools:replace.
+
+      Requiring leanback is also what finally makes the two builds distinguishable
+      to Play. Mobile and TV share applicationId cc.voltix.streaming and therefore
+      one listing; with identical feature sets Play could not tell them apart and
+      served whichever had the highest versionCode to every device. This build is
+      now TV-only in Play's eyes.
+
+      CONSEQUENCE: this flavor can ONLY be uploaded to the Android TV track. It
+      will be rejected on the standard track.
+    -->
+    <uses-feature
+        android:name="android.software.leanback"
+        android:required="true" />
+
+    <!-- Restated for clarity; TVs have no touchscreen. -->
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+
+    <!--
+      Restated from the main manifest. ACCESS_WIFI_STATE and
+      CHANGE_WIFI_MULTICAST_STATE imply android.hardware.wifi, and an implied
+      feature counts as REQUIRED unless declared otherwise - which filtered the
+      app off Ethernet-only TV boxes. Kept here as well so the TV artifact is
+      correct on its own terms.
+    -->
+    <uses-feature
+        android:name="android.hardware.wifi"
+        android:required="false" />
+
+</manifest>

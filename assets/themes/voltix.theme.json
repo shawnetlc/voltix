@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "id": "voltix",
+  "displayName": "Voltix",
+  "description": "The official signature Voltix theme — electric cyan neon energy, glowing bolt highlights, and deep cosmic space surfaces.",
+  "colors": {
+    "background": "#FF090D16",
+    "onBackground": "#FFFFFFFF",
+    "surface": "#FF111726",
+    "onSurface": "#FFFFFFFF",
+    "surfaceVariant": "#FF1A2238",
+    "scrim": "#CC090D16",
+    "accent": "#FF00E5FF",
+    "onAccent": "#FF090D16",
+    "buttonNormal": "#FF182032",
+    "buttonFocused": "#FF00E5FF",
+    "buttonDisabled": "#FF101624",
+    "buttonActive": "#FF222D46",
+    "onButtonNormal": "#FFFFFFFF",
+    "onButtonFocused": "#FF090D16",
+    "onButtonDisabled": "#FF55607A",
+    "inputBackground": "#FF141B2D",
+    "inputFocused": "#FF1E2840",
+    "inputBorder": "#FF2E3D60",
+    "inputBorderFocused": "#FF00E5FF",
+    "rangeTrack": "#FF24304D",
+    "rangeProgress": "#FF00E5FF",
+    "rangeThumb": "#FF00E5FF",
+    "seekbarBuffered": "#8000E5FF",
+    "badgeBackground": "#FF00E5FF",
+    "onBadge": "#FF090D16",
+    "badgeUnplayed": "#FF00E5FF",
+    "badgeWatched": "#FF10B981",
+    "recordingActive": "#FFEF4444",
+    "recordingScheduled": "#FFF59E0B"
+  },
+  "borders": {
+    "cardBorder": { "color": "#1A00E5FF", "width": 1 },
+    "chipBorder": { "color": "#4000E5FF", "width": 1 },
+    "focusBorder": { "color": "#FF00E5FF", "width": 2 },
+    "cardRadius": 10,
+    "chipRadius": 999,
+    "chipBackground": "#1A00E5FF",
+    "focusGlow": [
+      {
+        "color": "#6600E5FF",
+        "blurRadius": 12.0,
+        "spreadRadius": 2.0
+      }
+    ]
+  },
+  "semantic": {
+    "statusAvailable": "#FF10B981",
+    "statusRequested": "#FF8B5CF6",
+    "statusPending": "#FFF59E0B",
+    "statusDownloading": "#FF00E5FF",
+    "mediaTypeBadgeMovie": "#FF00E5FF",
+    "mediaTypeBadgeSeries": "#FF8B5CF6"
+  }
+}

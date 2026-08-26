@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "id": "arctic_aurora",
+  "displayName": "Arctic Aurora",
+  "description": "Crisp glacial teal, frozen crystal cyan, and deep sub-zero polar abyss tones.",
+  "colors": {
+    "background": "#FF08131A",
+    "onBackground": "#FFFFFFFF",
+    "surface": "#FF0E202B",
+    "onSurface": "#FFFFFFFF",
+    "surfaceVariant": "#FF153040",
+    "scrim": "#CC08131A",
+    "accent": "#FF2DD4BF",
+    "onAccent": "#FF08131A",
+    "buttonNormal": "#FF132C3B",
+    "buttonFocused": "#FF5EEAD4",
+    "buttonDisabled": "#FF0A1821",
+    "buttonActive": "#FF1C3E52",
+    "onButtonNormal": "#FFFFFFFF",
+    "onButtonFocused": "#FF08131A",
+    "onButtonDisabled": "#FF496B7D",
+    "inputBackground": "#FF102431",
+    "inputFocused": "#FF173447",
+    "inputBorder": "#FF244D68",
+    "inputBorderFocused": "#FF5EEAD4",
+    "rangeTrack": "#FF1C3C50",
+    "rangeProgress": "#FF2DD4BF",
+    "rangeThumb": "#FF99F6E4",
+    "seekbarBuffered": "#802DD4BF",
+    "badgeBackground": "#FF2DD4BF",
+    "onBadge": "#FF08131A",
+    "badgeUnplayed": "#FF38BDF8",
+    "badgeWatched": "#FF34D399",
+    "recordingActive": "#FFEF4444",
+    "recordingScheduled": "#FFF59E0B"
+  },
+  "borders": {
+    "cardBorder": { "color": "#1A2DD4BF", "width": 1 },
+    "chipBorder": { "color": "#402DD4BF", "width": 1 },
+    "focusBorder": { "color": "#FF5EEAD4", "width": 2 },
+    "cardRadius": 10,
+    "chipRadius": 999,
+    "chipBackground": "#1A2DD4BF",
+    "focusGlow": [
+      {
+        "color": "#552DD4BF",
+        "blurRadius": 12.0,
+        "spreadRadius": 2.0
+      }
+    ]
+  },
+  "semantic": {
+    "statusAvailable": "#FF34D399",
+    "statusRequested": "#FF38BDF8",
+    "statusPending": "#FFF59E0B",
+    "statusDownloading": "#FF2DD4BF",
+    "mediaTypeBadgeMovie": "#FF2DD4BF",
+    "mediaTypeBadgeSeries": "#FF38BDF8"
+  }
+}

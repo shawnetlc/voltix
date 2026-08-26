@@ -1,0 +1,53 @@
+part of '../settings_side_panel.dart';
+
+/// Theme music, gathered onto its own screen the way upstream 2.4.0 has it.
+/// These four settings used to be split between General Style and Home Screen.
+class _ThemeMusicScreen extends StatelessWidget {
+  const _ThemeMusicScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    return withCleanSettingsTypography(
+      context,
+      Scaffold(
+        appBar: buildSettingsAppBar(context, Text(l10n.themeMusic)),
+        body: ListView(
+          children: [
+            SwitchPreferenceTile(
+              preference: UserPreferences.themeMusicEnabled,
+              title: l10n.themeMusic,
+              subtitle: l10n.playThemeMusicOnDetailPages,
+              icon: Icons.music_note,
+              onChanged: _pushPersonalizationSync,
+            ),
+            SliderPreferenceTile(
+              preference: UserPreferences.themeMusicVolume,
+              title: l10n.themeMusicVolume,
+              icon: Icons.volume_down,
+              min: 0,
+              max: 100,
+              divisions: 20,
+              labelOf: (v) => '$v%',
+              onChangeEnd: _pushPersonalizationSync,
+            ),
+            SwitchPreferenceTile(
+              preference: UserPreferences.themeMusicOnHomeRows,
+              title: l10n.themeMusicOnHomeRows,
+              subtitle: l10n.playWhenBrowsingHomeScreen,
+              icon: Icons.queue_music,
+              onChanged: _pushPersonalizationSync,
+            ),
+            SwitchPreferenceTile(
+              preference: UserPreferences.themeMusicLoop,
+              title: 'Loop Theme Music',
+              subtitle: 'Repeat the theme instead of playing it once',
+              icon: Icons.repeat,
+              onChanged: _pushPersonalizationSync,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

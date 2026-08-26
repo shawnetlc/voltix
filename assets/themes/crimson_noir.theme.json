@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "id": "crimson_noir",
+  "displayName": "Crimson Noir",
+  "description": "Dramatic ruby red, intense blood-orange neon, and shadowy cinematic noir darks.",
+  "colors": {
+    "background": "#FF12070A",
+    "onBackground": "#FFFFFFFF",
+    "surface": "#FF200C12",
+    "onSurface": "#FFFFFFFF",
+    "surfaceVariant": "#FF2D121A",
+    "scrim": "#CC12070A",
+    "accent": "#FFE11D48",
+    "onAccent": "#FFFFFFFF",
+    "buttonNormal": "#FF2B1117",
+    "buttonFocused": "#FFFB7185",
+    "buttonDisabled": "#FF16080C",
+    "buttonActive": "#FF3D1822",
+    "onButtonNormal": "#FFFFFFFF",
+    "onButtonFocused": "#FF12070A",
+    "onButtonDisabled": "#FF6E4852",
+    "inputBackground": "#FF230D14",
+    "inputFocused": "#FF33141D",
+    "inputBorder": "#FF4F1E2D",
+    "inputBorderFocused": "#FFFB7185",
+    "rangeTrack": "#FF3D1723",
+    "rangeProgress": "#FFE11D48",
+    "rangeThumb": "#FFFB7185",
+    "seekbarBuffered": "#80E11D48",
+    "badgeBackground": "#FFE11D48",
+    "onBadge": "#FFFFFFFF",
+    "badgeUnplayed": "#FFFB7185",
+    "badgeWatched": "#FF10B981",
+    "recordingActive": "#FFE11D48",
+    "recordingScheduled": "#FFF59E0B"
+  },
+  "borders": {
+    "cardBorder": { "color": "#1AE11D48", "width": 1 },
+    "chipBorder": { "color": "#40E11D48", "width": 1 },
+    "focusBorder": { "color": "#FFFB7185", "width": 2 },
+    "cardRadius": 10,
+    "chipRadius": 999,
+    "chipBackground": "#1AE11D48",
+    "focusGlow": [
+      {
+        "color": "#55E11D48",
+        "blurRadius": 12.0,
+        "spreadRadius": 2.0
+      }
+    ]
+  },
+  "semantic": {
+    "statusAvailable": "#FF10B981",
+    "statusRequested": "#FFFB7185",
+    "statusPending": "#FFF59E0B",
+    "statusDownloading": "#FFE11D48",
+    "mediaTypeBadgeMovie": "#FFE11D48",
+    "mediaTypeBadgeSeries": "#FFFB7185"
+  }
+}

@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "exportedByEditorVersion": "2026.05.28",
+  "id": "bluesneyplus",
+  "displayName": "BluesneyPlus",
+  "colors": {
+    "background": "#FF004C58",
+    "onBackground": "#FFFFFFFF",
+    "surface": "#FF004C58",
+    "onSurface": "#FFFFFFFF",
+    "surfaceVariant": "#FF163241",
+    "scrim": "#CC163241",
+    "accent": "#FF99C1F1",
+    "onAccent": "#FF163241",
+    "buttonNormal": "#FF183949",
+    "buttonFocused": "#FFFFFFFF",
+    "buttonDisabled": "#FF163241",
+    "buttonActive": "#FF163241",
+    "onButtonNormal": "#FFFFFFFF",
+    "onButtonFocused": "#FF163241",
+    "onButtonDisabled": "#FF666666",
+    "inputBackground": "#FF163241",
+    "inputFocused": "#FFFFFFFF",
+    "inputBorder": "#FFFFFFFF",
+    "inputBorderFocused": "#FFFFFFFF",
+    "rangeTrack": "#FF404040",
+    "rangeProgress": "#FFFFFFFF",
+    "rangeThumb": "#FFFFFFFF",
+    "seekbarBuffered": "#80FFFFFF",
+    "badgeBackground": "#FF99C1F1",
+    "onBadge": "#FFFFFFFF",
+    "badgeUnplayed": "#FF00A4DC",
+    "badgeWatched": "#FF4CAF50",
+    "recordingActive": "#FFEF4444",
+    "recordingScheduled": "#FFFF9800"
+  },
+  "borders": {
+    "cardBorder": {
+      "color": "#00000000",
+      "width": 1
+    },
+    "chipBorder": {
+      "color": "#558EC8F0",
+      "width": 1
+    },
+    "focusBorder": {
+      "color": "#FFFFFFFF",
+      "width": 2
+    },
+    "cardRadius": 8,
+    "chipRadius": 999,
+    "chipBackground": "#1F8EC8F0",
+    "focusGlow": []
+  },
+  "semantic": {
+    "statusAvailable": "#FF22C55E",
+    "statusRequested": "#FF9333EA",
+    "statusPending": "#FFEAB308",
+    "statusDownloading": "#FF6366F1",
+    "mediaTypeBadgeMovie": "#FF3B82F6",
+    "mediaTypeBadgeShow": "#FF8B5CF6"
+  },
+  "book": {
+    "background": "#FF0F182A",
+    "accent": "#FF32B9E8",
+    "mutedText": "#FF9EDBFF",
+    "primaryText": "#FFDCEFFF",
+    "sectionTitle": "#FFFFE6C3",
+    "divider": "#223E5F82",
+    "placeholder": "#FF2C77B7",
+    "shadow": "#24000000",
+    "gradientTop": "#FF18263D",
+    "gradientBottom": "#FF0B1424",
+    "inactiveChip": "#556388A8",
+    "placeholderPalette": [
+      "#FF1A5C9A",
+      "#FF2E7D32",
+      "#FF6A1B9A",
+      "#FF00695C",
+      "#FFC62828",
+      "#FF4527A0",
+      "#FF558B2F",
+      "#FF283593",
+      "#FF4E342E",
+      "#FF00838F"
+    ]
+  }
+}

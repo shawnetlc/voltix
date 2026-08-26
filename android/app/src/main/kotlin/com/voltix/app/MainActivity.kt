@@ -1,0 +1,1707 @@
+package com.voltix.app
+
+import android.app.Activity
+import android.app.PendingIntent
+import android.app.PictureInPictureParams
+import android.app.RemoteAction
+import android.app.UiModeManager
+import android.content.ActivityNotFoundException
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
+import android.content.res.Configuration
+import android.graphics.drawable.Icon
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
+import android.net.Uri
+import android.provider.Settings
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.Process
+import android.os.PowerManager
+import android.util.Rational
+import android.view.Display
+import androidx.mediarouter.media.MediaRouteSelector
+import androidx.mediarouter.media.MediaRouter
+import androidx.core.content.FileProvider
+import com.google.android.gms.cast.CastMediaControlIntent
+import com.google.android.gms.cast.MediaInfo
+import com.google.android.gms.cast.MediaLoadRequestData
+import com.google.android.gms.cast.MediaQueueData
+import com.google.android.gms.cast.MediaQueueItem
+import com.google.android.gms.cast.MediaMetadata
+import com.google.android.gms.cast.MediaSeekOptions
+import com.google.android.gms.cast.MediaStatus
+import com.google.android.gms.cast.framework.media.RemoteMediaClient
+import com.google.android.gms.cast.framework.CastContext
+import com.google.android.gms.common.ConnectionResult
+import com.google.android.gms.common.GoogleApiAvailability
+import com.google.android.gms.cast.framework.CastSession
+import com.google.android.gms.cast.framework.SessionManagerListener
+import com.google.android.gms.common.images.WebImage
+import com.ryanheise.audioservice.AudioServiceActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
+import io.flutter.plugin.common.MethodChannel
+import java.io.ByteArrayOutputStream
+
+
+class MainActivity : AudioServiceActivity() {
+
+    private var methodChannel: MethodChannel? = null
+    private var castChannel: MethodChannel? = null
+    private var castEventsChannel: EventChannel? = null
+    private var castEventsSink: EventChannel.EventSink? = null
+    private var audioCapsEventsChannel: EventChannel? = null
+    private var audioCapsSink: EventChannel.EventSink? = null
+    private var audioDeviceCallback: AudioDeviceCallback? = null
+    private var castStatusListener: SessionManagerListener<CastSession>? = null
+    private var castDiscoveryCallback: MediaRouter.Callback? = null
+
+    // True when startGoogleCastSession opened its own active scan because the
+    // picker had already closed one. Released in cleanupPendingCast so the scan
+    // never outlives the connection attempt.
+    private var castScanHeldForPendingSession = false
+    private var dlnaChannel: MethodChannel? = null
+    private var dlnaEventsChannel: EventChannel? = null
+    private var dlnaController: DlnaController? = null
+    private var externalPlayerChannel: MethodChannel? = null
+    private var externalPlayerPendingResult: MethodChannel.Result? = null
+    private var pipEnabled = false
+    private val handler = Handler(Looper.getMainLooper())
+    private var dismissRunnable: Runnable? = null
+    private var pendingCastTimeout: Runnable? = null
+    private var pendingCastListener: SessionManagerListener<CastSession>? = null
+    private var castMediaListener: RemoteMediaClient.Listener? = null
+    private var castProgressListener: RemoteMediaClient.ProgressListener? = null
+
+    private fun emitAudioCapabilities() {
+        audioCapsSink?.success(AudioCapabilities.query(this))
+    }
+
+    private fun unregisterAudioDeviceCallback() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            audioDeviceCallback?.let { callback ->
+                (getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
+                    ?.unregisterAudioDeviceCallback(callback)
+            }
+        }
+        audioDeviceCallback = null
+    }
+
+    companion object {
+        private const val CHANNEL = "com.voltix.app/pip"
+        // How long startGoogleCastSession waits for a route to (re)appear after
+        // the picker closed its scan, and how often it re-checks.
+        private const val CAST_ROUTE_WAIT_MS = 6000L
+        private const val CAST_ROUTE_POLL_MS = 250L
+
+        private const val CAST_CHANNEL = "com.voltix/native_cast"
+        private const val CAST_EVENTS_CHANNEL = "com.voltix/native_cast_events"
+        private const val DLNA_CHANNEL = "com.voltix/native_dlna"
+        private const val DLNA_EVENTS_CHANNEL = "com.voltix/native_dlna_events"
+        private const val EXTERNAL_PLAYER_CHANNEL = "voltix/external_player"
+        private const val ACTION_PLAY_PAUSE = "com.voltix.app.ACTION_PIP_PLAY_PAUSE"
+        private const val DISMISS_DELAY_MS = 300L
+        private const val PLATFORM_CHANNEL = "com.voltix.app/platform"
+        private const val UPDATE_CHANNEL = "com.voltix.app/update"
+        private const val AUDIO_CAPS_EVENTS_CHANNEL =
+            "com.voltix.app/audioCapabilitiesEvents"
+        private const val EXTERNAL_PLAYER_PROXY_REQUEST_CODE = 17115
+        private const val EXTRA_EXTERNAL_PLAYER_LAUNCH_INTENT = "voltix.external_player.launch_intent"
+        private const val EXTRA_EXTERNAL_PLAYER_ERROR_CODE = "voltix.external_player.error_code"
+        private const val EXTRA_EXTERNAL_PLAYER_ERROR_MESSAGE = "voltix.external_player.error_message"
+        private const val EXTERNAL_PLAYER_CHOOSER_TITLE = "Play with"
+        private const val EXTERNAL_PLAYER_SAMPLE_URL = "http://127.0.0.1/sample.mp4"
+
+        private const val API_MX_RESULT_ID = "com.mxtech.intent.result.VIEW"
+        private const val API_MX_RESULT_END_BY = "end_by"
+        private const val API_MX_RESULT_END_BY_PLAYBACK_COMPLETION = "playback_completion"
+        private const val API_MX_RESULT_POSITION = "position"
+
+        private const val API_VLC_RESULT_POSITION = "extra_position"
+
+        private const val API_VIMU_RESULT_ID = "net.gtvbox.videoplayer.result"
+        private const val API_VIMU_RESULT_ERROR = 4
+        private const val API_VIMU_RESULT_PLAYBACK_COMPLETED = 1
+
+        private const val API_MPV_RESULT_ID = "is.xyz.mpv.MPVActivity.result"
+    }
+
+    private fun getDisplayHdrTypes(): List<String> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            return emptyList()
+        }
+        val currentDisplay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            display
+        } else {
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay
+        }
+        val hdrTypes = currentDisplay?.hdrCapabilities?.supportedHdrTypes ?: return emptyList()
+        return hdrTypes.map { type ->
+            when (type) {
+                Display.HdrCapabilities.HDR_TYPE_DOLBY_VISION -> "DOLBY_VISION"
+                Display.HdrCapabilities.HDR_TYPE_HDR10 -> "HDR10"
+                Display.HdrCapabilities.HDR_TYPE_HDR10_PLUS -> "HDR10_PLUS"
+                Display.HdrCapabilities.HDR_TYPE_HLG -> "HLG"
+                else -> type.toString()
+            }
+        }
+    }
+
+    private val pipReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == ACTION_PLAY_PAUSE) {
+                methodChannel?.invokeMethod("onPiPAction", "playPause")
+            }
+        }
+    }
+
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF ->
+                    methodChannel?.invokeMethod("onScreenLock", true)
+                Intent.ACTION_USER_PRESENT ->
+                    methodChannel?.invokeMethod("onScreenLock", false)
+            }
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            runCatching { window.colorMode = ActivityInfo.COLOR_MODE_HDR }
+        }
+    }
+
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            MediaStoreHelper.CHANNEL,
+        ).setMethodCallHandler(MediaStoreHelper(this))
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            PLATFORM_CHANNEL,
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "isTvDevice" -> {
+                    val uiModeManager = getSystemService(UI_MODE_SERVICE) as UiModeManager
+                    val pm = packageManager
+                    val isTv = uiModeManager.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
+                        pm.hasSystemFeature(PackageManager.FEATURE_LEANBACK) ||
+                        pm.hasSystemFeature("amazon.hardware.fire_tv")
+                    result.success(isTv)
+                }
+                "displayHdrTypes" -> result.success(getDisplayHdrTypes())
+                "dolbyVisionCodecCapabilities" -> {
+                    result.success(MediaCodecCapabilities.queryDolbyVisionCapabilities())
+                }
+                "mediaCodecCapabilities" -> {
+                    val includeSoftwareDecoders =
+                        call.argument<Boolean>("includeSoftwareDecoders") ?: false
+                    result.success(
+                        MediaCodecCapabilities.query(
+                            includeSoftwareDecoders = includeSoftwareDecoders,
+                        ),
+                    )
+                }
+                "audioCapabilities" -> {
+                    result.success(AudioCapabilities.query(this))
+                }
+                "exitApp" -> {
+                    result.success(true)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        finishAndRemoveTask()
+                    } else {
+                        finishAffinity()
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            UPDATE_CHANNEL,
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "canInstallPackages" -> {
+                    val canInstall = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        packageManager.canRequestPackageInstalls()
+                    } else {
+                        @Suppress("DEPRECATION")
+                        android.provider.Settings.Secure.getInt(
+                            contentResolver,
+                            android.provider.Settings.Secure.INSTALL_NON_MARKET_APPS,
+                            0
+                        ) == 1
+                    }
+                    result.success(canInstall)
+                }
+                "requestInstallPermission" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                            data = Uri.parse("package:$packageName")
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        startActivity(intent)
+                    }
+                    result.success(null)
+                }
+                "installApk" -> {
+                    val path = call.argument<String>("path")
+                    if (path == null) {
+                        result.error("INVALID_ARGS", "path is required", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val apkFile = java.io.File(path)
+                        val apkUri = FileProvider.getUriForFile(
+                            this,
+                            "$packageName.fileprovider",
+                            apkFile,
+                        )
+                        val intent = Intent(Intent.ACTION_VIEW).apply {
+                            setDataAndType(apkUri, "application/vnd.android.package-archive")
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        startActivity(intent)
+                        result.success(null)
+                    } catch (e: Exception) {
+                        result.error("INSTALL_FAILED", e.message, null)
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        externalPlayerChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            EXTERNAL_PLAYER_CHANNEL,
+        )
+        externalPlayerChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "listPlayers" -> result.success(listExternalPlayerApps())
+                "launch" -> {
+                    val args = call.arguments as? Map<*, *> ?: emptyMap<String, Any>()
+                    launchExternalPlayer(args, result)
+                }
+                "chooseAndLaunch" -> {
+                    val args = call.arguments as? Map<*, *> ?: emptyMap<String, Any>()
+                    chooseAndLaunchExternalPlayer(args, result)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        methodChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            CHANNEL,
+        )
+        methodChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "enableAutoPiP" -> {
+                    pipEnabled = call.argument<Boolean>("enabled") ?: false
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        setPictureInPictureParams(buildPiPParams(true))
+                    }
+                    result.success(true)
+                }
+                "updatePiPActions" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                        isInPictureInPictureMode
+                    ) {
+                        setPictureInPictureParams(
+                            buildPiPParams(
+                                call.argument<Boolean>("isPlaying") ?: true,
+                            ),
+                        )
+                    }
+                    result.success(true)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        castChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            CAST_CHANNEL,
+        )
+        castChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "isGoogleCastAvailable" -> {
+                    result.success(isGoogleCastAvailable())
+                }
+                "discoverGoogleCastTargets" -> {
+                    result.success(discoverGoogleCastTargets())
+                }
+                "startGoogleCastDiscovery" -> {
+                    startGoogleCastDiscovery()
+                    result.success(null)
+                }
+                "stopGoogleCastDiscovery" -> {
+                    stopGoogleCastDiscovery()
+                    result.success(null)
+                }
+                "startGoogleCastSession" -> {
+                    val args = call.arguments as? Map<*, *> ?: emptyMap<String, Any>()
+                    startGoogleCastSession(args, result)
+                }
+                "showAirPlayRoutePicker" -> {
+                    result.error(
+                        "UNSUPPORTED",
+                        "AirPlay is only available on iOS.",
+                        null,
+                    )
+                }
+                "pauseGoogleCast" -> {
+                    withRemoteMediaClient(result) { remoteClient ->
+                        remoteClient.pause()
+                        result.success(null)
+                    }
+                }
+                "playGoogleCast" -> {
+                    withRemoteMediaClient(result) { remoteClient ->
+                        remoteClient.play()
+                        result.success(null)
+                    }
+                }
+                "seekGoogleCast" -> {
+                    val args = call.arguments as? Map<*, *> ?: emptyMap<String, Any>()
+                    val positionTicks = (args["positionTicks"] as? Number)?.toLong()
+                    if (positionTicks == null || positionTicks < 0L) {
+                        result.error("BAD_ARGS", "Missing or invalid positionTicks", null)
+                        return@setMethodCallHandler
+                    }
+
+                    withRemoteMediaClient(result) { remoteClient ->
+                        val positionMs = positionTicks / 10000L
+                        val seekOptions = MediaSeekOptions.Builder()
+                            .setPosition(positionMs)
+                            .build()
+                        remoteClient.seek(seekOptions)
+                        result.success(null)
+                    }
+                }
+                "stopGoogleCastSession" -> {
+                    withRemoteMediaClient(result) { remoteClient ->
+                        remoteClient.stop()
+                        result.success(null)
+                    }
+                }
+                "getGoogleCastVolume" -> {
+                    val session = getCurrentCastSession()
+                    if (session == null) {
+                        result.error("NO_CAST_SESSION", "No active Google Cast session", null)
+                        return@setMethodCallHandler
+                    }
+                    result.success(session.volume.toDouble())
+                }
+                "setGoogleCastVolume" -> {
+                    val args = call.arguments as? Map<*, *> ?: emptyMap<String, Any>()
+                    val volume = (args["volume"] as? Number)?.toDouble()
+                    if (volume == null || volume.isNaN()) {
+                        result.error("BAD_ARGS", "Missing or invalid volume", null)
+                        return@setMethodCallHandler
+                    }
+                    val session = getCurrentCastSession()
+                    if (session == null) {
+                        result.error("NO_CAST_SESSION", "No active Google Cast session", null)
+                        return@setMethodCallHandler
+                    }
+                    val clamped = volume.coerceIn(0.0, 1.0)
+                    session.setVolume(clamped)
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        castEventsChannel = EventChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            CAST_EVENTS_CHANNEL,
+        )
+        castEventsChannel?.setStreamHandler(object : EventChannel.StreamHandler {
+            override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                castEventsSink = events
+                emitGoogleCastEvent(
+                    state = if (getCurrentCastSession() != null) "connected" else "disconnected",
+                )
+                emitCurrentGoogleCastStatus()
+            }
+
+            override fun onCancel(arguments: Any?) {
+                castEventsSink = null
+            }
+        })
+
+        registerCastStatusListener()
+
+        dlnaController = DlnaController(this)
+
+        dlnaChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            DLNA_CHANNEL,
+        )
+        dlnaChannel?.setMethodCallHandler { call, result ->
+            val ctrl = dlnaController
+            if (ctrl == null) {
+                result.error("DLNA_UNAVAILABLE", "DLNA controller not initialized", null)
+                return@setMethodCallHandler
+            }
+            when (call.method) {
+                "discoverDlnaTargets" -> ctrl.discoverTargets(result)
+                "startDlnaDiscovery" -> {
+                    ctrl.startContinuousDiscovery()
+                    result.success(null)
+                }
+                "stopDlnaDiscovery" -> {
+                    ctrl.stopContinuousDiscovery()
+                    result.success(null)
+                }
+                "playToDlnaDevice" -> {
+                    val args = call.arguments as? Map<*, *> ?: emptyMap<String, Any>()
+                    ctrl.playToDevice(args, result)
+                }
+                "pauseDlna" -> ctrl.pause(result)
+                "playDlna" -> ctrl.play(result)
+                "seekDlna" -> {
+                    val args = call.arguments as? Map<*, *> ?: emptyMap<String, Any>()
+                    ctrl.seek(args, result)
+                }
+                "stopDlna" -> ctrl.stop(result)
+                "getDlnaVolume" -> ctrl.getVolume(result)
+                "setDlnaVolume" -> {
+                    val args = call.arguments as? Map<*, *> ?: emptyMap<String, Any>()
+                    ctrl.setVolume(args, result)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        dlnaEventsChannel = EventChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            DLNA_EVENTS_CHANNEL,
+        )
+        dlnaEventsChannel?.setStreamHandler(object : EventChannel.StreamHandler {
+            override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                dlnaController?.setEventSink(events)
+            }
+
+            override fun onCancel(arguments: Any?) {
+                dlnaController?.setEventSink(null)
+            }
+        })
+
+        // Re-probe audio capabilities whenever the audio route changes (e.g. an
+        // AVR is powered on after launch) and push the fresh result to Dart so
+        // the device profile self-heals without an app restart.
+        audioCapsEventsChannel = EventChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            AUDIO_CAPS_EVENTS_CHANNEL,
+        )
+        audioCapsEventsChannel?.setStreamHandler(object : EventChannel.StreamHandler {
+            override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                audioCapsSink = events
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    val audioManager =
+                        getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                    val callback = object : AudioDeviceCallback() {
+                        override fun onAudioDevicesAdded(
+                            addedDevices: Array<out AudioDeviceInfo>?,
+                        ) = emitAudioCapabilities()
+
+                        override fun onAudioDevicesRemoved(
+                            removedDevices: Array<out AudioDeviceInfo>?,
+                        ) = emitAudioCapabilities()
+                    }
+                    audioDeviceCallback = callback
+                    audioManager?.registerAudioDeviceCallback(
+                        callback,
+                        Handler(Looper.getMainLooper()),
+                    )
+                }
+            }
+
+            override fun onCancel(arguments: Any?) {
+                unregisterAudioDeviceCallback()
+                audioCapsSink = null
+            }
+        })
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(
+                pipReceiver,
+                IntentFilter(ACTION_PLAY_PAUSE),
+                Context.RECEIVER_EXPORTED,
+            )
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(pipReceiver, IntentFilter(ACTION_PLAY_PAUSE))
+        }
+
+        val screenFilter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(screenReceiver, screenFilter, Context.RECEIVER_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(screenReceiver, screenFilter)
+        }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        requestEnterPiPIfEligible()
+    }
+
+    override fun onPictureInPictureRequested(): Boolean {
+        return requestEnterPiPIfEligible()
+    }
+
+    private fun requestEnterPiPIfEligible(): Boolean {
+        val hasPiPFeature = packageManager.hasSystemFeature(
+            android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE,
+        )
+        if (!pipEnabled) return false
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+        if (!hasPiPFeature) return false
+        if (isInPictureInPictureMode) return true
+        if (isFinishing || isDestroyed) return false
+        val result = enterPictureInPictureMode(buildPiPParams(true))
+        return result
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPiP: Boolean,
+        newConfig: Configuration,
+    ) {
+        super.onPictureInPictureModeChanged(isInPiP, newConfig)
+        dispatchPiPMethod("onPiPChanged", isInPiP)
+
+        dismissRunnable?.let {
+            handler.removeCallbacks(it)
+            dismissRunnable = null
+        }
+
+        if (!isInPiP) {
+            val power = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (!power.isInteractive) return
+
+            dismissRunnable = Runnable {
+                dispatchPiPMethod("onPiPAction", "dismissed")
+                dismissRunnable = null
+            }
+            handler.postDelayed(dismissRunnable!!, DISMISS_DELAY_MS)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (isInPictureInPictureMode) return
+        dismissRunnable?.let {
+            handler.removeCallbacks(it)
+            dismissRunnable = null
+        }
+    }
+
+    private fun dispatchPiPMethod(method: String, argument: Any) {
+        val channel = methodChannel
+        if (channel != null) {
+            channel.invokeMethod(method, argument)
+            return
+        }
+        handler.post {
+            methodChannel?.invokeMethod(method, argument)
+        }
+    }
+
+    private fun buildPiPParams(isPlaying: Boolean): PictureInPictureParams {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            throw IllegalStateException("PiP requires API 26+")
+        }
+
+        val builder = PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(16, 9))
+
+        val icon = if (isPlaying) {
+            Icon.createWithResource(this, android.R.drawable.ic_media_pause)
+        } else {
+            Icon.createWithResource(this, android.R.drawable.ic_media_play)
+        }
+        val label = if (isPlaying) "Pause" else "Play"
+        val intent = PendingIntent.getBroadcast(
+            this,
+            0,
+            Intent(ACTION_PLAY_PAUSE).apply { setPackage(packageName) },
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val action = RemoteAction(icon, label, label, intent)
+        builder.setActions(listOf(action))
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setAutoEnterEnabled(pipEnabled)
+            builder.setSeamlessResizeEnabled(true)
+        }
+
+        return builder.build()
+    }
+
+    override fun onDestroy() {
+        val shouldTerminateProcess = isFinishing && !isChangingConfigurations
+        dismissRunnable?.let { handler.removeCallbacks(it) }
+        pendingCastTimeout?.let { handler.removeCallbacks(it) }
+        val castContext = runCatching { CastContext.getSharedInstance(this) }.getOrNull()
+        val sessionManager = castContext?.sessionManager
+        pendingCastListener?.let { listener ->
+            sessionManager?.removeSessionManagerListener(listener, CastSession::class.java)
+        }
+        castStatusListener?.let { listener ->
+            sessionManager?.removeSessionManagerListener(listener, CastSession::class.java)
+        }
+        unregisterCastMediaCallback()
+        stopGoogleCastDiscovery()
+        try { unregisterReceiver(pipReceiver) } catch (_: Exception) {}
+        try { unregisterReceiver(screenReceiver) } catch (_: Exception) {}
+        castChannel?.setMethodCallHandler(null)
+        castEventsChannel?.setStreamHandler(null)
+        unregisterAudioDeviceCallback()
+        audioCapsEventsChannel?.setStreamHandler(null)
+        dlnaController?.onDestroy()
+        dlnaChannel?.setMethodCallHandler(null)
+        dlnaEventsChannel?.setStreamHandler(null)
+        externalPlayerChannel?.setMethodCallHandler(null)
+        externalPlayerPendingResult?.error(
+            "ACTIVITY_DESTROYED",
+            "Main activity was destroyed before external playback returned.",
+            null,
+        )
+        externalPlayerPendingResult = null
+        super.onDestroy()
+
+        if (shouldTerminateProcess) {
+            // Recents-close can destroy activity while native callbacks from the old
+            // engine lifetime are still in flight. Terminating this process prevents
+            // a new engine from attaching to stale native callback state.
+            Process.killProcess(Process.myPid())
+        }
+    }
+
+    /**
+     * Whether Google Cast can work on this device at all.
+     *
+     * The Cast SDK is part of Google Play services. Huawei devices shipped after
+     * the 2019 trade restrictions have no GMS, so every Cast entry point fails
+     * there. The Dart side calls this once and hides casting entirely rather
+     * than offering a button that can only ever error - DLNA remains available
+     * and is a fully local implementation.
+     *
+     * SERVICE_MISSING / SERVICE_INVALID and friends are all treated as
+     * unavailable: an update-required state is not something this app can
+     * usefully resolve mid-cast.
+     */
+    private fun isGoogleCastAvailable(): Boolean {
+        return try {
+            val status = GoogleApiAvailability.getInstance()
+                .isGooglePlayServicesAvailable(this)
+            status == ConnectionResult.SUCCESS
+        } catch (t: Throwable) {
+            // The availability check itself needs the GMS client library to be
+            // loadable. If even that throws, casting is definitively out.
+            false
+        }
+    }
+
+    private fun discoverGoogleCastTargets(): List<Map<String, Any>> {
+        val selector = MediaRouteSelector.Builder()
+            .addControlCategory(
+                CastMediaControlIntent.categoryForCast(
+                    CastMediaControlIntent.DEFAULT_MEDIA_RECEIVER_APPLICATION_ID,
+                ),
+            )
+            .build()
+
+        val mediaRouter = MediaRouter.getInstance(this)
+        val routes = mediaRouter.routes.filter { route ->
+            route.isEnabled && route.matchesSelector(selector)
+        }
+
+        return routes.map { route ->
+            mapOf(
+                "id" to route.id,
+                "title" to route.name,
+                "subtitle" to (route.description?.toString() ?: "Google Cast"),
+            )
+        }
+    }
+
+    private fun castRouteSelector(): MediaRouteSelector =
+        MediaRouteSelector.Builder()
+            .addControlCategory(
+                CastMediaControlIntent.categoryForCast(
+                    CastMediaControlIntent.DEFAULT_MEDIA_RECEIVER_APPLICATION_ID,
+                ),
+            )
+            .build()
+
+    // MediaRouter only actively scans for Cast devices while a callback with an
+    // active-scan flag is registered; reading routes without one returns a stale
+    // (often empty) list. Register an active-scan callback while the picker is
+    // open and emit each matching route as a `deviceFound` event.
+    private fun startGoogleCastDiscovery() {
+        runOnUiThread {
+            val mediaRouter = MediaRouter.getInstance(this)
+            val selector = castRouteSelector()
+            if (castDiscoveryCallback == null) {
+                val callback = object : MediaRouter.Callback() {
+                    override fun onRouteAdded(router: MediaRouter, route: MediaRouter.RouteInfo) {
+                        emitCastRouteFound(route, selector)
+                    }
+
+                    override fun onRouteChanged(router: MediaRouter, route: MediaRouter.RouteInfo) {
+                        emitCastRouteFound(route, selector)
+                    }
+                }
+                castDiscoveryCallback = callback
+                mediaRouter.addCallback(
+                    selector,
+                    callback,
+                    MediaRouter.CALLBACK_FLAG_PERFORM_ACTIVE_SCAN,
+                )
+            }
+            mediaRouter.routes.forEach { emitCastRouteFound(it, selector) }
+        }
+    }
+
+    private fun stopGoogleCastDiscovery() {
+        runOnUiThread {
+            val callback = castDiscoveryCallback ?: return@runOnUiThread
+            MediaRouter.getInstance(this).removeCallback(callback)
+            castDiscoveryCallback = null
+        }
+    }
+
+    private fun emitCastRouteFound(route: MediaRouter.RouteInfo, selector: MediaRouteSelector) {
+        if (!route.isEnabled || !route.matchesSelector(selector)) return
+        castEventsSink?.success(
+            mapOf(
+                "kind" to "googleCast",
+                "state" to "deviceFound",
+                "id" to route.id,
+                "title" to route.name,
+                "subtitle" to (route.description?.toString() ?: "Google Cast"),
+            ),
+        )
+    }
+
+    private fun startGoogleCastSession(args: Map<*, *>, result: MethodChannel.Result) {
+        val targetId = args["targetId"] as? String
+        val streamUrl = args["streamUrl"] as? String
+        val title = args["title"] as? String ?: "Voltix"
+        val subtitle = args["subtitle"] as? String
+        val posterUrl = args["posterUrl"] as? String
+        val queueItems = parseQueueItems(args["queueItems"])
+        val startTicks = (args["startPositionTicks"] as? Number)?.toLong()
+
+        if (targetId.isNullOrEmpty() || streamUrl.isNullOrEmpty()) {
+            result.error("BAD_ARGS", "Missing targetId or streamUrl", null)
+            return
+        }
+
+        emitGoogleCastEvent("connecting")
+
+        val mediaRouter = MediaRouter.getInstance(this)
+
+        // MediaRouter only keeps its route list fresh while a callback with
+        // PERFORM_ACTIVE_SCAN is registered (see startGoogleCastDiscovery).
+        // CastService cancels the discovery stream the moment the device picker
+        // closes, which is the same moment the user's selection travels down
+        // here - so the route could already have been dropped before we looked
+        // it up. Whether it survived depended on Android version, OEM and
+        // whether that device had been cast to recently, which is why this
+        // failed for some users and not others.
+        //
+        // Hold a scan open across the lookup and give the route a few seconds to
+        // reappear rather than failing on the first miss.
+        if (castDiscoveryCallback == null) {
+            castScanHeldForPendingSession = true
+            startGoogleCastDiscovery()
+        }
+
+        val selector = castRouteSelector()
+        var waitedMs = 0L
+
+        fun findRoute(): MediaRouter.RouteInfo? =
+            mediaRouter.routes.firstOrNull {
+                it.id == targetId && it.isEnabled && it.matchesSelector(selector)
+            }
+
+        fun awaitRoute() {
+            val found = findRoute()
+            if (found != null) {
+                continueGoogleCastSession(
+                    route = found,
+                    streamUrl = streamUrl,
+                    title = title,
+                    subtitle = subtitle,
+                    posterUrl = posterUrl,
+                    queueItems = queueItems,
+                    startTicks = startTicks,
+                    result = result,
+                )
+                return
+            }
+            if (waitedMs >= CAST_ROUTE_WAIT_MS) {
+                releaseHeldCastScan()
+                emitGoogleCastEvent("error", "Google Cast route not found")
+                result.error("NOT_FOUND", "Google Cast route not found", null)
+                return
+            }
+            waitedMs += CAST_ROUTE_POLL_MS
+            handler.postDelayed({ awaitRoute() }, CAST_ROUTE_POLL_MS)
+        }
+
+        awaitRoute()
+    }
+
+    /** Releases a scan opened by startGoogleCastSession, if we opened one. */
+    private fun releaseHeldCastScan() {
+        if (castScanHeldForPendingSession) {
+            castScanHeldForPendingSession = false
+            stopGoogleCastDiscovery()
+        }
+    }
+
+    /** Second half of startGoogleCastSession, entered once the route resolves. */
+    private fun continueGoogleCastSession(
+        route: MediaRouter.RouteInfo,
+        streamUrl: String,
+        title: String,
+        subtitle: String?,
+        posterUrl: String?,
+        queueItems: List<Map<String, Any>>,
+        startTicks: Long?,
+        result: MethodChannel.Result,
+    ) {
+        // Re-acquired rather than passed in: MediaRouter.getInstance is a cheap
+        // singleton lookup and keeping the call identical to the original avoids
+        // threading the router through the signature.
+        val mediaRouter = MediaRouter.getInstance(this)
+
+        val castContext = try {
+            CastContext.getSharedInstance(this)
+        } catch (t: Throwable) {
+            releaseHeldCastScan()
+            result.error("CAST_INIT_FAILED", t.message, null)
+            return
+        }
+
+        val sessionManager = castContext.sessionManager
+        val currentSession = sessionManager.currentCastSession
+        if (currentSession != null) {
+            releaseHeldCastScan()
+            loadOnCastSession(
+                session = currentSession,
+                streamUrl = streamUrl,
+                title = title,
+                subtitle = subtitle,
+                posterUrl = posterUrl,
+                queueItems = queueItems,
+                startTicks = startTicks,
+                result = result,
+            )
+            return
+        }
+
+        pendingCastTimeout?.let { handler.removeCallbacks(it) }
+        pendingCastListener?.let { listener ->
+            sessionManager.removeSessionManagerListener(listener, CastSession::class.java)
+        }
+
+        val listener = object : SessionManagerListener<CastSession> {
+            override fun onSessionStarted(session: CastSession, sessionId: String) {
+                cleanupPendingCast(sessionManager, this)
+                loadOnCastSession(session, streamUrl, title, subtitle, posterUrl, queueItems, startTicks, result)
+            }
+
+            override fun onSessionResumed(session: CastSession, wasSuspended: Boolean) {
+                cleanupPendingCast(sessionManager, this)
+                loadOnCastSession(session, streamUrl, title, subtitle, posterUrl, queueItems, startTicks, result)
+            }
+
+            override fun onSessionStartFailed(session: CastSession, error: Int) {
+                cleanupPendingCast(sessionManager, this)
+                result.error("CAST_START_FAILED", "Failed to start cast session: $error", null)
+            }
+
+            override fun onSessionEnded(session: CastSession, error: Int) {}
+            override fun onSessionEnding(session: CastSession) {}
+            override fun onSessionResumeFailed(session: CastSession, error: Int) {}
+            override fun onSessionResuming(session: CastSession, sessionId: String) {}
+            override fun onSessionStarting(session: CastSession) {}
+            override fun onSessionSuspended(session: CastSession, reason: Int) {}
+        }
+
+        pendingCastListener = listener
+        sessionManager.addSessionManagerListener(listener, CastSession::class.java)
+
+        pendingCastTimeout = Runnable {
+            cleanupPendingCast(sessionManager, listener)
+            emitGoogleCastEvent("error", "Timed out waiting for cast session")
+            result.error("CAST_TIMEOUT", "Timed out waiting for cast session", null)
+        }.also { handler.postDelayed(it, 15000L) }
+
+        mediaRouter.selectRoute(route)
+    }
+
+    private fun cleanupPendingCast(
+        sessionManager: com.google.android.gms.cast.framework.SessionManager,
+        listener: SessionManagerListener<CastSession>,
+    ) {
+        pendingCastTimeout?.let { handler.removeCallbacks(it) }
+        pendingCastTimeout = null
+        sessionManager.removeSessionManagerListener(listener, CastSession::class.java)
+        pendingCastListener = null
+        releaseHeldCastScan()
+    }
+
+    private fun loadOnCastSession(
+        session: CastSession,
+        streamUrl: String,
+        title: String,
+        subtitle: String?,
+        posterUrl: String?,
+        queueItems: List<Map<String, Any>>,
+        startTicks: Long?,
+        result: MethodChannel.Result,
+    ) {
+        val remoteClient = session.remoteMediaClient
+        if (remoteClient == null) {
+            result.error("NO_REMOTE_CLIENT", "No cast remote media client", null)
+            return
+        }
+
+        val startMs = startTicks?.div(10000L) ?: 0L
+        val effectiveQueueItems = if (queueItems.isEmpty()) {
+            listOf(
+                mapOf(
+                    "streamUrl" to streamUrl,
+                    "title" to title,
+                    "subtitle" to (subtitle ?: ""),
+                    "posterUrl" to (posterUrl ?: ""),
+                ),
+            )
+        } else {
+            queueItems
+        }
+
+        if (effectiveQueueItems.size > 1) {
+            val castQueueItems = effectiveQueueItems.mapNotNull { entry ->
+                buildQueueItem(
+                    streamUrl = entry["streamUrl"] as? String,
+                    title = entry["title"] as? String,
+                    subtitle = entry["subtitle"] as? String,
+                    posterUrl = entry["posterUrl"] as? String,
+                )
+            }
+            if (castQueueItems.isEmpty()) {
+                result.error("BAD_ARGS", "Queue items are invalid", null)
+                return
+            }
+
+            val queueData = MediaQueueData.Builder()
+                .setItems(castQueueItems)
+                .setStartIndex(0)
+                .build()
+
+            val loadRequest = MediaLoadRequestData.Builder()
+                .setQueueData(queueData)
+                .setAutoplay(true)
+                .setCurrentTime(startMs)
+                .build()
+
+            remoteClient.load(loadRequest)
+        } else {
+            val single = effectiveQueueItems.first()
+            val mediaInfo = buildMediaInfo(
+                streamUrl = single["streamUrl"] as? String ?: streamUrl,
+                title = single["title"] as? String ?: title,
+                subtitle = single["subtitle"] as? String ?: subtitle,
+                posterUrl = single["posterUrl"] as? String ?: posterUrl,
+            )
+            val loadRequest = MediaLoadRequestData.Builder()
+                .setMediaInfo(mediaInfo)
+                .setAutoplay(true)
+                .setCurrentTime(startMs)
+                .build()
+            remoteClient.load(loadRequest)
+        }
+
+        registerCastMediaListeners(remoteClient)
+        emitCurrentGoogleCastStatus(remoteClient)
+        result.success(null)
+    }
+
+    private fun parseQueueItems(raw: Any?): List<Map<String, Any>> {
+        val entries = raw as? List<*> ?: return emptyList()
+        return entries.mapNotNull { entry ->
+            val map = entry as? Map<*, *> ?: return@mapNotNull null
+            val streamUrl = map["streamUrl"] as? String ?: return@mapNotNull null
+            val title = map["title"] as? String ?: "Voltix"
+            buildMap<String, Any> {
+                put("streamUrl", streamUrl)
+                put("title", title)
+                (map["subtitle"] as? String)?.let { put("subtitle", it) }
+                (map["posterUrl"] as? String)?.let { put("posterUrl", it) }
+            }
+        }
+    }
+
+    /**
+     * MIME type for a stream URL.
+     *
+     * The receiver uses contentType to pick a playback pipeline. The previous
+     * value was a wildcard rather than a real MIME type, so it matched no
+     * pipeline: the receiver connects, shows the splash, then stalls without
+     * ever loading media.
+     * HLS in particular must be announced as application/x-mpegurl or the
+     * adaptive pipeline is never engaged.
+     *
+     * Mirrors detectCastMimeType() in the web player's VideoPlayerModal.tsx.
+     */
+    private fun detectCastContentType(streamUrl: String): String {
+        val lower = streamUrl.lowercase()
+
+        // Voltix proxy URLs carry the real container in a query param; direct
+        // provider URLs carry it as a path extension.
+        val fromParam = Regex("[?&](?:containerextension|ext)=([a-z0-9]+)")
+            .find(lower)?.groupValues?.getOrNull(1)
+        val fromPath = Regex("\\.([a-z0-9]+)(?:\\?|#|\\z)")
+            .find(lower)?.groupValues?.getOrNull(1)
+        val ext = fromParam ?: fromPath ?: ""
+
+        return when (ext) {
+            "m3u8" -> "application/x-mpegurl"
+            "mpd" -> "application/dash+xml"
+            "mp4", "m4v", "mov" -> "video/mp4"
+            "webm" -> "video/webm"
+            "ts" -> "video/mp2t"
+            "mkv" -> "video/x-matroska"
+            else -> if (lower.contains(".m3u8")) "application/x-mpegurl" else "video/mp4"
+        }
+    }
+
+    /**
+     * Whether a URL points at a live channel rather than a finite file.
+     * A live stream marked BUFFERED makes the receiver wait for a duration that
+     * never arrives and show a seek bar it cannot honour.
+     */
+    private fun looksLive(streamUrl: String): Boolean {
+        val lower = streamUrl.lowercase()
+        return Regex("[?&]type=live(?:&|\\z)").containsMatchIn(lower) || lower.contains("/live/")
+    }
+
+    private fun buildMediaInfo(
+        streamUrl: String,
+        title: String,
+        subtitle: String?,
+        posterUrl: String?,
+    ): MediaInfo {
+        val metadata = MediaMetadata(MediaMetadata.MEDIA_TYPE_MOVIE).apply {
+            putString(MediaMetadata.KEY_TITLE, title)
+            if (!subtitle.isNullOrBlank()) {
+                putString(MediaMetadata.KEY_SUBTITLE, subtitle)
+            }
+            if (!posterUrl.isNullOrBlank()) {
+                runCatching {
+                    addImage(WebImage(Uri.parse(posterUrl)))
+                }
+            }
+        }
+
+        val streamType = if (looksLive(streamUrl)) {
+            MediaInfo.STREAM_TYPE_LIVE
+        } else {
+            MediaInfo.STREAM_TYPE_BUFFERED
+        }
+
+        return MediaInfo.Builder(streamUrl)
+            .setStreamType(streamType)
+            .setContentType(detectCastContentType(streamUrl))
+            .setMetadata(metadata)
+            .build()
+    }
+
+    private fun buildQueueItem(
+        streamUrl: String?,
+        title: String?,
+        subtitle: String?,
+        posterUrl: String?,
+    ): MediaQueueItem? {
+        val url = streamUrl ?: return null
+        val mediaInfo = buildMediaInfo(
+            streamUrl = url,
+            title = title ?: "Voltix",
+            subtitle = subtitle,
+            posterUrl = posterUrl,
+        )
+        return MediaQueueItem.Builder(mediaInfo).build()
+    }
+
+    private fun withRemoteMediaClient(
+        result: MethodChannel.Result,
+        action: (com.google.android.gms.cast.framework.media.RemoteMediaClient) -> Unit,
+    ) {
+        val castContext = try {
+            CastContext.getSharedInstance(this)
+        } catch (t: Throwable) {
+            result.error("CAST_INIT_FAILED", t.message, null)
+            return
+        }
+
+        val session = castContext.sessionManager.currentCastSession
+        if (session == null) {
+            result.error("NO_CAST_SESSION", "No active Google Cast session", null)
+            return
+        }
+
+        val remoteClient = session.remoteMediaClient
+        if (remoteClient == null) {
+            result.error("NO_REMOTE_CLIENT", "No cast remote media client", null)
+            return
+        }
+
+        action(remoteClient)
+    }
+
+    private fun registerCastStatusListener() {
+        val sessionManager = runCatching { CastContext.getSharedInstance(this).sessionManager }.getOrNull()
+            ?: return
+
+        castStatusListener?.let { listener ->
+            sessionManager.removeSessionManagerListener(listener, CastSession::class.java)
+        }
+
+        val listener = object : SessionManagerListener<CastSession> {
+            override fun onSessionStarted(session: CastSession, sessionId: String) {
+                registerCastMediaListeners(session.remoteMediaClient)
+                emitCurrentGoogleCastStatus(session.remoteMediaClient)
+                emitGoogleCastEvent("connected")
+            }
+
+            override fun onSessionResumed(session: CastSession, wasSuspended: Boolean) {
+                registerCastMediaListeners(session.remoteMediaClient)
+                emitCurrentGoogleCastStatus(session.remoteMediaClient)
+                emitGoogleCastEvent("connected")
+            }
+
+            override fun onSessionEnded(session: CastSession, error: Int) {
+                unregisterCastMediaCallback()
+                emitGoogleCastEvent("disconnected")
+            }
+
+            override fun onSessionSuspended(session: CastSession, reason: Int) {
+                unregisterCastMediaCallback()
+                emitGoogleCastEvent("disconnected")
+            }
+
+            override fun onSessionStartFailed(session: CastSession, error: Int) {
+                emitGoogleCastEvent("error", "Failed to start cast session: $error")
+            }
+
+            override fun onSessionResumeFailed(session: CastSession, error: Int) {
+                emitGoogleCastEvent("error", "Failed to resume cast session: $error")
+            }
+
+            override fun onSessionEnding(session: CastSession) {}
+            override fun onSessionResuming(session: CastSession, sessionId: String) {}
+            override fun onSessionStarting(session: CastSession) {}
+        }
+
+        castStatusListener = listener
+        sessionManager.addSessionManagerListener(listener, CastSession::class.java)
+    }
+
+    private fun emitGoogleCastEvent(state: String, message: String? = null, positionTicks: Long? = null) {
+        val payload = mutableMapOf<String, Any>(
+            "kind" to "googleCast",
+            "state" to state,
+        )
+        if (!message.isNullOrBlank()) {
+            payload["message"] = message
+        }
+        if (positionTicks != null && positionTicks > 0L) {
+            payload["positionTicks"] = positionTicks
+        }
+        runOnUiThread {
+            castEventsSink?.success(payload)
+        }
+    }
+
+    private fun registerCastMediaListeners(remoteClient: RemoteMediaClient?) {
+        if (remoteClient == null) return
+        unregisterCastMediaCallback()
+
+        val listener = object : RemoteMediaClient.Listener {
+            override fun onStatusUpdated() {
+                emitCurrentGoogleCastStatus(remoteClient)
+            }
+
+            override fun onMetadataUpdated() {}
+            override fun onQueueStatusUpdated() {
+                emitCurrentGoogleCastStatus(remoteClient)
+            }
+            override fun onPreloadStatusUpdated() {}
+            override fun onSendingRemoteMediaRequest() {}
+            override fun onAdBreakStatusUpdated() {}
+        }
+
+        val progressListener = RemoteMediaClient.ProgressListener { progressMs, _ ->
+            val status = remoteClient.mediaStatus ?: return@ProgressListener
+            val state = when (status.playerState) {
+                MediaStatus.PLAYER_STATE_PLAYING -> "playing"
+                MediaStatus.PLAYER_STATE_PAUSED -> "paused"
+                MediaStatus.PLAYER_STATE_BUFFERING -> "buffering"
+                MediaStatus.PLAYER_STATE_IDLE -> "idle"
+                else -> return@ProgressListener
+            }
+            val ticks = if (progressMs > 0) progressMs * 10000L else 0L
+            emitGoogleCastEvent(state, positionTicks = ticks)
+        }
+
+        castMediaListener = listener
+        castProgressListener = progressListener
+        remoteClient.addListener(listener)
+        remoteClient.addProgressListener(progressListener, 1000)
+    }
+
+    private fun unregisterCastMediaCallback() {
+        val remoteClient = getCurrentCastSession()?.remoteMediaClient
+        castMediaListener?.let { listener ->
+            remoteClient?.removeListener(listener)
+        }
+        castProgressListener?.let { listener ->
+            remoteClient?.removeProgressListener(listener)
+        }
+        castMediaListener = null
+        castProgressListener = null
+    }
+
+    private fun emitCurrentGoogleCastStatus(remoteClient: RemoteMediaClient? = getCurrentCastSession()?.remoteMediaClient) {
+        val client = remoteClient ?: return
+        val status = client.mediaStatus ?: return
+        val state = when (status.playerState) {
+            MediaStatus.PLAYER_STATE_PLAYING -> "playing"
+            MediaStatus.PLAYER_STATE_PAUSED -> "paused"
+            MediaStatus.PLAYER_STATE_BUFFERING -> "buffering"
+            MediaStatus.PLAYER_STATE_IDLE -> "idle"
+            else -> return
+        }
+        val positionMs = client.approximateStreamPosition
+        val ticks = if (positionMs > 0) positionMs * 10000L else 0L
+        emitGoogleCastEvent(state, positionTicks = ticks)
+    }
+
+    private fun listExternalPlayerApps(): List<Map<String, Any>> {
+        val queryIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(Uri.parse(EXTERNAL_PLAYER_SAMPLE_URL), "video/*")
+        }
+        val activities = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.queryIntentActivities(
+                queryIntent,
+                android.content.pm.PackageManager.ResolveInfoFlags.of(
+                    android.content.pm.PackageManager.MATCH_DEFAULT_ONLY.toLong(),
+                ),
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            packageManager.queryIntentActivities(
+                queryIntent,
+                android.content.pm.PackageManager.MATCH_DEFAULT_ONLY,
+            )
+        }
+
+        return activities
+            .mapNotNull { info ->
+                val packageName = info.activityInfo?.packageName ?: return@mapNotNull null
+                if (packageName == this.packageName) {
+                    return@mapNotNull null
+                }
+                if (info.priority < 0) {
+                    return@mapNotNull null
+                }
+                val categoryMatch = info.match and IntentFilter.MATCH_CATEGORY_MASK
+                if (categoryMatch < IntentFilter.MATCH_CATEGORY_TYPE) {
+                    return@mapNotNull null
+                }
+                if (!hasExplicitVideoMimeType(info.filter)) {
+                    return@mapNotNull null
+                }
+                var activityName = info.activityInfo?.name ?: return@mapNotNull null
+                if (activityName.startsWith(".")) {
+                    activityName = "$packageName$activityName"
+                }
+                val component = "$packageName/$activityName"
+                val label = info.loadLabel(packageManager)?.toString()?.takeIf { it.isNotBlank() }
+                    ?: activityName
+                val entry = mutableMapOf<String, Any>(
+                    "component" to component,
+                    "packageName" to packageName,
+                    "activityName" to activityName,
+                    "label" to label,
+                )
+                iconToPngBytes(info.loadIcon(packageManager))?.let { iconBytes ->
+                    entry["iconPngBytes"] = iconBytes
+                }
+                entry
+            }
+            .distinctBy { it["component"] }
+                .sortedBy { (it["label"] as? String)?.lowercase() ?: "" }
+    }
+
+    private fun hasExplicitVideoMimeType(filter: IntentFilter?): Boolean {
+        if (filter == null) {
+            return true
+        }
+
+        val typeCount = filter.countDataTypes()
+        if (typeCount <= 0) {
+            return true
+        }
+
+        var hasVideoType = false
+        for (index in 0 until typeCount) {
+            val mimeType = filter.getDataType(index)?.lowercase() ?: continue
+            if (mimeType == "*/*") {
+                continue
+            }
+            if (mimeType == "video/*" || mimeType.startsWith("video/")) {
+                hasVideoType = true
+                break
+            }
+        }
+
+        return hasVideoType
+    }
+
+    private fun launchExternalPlayer(args: Map<*, *>, result: MethodChannel.Result) {
+        val launchIntent = createExternalPlayerIntent(args, requireComponent = true)
+        if (launchIntent == null) {
+            result.error("BAD_ARGS", "Missing or invalid external player launch arguments.", null)
+            return
+        }
+
+        if (launchIntent.resolveActivity(packageManager) == null) {
+            result.error("PLAYER_NOT_FOUND", "Selected external player is unavailable.", null)
+            return
+        }
+
+        startExternalPlayerProxy(launchIntent, result)
+    }
+
+    private fun chooseAndLaunchExternalPlayer(args: Map<*, *>, result: MethodChannel.Result) {
+        val baseIntent = createExternalPlayerIntent(args, requireComponent = false)
+        if (baseIntent == null) {
+            result.error("BAD_ARGS", "Missing or invalid external player launch arguments.", null)
+            return
+        }
+
+        val hasTarget = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.queryIntentActivities(
+                baseIntent,
+                android.content.pm.PackageManager.ResolveInfoFlags.of(
+                    android.content.pm.PackageManager.MATCH_DEFAULT_ONLY.toLong(),
+                ),
+            ).isNotEmpty()
+        } else {
+            @Suppress("DEPRECATION")
+            packageManager.queryIntentActivities(
+                baseIntent,
+                android.content.pm.PackageManager.MATCH_DEFAULT_ONLY,
+            ).isNotEmpty()
+        }
+        if (!hasTarget) {
+            result.error("PLAYER_NOT_FOUND", "No compatible external player was found.", null)
+            return
+        }
+
+        val chooserIntent = Intent.createChooser(baseIntent, EXTERNAL_PLAYER_CHOOSER_TITLE)
+        startExternalPlayerProxy(chooserIntent, result)
+    }
+
+    private fun startExternalPlayerProxy(
+        launchIntent: Intent,
+        result: MethodChannel.Result,
+    ) {
+        if (externalPlayerPendingResult != null) {
+            result.error(
+                "IN_PROGRESS",
+                "An external player launch is already in progress.",
+                null,
+            )
+            return
+        }
+
+        externalPlayerPendingResult = result
+        try {
+            val proxyIntent = Intent(this, ExternalPlayerProxyActivity::class.java).apply {
+                putExtra(EXTRA_EXTERNAL_PLAYER_LAUNCH_INTENT, launchIntent)
+            }
+            startActivityForResult(proxyIntent, EXTERNAL_PLAYER_PROXY_REQUEST_CODE)
+        } catch (error: ActivityNotFoundException) {
+            externalPlayerPendingResult = null
+            result.error("PLAYER_NOT_FOUND", error.message, null)
+        } catch (error: Exception) {
+            externalPlayerPendingResult = null
+            result.error("LAUNCH_FAILED", error.message, null)
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == EXTERNAL_PLAYER_PROXY_REQUEST_CODE) {
+            val pendingResult = externalPlayerPendingResult
+            externalPlayerPendingResult = null
+            pendingResult?.success(buildExternalPlayerResultPayload(data, resultCode))
+            return
+        }
+        super.onActivityResult(requestCode, resultCode, data)
+    }
+
+    private fun createExternalPlayerIntent(
+        args: Map<*, *>,
+        requireComponent: Boolean,
+    ): Intent? {
+        val url = (args["url"] as? String)?.trim().orEmpty()
+        if (url.isEmpty()) return null
+
+        val componentRaw = (args["component"] as? String)?.trim().orEmpty()
+        val component = splitComponent(componentRaw)
+        if (requireComponent && component == null) {
+            return null
+        }
+
+        val mimeType = (args["mimeType"] as? String)?.trim().takeUnless { it.isNullOrEmpty() }
+            ?: "video/*"
+        val title = (args["title"] as? String)?.trim().orEmpty()
+        val fileName = (args["filename"] as? String)?.trim().orEmpty()
+        val positionMs = (anyToLong(args["positionMs"]) ?: 0L).coerceAtLeast(0L)
+        val positionInt = positionMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(Uri.parse(url), mimeType)
+            if (component != null) {
+                setClassName(component.first, component.second)
+            }
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+
+            putExtra("position", positionInt)
+            putExtra("return_result", true)
+            putExtra("secure_uri", true)
+            if (title.isNotEmpty()) {
+                putExtra("title", title)
+            }
+            if (fileName.isNotEmpty()) {
+                putExtra("filename", fileName)
+            }
+
+            putExtra("from_start", positionInt <= 0)
+
+            putExtra("forcename", title)
+            putExtra("startfrom", positionInt)
+            putExtra("forceresume", false)
+        }
+
+        val headers = args["headers"] as? Map<*, *>
+        if (headers != null) {
+            val headerBundle = Bundle()
+            for ((key, value) in headers.entries) {
+                val headerKey = key as? String ?: continue
+                val headerValue = value as? String ?: continue
+                if (headerKey.isBlank() || headerValue.isBlank()) continue
+                headerBundle.putString(headerKey, headerValue)
+            }
+            if (headerBundle.size() > 0) {
+                intent.putExtra("headers", headerBundle)
+            }
+        }
+
+        val subtitleEntries = args["subtitles"] as? List<*> ?: emptyList<Any>()
+        if (subtitleEntries.isNotEmpty()) {
+            val subtitleUris = ArrayList<Uri>()
+            val subtitleNames = ArrayList<String>()
+            val subtitleFiles = ArrayList<String>()
+
+            for (entry in subtitleEntries) {
+                val map = entry as? Map<*, *> ?: continue
+                val subtitleUrl = (map["url"] as? String)?.trim().orEmpty()
+                if (subtitleUrl.isEmpty()) continue
+
+                val subtitleUri = runCatching { Uri.parse(subtitleUrl) }.getOrNull() ?: continue
+                subtitleUris.add(subtitleUri)
+                subtitleNames.add((map["name"] as? String)?.trim().orEmpty())
+                subtitleFiles.add((map["language"] as? String)?.trim().orEmpty())
+            }
+
+            if (subtitleUris.isNotEmpty()) {
+                intent.putExtra("subs", subtitleUris.toTypedArray())
+                intent.putExtra("subs.name", subtitleNames.toTypedArray())
+                intent.putExtra("subs.filename", subtitleFiles.toTypedArray())
+                intent.putExtra("subtitles_location", subtitleUris.first().toString())
+            }
+        }
+
+        return intent
+    }
+
+    private fun splitComponent(raw: String): Pair<String, String>? {
+        if (raw.isBlank()) return null
+        val slash = raw.indexOf('/')
+        if (slash <= 0 || slash >= raw.lastIndex) return null
+
+        val packageName = raw.substring(0, slash).trim()
+        var activityName = raw.substring(slash + 1).trim()
+        if (packageName.isEmpty() || activityName.isEmpty()) return null
+        if (activityName.startsWith(".")) {
+            activityName = "$packageName$activityName"
+        }
+        return packageName to activityName
+    }
+
+    private fun iconToPngBytes(drawable: Drawable?): ByteArray? {
+        if (drawable == null) return null
+        val bitmap = if (drawable is BitmapDrawable && drawable.bitmap != null) {
+            drawable.bitmap
+        } else {
+            val width = if (drawable.intrinsicWidth > 0) drawable.intrinsicWidth else 96
+            val height = if (drawable.intrinsicHeight > 0) drawable.intrinsicHeight else 96
+            val generated = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(generated)
+            drawable.setBounds(0, 0, canvas.width, canvas.height)
+            drawable.draw(canvas)
+            generated
+        }
+
+        val stream = ByteArrayOutputStream()
+        return try {
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+            stream.toByteArray()
+        } catch (_: Exception) {
+            null
+        } finally {
+            runCatching { stream.close() }
+        }
+    }
+
+    private fun buildExternalPlayerResultPayload(
+        data: Intent?,
+        resultCode: Int,
+    ): Map<String, Any> {
+        val action = data?.action ?: ""
+        val forwardedErrorCode = data?.getStringExtra(EXTRA_EXTERNAL_PLAYER_ERROR_CODE)
+        val forwardedErrorMessage = data?.getStringExtra(EXTRA_EXTERNAL_PLAYER_ERROR_MESSAGE)
+
+        if (!forwardedErrorCode.isNullOrBlank()) {
+            val payload = mutableMapOf<String, Any>(
+                "completed" to false,
+                "hasError" to true,
+                "resultCode" to resultCode,
+                "errorCode" to forwardedErrorCode,
+                "errorMessage" to (forwardedErrorMessage ?: "External player launch failed."),
+            )
+            if (action.isNotEmpty()) {
+                payload["playerAction"] = action
+            }
+            return payload
+        }
+
+        val endPositionMs = extractExternalPlayerPositionMs(data)
+
+        val playbackCompleted = when (action) {
+            API_MX_RESULT_ID ->
+                data?.extras?.getString(API_MX_RESULT_END_BY) == API_MX_RESULT_END_BY_PLAYBACK_COMPLETION
+            API_MPV_RESULT_ID -> endPositionMs == null
+            API_VIMU_RESULT_ID -> resultCode == API_VIMU_RESULT_PLAYBACK_COMPLETED
+            else -> false
+        }
+
+        val hasError = when (action) {
+            API_VIMU_RESULT_ID -> resultCode == API_VIMU_RESULT_ERROR
+            else -> resultCode != Activity.RESULT_OK && !playbackCompleted
+        }
+
+        val payload = mutableMapOf<String, Any>(
+            "completed" to playbackCompleted,
+            "hasError" to hasError,
+            "resultCode" to resultCode,
+        )
+
+        if (action.isNotEmpty()) {
+            payload["playerAction"] = action
+        }
+
+        if (endPositionMs != null) {
+            payload["endPositionMs"] = endPositionMs
+        }
+
+        if (hasError) {
+            payload["errorCode"] = "EXTERNAL_PLAYER_ERROR"
+            payload["errorMessage"] = "External player reported an error or was canceled."
+        }
+
+        return payload
+    }
+
+    private fun extractExternalPlayerPositionMs(data: Intent?): Long? {
+        val extras = data?.extras ?: return null
+        val keys = listOf(
+            API_MX_RESULT_POSITION,
+            API_VLC_RESULT_POSITION,
+        )
+        for (key in keys) {
+            val raw = extras.get(key) ?: continue
+            val value = anyToLong(raw)
+            if (value != null && value >= 0L) {
+                return value
+            }
+        }
+        return null
+    }
+
+    private fun anyToLong(value: Any?): Long? {
+        return when (value) {
+            is Int -> value.toLong()
+            is Long -> value
+            is Short -> value.toLong()
+            is Byte -> value.toLong()
+            is Float -> value.toLong()
+            is Double -> value.toLong()
+            is String -> value.toLongOrNull()
+            else -> null
+        }
+    }
+
+    private fun getCurrentCastSession(): CastSession? {
+        return runCatching { CastContext.getSharedInstance(this).sessionManager.currentCastSession }
+            .getOrNull()
+    }
+
+}
