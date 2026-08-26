@@ -6,6 +6,9 @@ import 'os_version_stub.dart' if (dart.library.io) 'os_version_io.dart';
 class PlatformDetection {
   const PlatformDetection._();
 
+  /// The raw OS version string, empty on web where dart:io is unavailable.
+  static String get osVersion => osVersionRaw();
+
   static const double _mobileFormFactorBreakpoint = 600;
 
   /// True when compiled for Tizen (Samsung TV). Set via
@@ -316,9 +319,16 @@ class PlatformDetection {
   /// Whether to use a 10-foot (lean-back) UI optimized for remote control.
   static bool get useLeanbackUi => isTV;
   static bool get useDesktopUi => !_hasMobileFormFactor && !isTV;
+  static InterfaceLayout _interfaceLayout = InterfaceLayout.automatic;
+  static void setInterfaceLayout(InterfaceLayout value) =>
+      _interfaceLayout = value;
+  static bool get canOverrideInterfaceLayout => isAndroid || isDesktop;
+
   static bool get useMobileUi => _hasMobileFormFactor && !isTV;
 
   static bool get useNativeVideoSurface => isAndroid && isTV;
 
   static bool get gamesPlaybackSupported => true;
 }
+
+enum InterfaceLayout { automatic, tv, desktop, phone }

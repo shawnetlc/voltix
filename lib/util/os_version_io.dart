@@ -1,5 +1,7 @@
 import 'dart:io';
 
+String osVersionRaw() => Platform.operatingSystemVersion;
+
 int osMajorVersion() {
   final match = RegExp(r'\d+').firstMatch(Platform.operatingSystemVersion);
   if (match == null) return 0;

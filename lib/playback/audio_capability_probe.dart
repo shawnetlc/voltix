@@ -73,7 +73,7 @@ class AudioCapabilityProbe {
 
   // A result that looks like the "nothing connected / not yet enumerated"
   // fallback: no AVR route, no passthrough, stereo-only.
-  static bool _looksEmpty(AudioCapabilityProfile p) =>
+  static bool looksEmpty(AudioCapabilityProfile p) =>
       p.activeRouteType == AudioRouteType.other &&
       !p.hasCompressedPassthroughRoute &&
       p.maxPcmChannels <= 2;
@@ -90,13 +90,26 @@ class AudioCapabilityProbe {
       final result = await query();
       if (result != null) {
         last = result;
-        if (!_looksEmpty(result)) return result;
+        if (!looksEmpty(result)) return result;
       }
       if (i < attempts - 1) {
         await Future<void>.delayed(delay);
+        delay *= 2;
       }
     }
     return last;
+  }
+
+  /// Publishes a freshly-detected profile to [PlatformDetection]; the next
+  /// player creation will use it. Also writes the result to persistent storage
+  /// so the next app start won't block awaiting a fresh platform query.
+  static Future<void> probe() async {
+    try {
+      final profile = await queryWithRetry();
+      if (profile == null ||
+          (looksEmpty(profile) && PlatformDetection.hasAudioCapabilities)) return;
+      apply(profile);
+    } catch (_) {}
   }
 
   /// Publishes a freshly-detected profile to [PlatformDetection]; the next

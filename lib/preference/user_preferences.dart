@@ -776,6 +776,22 @@ class UserPreferences extends ChangeNotifier {
     }
   }
 
+  /// Writes the detected capability into each toggle that has no stored value.
+  /// Idempotent: existing values are never touched, so it is safe to run again
+  /// after a late hardware probe.
+  Future<void> seedAbsentPassthroughToggles() async {
+    final profile = detectedAudioCapabilities;
+    Future<void> seed(Preference<bool> pref, bool value) async {
+      if (!containsPreference(pref)) await set(pref, value);
+    }
+
+    await seed(ac3PassthroughEnabled, profile.canPassthroughAc3);
+    await seed(eac3PassthroughEnabled, profile.canPassthroughEac3);
+    await seed(dtsCorePassthroughEnabled, profile.canPassthroughDts);
+    await seed(dtsHdPassthroughEnabled, profile.canPassthroughDtsHd);
+    await seed(trueHdPassthroughEnabled, profile.canPassthroughTrueHd);
+  }
+
   /// Clears every per-codec passthrough override so each resolves back to
   /// "Auto" (follow the detected capability).
   Future<void> clearPassthroughOverrides() async {
@@ -895,6 +911,11 @@ class UserPreferences extends ChangeNotifier {
   static final enableMultiServerSearch = Preference(
     key: 'enable_multi_server_search',
     defaultValue: true,
+  );
+
+  static final desktopScrollSensitivity = Preference(
+    key: 'pref_desktop_scroll_sensitivity',
+    defaultValue: 100,
   );
 
   static final desktopUiScale = EnumPreference(
@@ -2432,6 +2453,11 @@ class UserPreferences extends ChangeNotifier {
 
   static final windowY = Preference(key: 'window_y', defaultValue: 0.0);
 
+  static final windowMaximized = Preference(
+    key: 'window_maximized',
+    defaultValue: false,
+  );
+
   static final syncPlayAdvancedCorrectionEnabled = Preference(
     key: 'syncplay_advanced_correction_enabled',
     defaultValue: true,
@@ -2595,7 +2621,12 @@ class UserPreferences extends ChangeNotifier {
     defaultValue: false,
   );
 
-  // --- Appearance: glass and OLED ---
+  static final interfaceLayout = EnumPreference(
+    key: 'pref_interface_layout',
+    defaultValue: InterfaceLayout.automatic,
+    values: InterfaceLayout.values,
+  );
+
   static final glassQuality = EnumPreference(
     key: 'pref_glass_quality',
     defaultValue: GlassQualityMode.auto,
