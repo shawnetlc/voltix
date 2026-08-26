@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:get_it/get_it.dart';
 import 'package:jellyfin_preference/jellyfin_preference.dart';
 import 'package:path_provider/path_provider.dart';
@@ -433,17 +434,23 @@ Future<void> configureDependencies() async {
 
   final storagePath = StoragePathService();
   getIt.registerSingleton<StoragePathService>(storagePath);
-  getIt.registerSingleton<OfflineDatabase>(OfflineDatabase(openConnection()));
-  final offlineRepo = OfflineRepository(getIt<OfflineDatabase>());
-  getIt.registerSingleton<OfflineRepository>(offlineRepo);
-  await _migrateIosPaths(offlineRepo);
+  try {
+    getIt.registerSingleton<OfflineDatabase>(OfflineDatabase(openConnection()));
+    final offlineRepo = OfflineRepository(getIt<OfflineDatabase>());
+    getIt.registerSingleton<OfflineRepository>(offlineRepo);
+    await _migrateIosPaths(offlineRepo);
 
-  final offlineCatalog = OfflineCatalog(offlineRepo);
-  getIt.registerSingleton<OfflineCatalog>(offlineCatalog);
-  await offlineCatalog.warm();
+    final offlineCatalog = OfflineCatalog(offlineRepo);
+    getIt.registerSingleton<OfflineCatalog>(offlineCatalog);
+    await offlineCatalog.warm().timeout(const Duration(seconds: 3));
+  } catch (e) {
+    debugPrint('[Voltix] OfflineDatabase/Catalog init error: $e');
+  }
 
   final connectivityService = ConnectivityService();
-  connectivityService.initialize();
+  try {
+    connectivityService.initialize();
+  } catch (_) {}
   getIt.registerSingleton<ConnectivityService>(connectivityService);
 
   // Voltix services
@@ -452,14 +459,22 @@ Future<void> configureDependencies() async {
     () => SyncPlayUsernameResolver(),
   );
   final voltixSessionStore = VoltixSessionStore();
-  await voltixSessionStore.load();
+  try {
+    await voltixSessionStore.load().timeout(const Duration(seconds: 3));
+  } catch (e) {
+    debugPrint('[Voltix] voltixSessionStore load error: $e');
+  }
   getIt.registerSingleton<VoltixSessionStore>(voltixSessionStore);
   getIt.registerSingleton<DeviceIdService>(DeviceIdService());
   getIt.registerSingleton<VoltixSessionService>(VoltixSessionService());
 
   registerServerModule();
   registerAuthModule();
-  await getIt<AuthenticationStore>().init();
+  try {
+    await getIt<AuthenticationStore>().init().timeout(const Duration(seconds: 3));
+  } catch (e) {
+    debugPrint('[Voltix] AuthenticationStore init error: $e');
+  }
   registerPlaybackModule();
   registerAppModule();
 

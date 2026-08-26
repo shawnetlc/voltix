@@ -68,11 +68,12 @@ class _StartupScreenState extends State<StartupScreen>
   }
 
   Future<void> _initialize() async {
-    final session = GetIt.instance<SessionRepository>();
-    final serverRepo = GetIt.instance<ServerRepository>();
-    final credentialStore = GetIt.instance<CredentialStore>();
-    final authPrefs = GetIt.instance<AuthenticationPreferences>();
-    final voltixStore = GetIt.instance<VoltixSessionStore>();
+    try {
+      final session = GetIt.instance<SessionRepository>();
+      final serverRepo = GetIt.instance<ServerRepository>();
+      final credentialStore = GetIt.instance<CredentialStore>();
+      final authPrefs = GetIt.instance<AuthenticationPreferences>();
+      final voltixStore = GetIt.instance<VoltixSessionStore>();
 
     // Wait for the session to become ready WITHOUT losing the event.
     //
@@ -434,7 +435,11 @@ class _StartupScreenState extends State<StartupScreen>
       }
       _fallbackToLoginOrServerSelect();
     }
+  } catch (e, st) {
+    debugPrint('[Voltix] StartupScreen._initialize error: $e\n$st');
+    _fallbackToLoginOrServerSelect();
   }
+}
 
   void _navigate(String route) {
     if (mounted) {

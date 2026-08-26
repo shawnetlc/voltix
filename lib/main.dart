@@ -707,8 +707,16 @@ Future<void> _preWarmWebView() async {
 }
 
 void main() async {
-  configureHttpOverrides();
-  ScrollSensitivityBinding.ensureInitialized();
+  WidgetsFlutterBinding.ensureInitialized();
+  try {
+    configureHttpOverrides();
+  } catch (_) {}
+
+  if (PlatformDetection.isDesktop) {
+    try {
+      ScrollSensitivityBinding.ensureInitialized();
+    } catch (_) {}
+  }
 
   // Show detailed error screens instead of silent grey/black boxes on errors
   ErrorWidget.builder = (FlutterErrorDetails details) {
