@@ -79,6 +79,7 @@ void resetUserScopedSingletons() {
   unregister<ItemMutationRepository>();
   unregister<SearchRepository>();
   unregister<UserViewsRepository>();
+  unregister<TasteProfileRepository>();
   unregister<VoltixWatchRegistryService>();
 
   _registerUserScopedSingletons();
