@@ -34,6 +34,11 @@ import '../../preference/user_preferences.dart';
 import '../../syncplay/syncplay_manager.dart';
 import '../../util/platform_detection.dart';
 import '../../util/episode_playability.dart';
+import '../../data/services/audiobook_bookmarks_service.dart';
+import '../../data/services/audiobook_notes_service.dart';
+import '../../data/services/audiobook_resume_service.dart';
+import '../../playback/sleep_timer_controller.dart';
+import '../../playback/media_browse_service.dart';
 
 final _getIt = GetIt.instance;
 
@@ -548,6 +553,20 @@ void registerPlaybackModule() {
   );
   _getIt.registerLazySingleton<SyncPlayManager>(
     () => SyncPlayManager(_getIt<PlaybackManager>(), _getIt<UserPreferences>()),
+  );
+  _getIt.registerLazySingleton(() => AudiobookBookmarksService());
+  _getIt.registerLazySingleton(() => AudiobookNotesService());
+  _getIt.registerLazySingleton(() => AudiobookResumeService());
+  _getIt.registerLazySingleton(
+    () => SleepTimerController(_getIt<PlaybackManager>()),
+  );
+  _getIt.registerLazySingleton(
+    () => MediaBrowseService(
+      _getIt<MediaServerClientFactory>(),
+      _getIt<HeadlessSessionBootstrap>(),
+      _getIt<AudiobookResumeService>(),
+      _getIt<LastPlaybackSessionStore>(),
+    ),
   );
 }
 

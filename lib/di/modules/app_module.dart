@@ -39,6 +39,10 @@ import '../../data/services/socket_handler.dart';
 import '../../data/services/sync_service.dart';
 import '../../data/services/theme_music_service.dart';
 import '../../data/services/voltix_watch_registry_service.dart';
+import '../../data/services/crash_report_service.dart';
+import '../../data/services/push_messaging_service.dart';
+import '../../data/services/retro_artwork/retro_artwork_activity_gate.dart';
+import '../../util/game_library.dart';
 import '../../data/viewmodels/media_bar_view_model.dart';
 import '../../data/viewmodels/seerr_discover_view_model.dart';
 import '../../playback/external_player_service.dart';
@@ -147,6 +151,12 @@ void registerAppModule() {
     () => SyncService(_getIt<OfflineRepository>()),
   );
   _getIt.registerLazySingleton(() => const ExternalPlayerService());
+  _getIt.registerLazySingleton(
+    () => CrashReportService(_getIt<UserPreferences>(), _getIt<MediaServerClientFactory>()),
+  );
+  _getIt.registerLazySingleton(() => PushMessagingService());
+  _getIt.registerLazySingleton(() => GameLibraryRegistry());
+  _getIt.registerLazySingleton(() => RetroArtworkActivityGate());
 
   _registerUserScopedSingletons();
 }
