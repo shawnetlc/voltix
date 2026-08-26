@@ -11,6 +11,7 @@ import '../../data/repositories/mdblist_repository.dart';
 import '../../data/repositories/multi_server_repository.dart';
 import '../../data/repositories/media_bar_repository.dart';
 import '../../data/repositories/offline_repository.dart';
+import '../../data/repositories/taste_profile_repository.dart';
 import '../../data/services/media_server_client_factory.dart';
 import '../../data/repositories/seerr_repository.dart';
 import '../../data/repositories/tmdb_repository.dart';
@@ -170,6 +171,13 @@ void _registerUserScopedSingletons() {
   );
   _getIt.registerLazySingleton(() => SearchRepository(_getIt()));
   _getIt.registerLazySingleton(() => ItemMutationRepository(_getIt()));
+  _getIt.registerLazySingleton(
+    () => TasteProfileRepository(
+      _getIt<PreferenceStore>(),
+      _getIt<MediaServerClient>(),
+    ),
+    dispose: (repo) => repo.dispose(),
+  );
   _getIt.registerLazySingleton(
     () => RowDataSource(_getIt<MediaServerClient>()),
   );
