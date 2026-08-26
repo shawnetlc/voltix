@@ -223,6 +223,9 @@ class MainActivity : AudioServiceActivity() {
                 "audioCapabilities" -> {
                     result.success(AudioCapabilities.query(this))
                 }
+                "buildFingerprint" -> {
+                    result.success(Build.FINGERPRINT)
+                }
                 "exitApp" -> {
                     result.success(true)
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {

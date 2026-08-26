@@ -156,7 +156,7 @@ android {
     productFlavors {
         val baseAppId = "cc.voltix.streaming"
         val baseAppName = "Voltix"
-        val mobileAbis = listOf("arm64-v8a")
+        val mobileAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         val tvAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         create("mobile") {
             dimension = "device"

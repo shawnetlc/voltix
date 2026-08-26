@@ -36,7 +36,6 @@ import 'data/services/theme_store_service.dart';
 import 'di/injection.dart';
 import 'playback/appletv_audio_now_playing_feeder.dart';
 import 'playback/appletv_backend.dart';
-import 'playback/audio_capability_profile.dart';
 import 'playback/audio_capability_probe.dart';
 import 'playback/audio_handler.dart';
 import 'playback/codec_caps_repair.dart';
@@ -249,14 +248,16 @@ Future<void> _detectAndSetTvMode() async {
   const attempts = 3;
   for (var attempt = 0; attempt < attempts; attempt++) {
     try {
-      final isTV = await channel.invokeMethod<bool>('isTvDevice');
+      final isTV = await channel
+          .invokeMethod<bool>('isTvDevice')
+          .timeout(const Duration(milliseconds: 500));
       if (isTV != null) {
         PlatformDetection.setTvMode(isTV);
         return;
       }
     } catch (_) {}
     if (attempt < attempts - 1) {
-      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
     }
   }
   debugPrint(
@@ -351,13 +352,17 @@ Future<void> _retryDisplayHdrOffLaunchPath() async {
 }
 
 Future<Map<String, dynamic>?> _queryCodecCaps(MethodChannel channel) async {
-  final raw = await channel.invokeMethod<Map<dynamic, dynamic>>(
-    'mediaCodecCapabilities',
-    <String, dynamic>{
-      'includeSoftwareDecoders': !PlatformDetection.isTV,
-    },
-  );
-  return raw?.map((key, value) => MapEntry(key.toString(), value));
+  try {
+    final raw = await channel.invokeMethod<Map<dynamic, dynamic>>(
+      'mediaCodecCapabilities',
+      <String, dynamic>{
+        'includeSoftwareDecoders': !PlatformDetection.isTV,
+      },
+    ).timeout(const Duration(seconds: 3));
+    return raw?.map((key, value) => MapEntry(key.toString(), value));
+  } catch (_) {
+    return null;
+  }
 }
 
 /// Re-probes in the background when the startup probe threw or came back
@@ -386,7 +391,9 @@ Future<void> _retryCodecCapsOffLaunchPath(MethodChannel channel) =>
 /// always changes the fingerprint.
 Future<String?> _androidBuildFingerprint(MethodChannel channel) async {
   try {
-    return await channel.invokeMethod<String>('buildFingerprint');
+    return await channel
+        .invokeMethod<String>('buildFingerprint')
+        .timeout(const Duration(seconds: 1));
   } catch (_) {
     return null;
   }
@@ -703,11 +710,31 @@ void main() async {
   configureHttpOverrides();
   ScrollSensitivityBinding.ensureInitialized();
 
+  // Show detailed error screens instead of silent grey/black boxes on errors
+  ErrorWidget.builder = (FlutterErrorDetails details) {
+    return Directionality(
+      textDirection: TextDirection.ltr,
+      child: Container(
+        color: const Color(0xF2000000),
+        padding: const EdgeInsets.all(28),
+        alignment: Alignment.topLeft,
+        child: SingleChildScrollView(
+          child: Text(
+            '${details.exceptionAsString()}\n\n${details.stack ?? ''}',
+            style: const TextStyle(color: Color(0xFFFF6E6E), fontSize: 14),
+          ),
+        ),
+      ),
+    );
+  };
+
   // Pre-warms the liquid_glass_widgets shader programs so the first glass
-  // pane doesn't white-flash. Cheap no-op on tiers where the package
-  // renderer is disabled, and the Impeller pipeline warm-up is deferred
-  // past the first frame internally.
-  await LiquidGlassWidgets.initialize();
+  // pane doesn't white-flash.
+  try {
+    await LiquidGlassWidgets.initialize().timeout(const Duration(seconds: 1));
+  } catch (e) {
+    debugPrint('[Voltix] LiquidGlassWidgets initialization skipped: $e');
+  }
 
   registerGameCoreLicenses();
 
@@ -721,31 +748,16 @@ void main() async {
     } catch (_) {}
   }
 
-  if (PlatformDetection.isAppleTV) {
-    ErrorWidget.builder = (FlutterErrorDetails details) {
-      return Directionality(
-        textDirection: TextDirection.ltr,
-        child: Container(
-          color: const Color(0xF2000000),
-          padding: const EdgeInsets.all(28),
-          alignment: Alignment.topLeft,
-          child: SingleChildScrollView(
-            child: Text(
-              '${details.exceptionAsString()}\n\n${details.stack ?? ''}',
-              style: const TextStyle(color: Color(0xFFFF6E6E), fontSize: 15),
-            ),
-          ),
-        ),
-      );
-    };
-  }
-
   if (PlatformDetection.isWeb) {
-    await loadWebRuntimeConfig();
+    try {
+      await loadWebRuntimeConfig();
+    } catch (_) {}
   }
 
   if (PlatformDetection.isDesktop) {
-    await windowManager.ensureInitialized();
+    try {
+      await windowManager.ensureInitialized();
+    } catch (_) {}
   }
 
   // Apple runs entirely on AetherEngine, so media_kit isn't initialized there
@@ -754,42 +766,42 @@ void main() async {
       !PlatformDetection.isAppleTV &&
       !PlatformDetection.isIOS &&
       !PlatformDetection.isMacOS) {
-    MediaKit.ensureInitialized();
+    try {
+      MediaKit.ensureInitialized();
+    } catch (e) {
+      debugPrint('[Voltix] MediaKit.ensureInitialized error: $e');
+    }
   }
 
-  await _applyInterfaceLayoutOverride();
-  await _detectAndSetTvMode();
-  await _seedCapabilitiesFromCache();
-  await Future.wait([
-    _detectAndSetDisplayCapabilities(),
-    _detectAndSetCodecCapabilities(),
-  ]);
+  try {
+    await _applyInterfaceLayoutOverride();
+    await _detectAndSetTvMode().timeout(const Duration(seconds: 2));
+    await _seedCapabilitiesFromCache().timeout(const Duration(seconds: 1));
+    await Future.wait([
+      _detectAndSetDisplayCapabilities(),
+      _detectAndSetCodecCapabilities(),
+    ]).timeout(const Duration(seconds: 3));
+  } catch (e) {
+    debugPrint('[Voltix] Capability detection error (continuing): $e');
+  }
 
   if (PlatformDetection.isAppleTV) {
-    await _detectAndSetAppleTvCapabilities();
+    try {
+      await _detectAndSetAppleTvCapabilities();
+    } catch (_) {}
   }
   if (PlatformDetection.isIOS || PlatformDetection.isMacOS) {
-    await _detectAndSetAetherCapabilities();
+    try {
+      await _detectAndSetAetherCapabilities();
+    } catch (_) {}
   }
 
   _configureImageCache();
+  try {
     await configureImageDiskCache();
+  } catch (_) {}
 
-  // Pre-warm the Android WebView process so the first WebView-based screen
-  // (Voltix login / book reader) loads faster.
-  if (PlatformDetection.isAndroid) {
-    unawaited(_preWarmWebView());
-  }
-
-  // Trim WebView cache on startup (runs in background isolate)
-  // Mirrors native android-build VoltixApplication.trimWebViewCache()
-  unawaited(WebViewCacheTrimmer.trim());
-
-  // On Linux the GTK font pipeline loads fonts asynchronously. The first frame
-  // can render before MaterialIcons and other fonts are ready, causing icons to
-  // appear blank. Pumping a warm-up frame gives the font loader time to finish.
-  // The issue is intermittent and goes away on re-run once the OS font cache
-  // is warm, which confirms the timing root cause.
+  // On Linux the GTK font pipeline loads fonts asynchronously.
   if (PlatformDetection.isLinux ||
       PlatformDetection.isTizen ||
       PlatformDetection.isAppleTV) {
@@ -797,14 +809,15 @@ void main() async {
   }
 
   if (PlatformDetection.isMobile) {
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      systemNavigationBarColor: Colors.transparent,
-    ));
+    try {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        systemNavigationBarColor: Colors.transparent,
+      ));
+    } catch (_) {}
 
     // Registered before runApp so a background/terminated push can be handled.
-    // The handler itself is a no-op; the OS draws these notifications.
     try {
       FirebaseMessaging.onBackgroundMessage(pushBackgroundHandler);
     } catch (_) {}
@@ -813,8 +826,7 @@ void main() async {
   await configureDependencies();
   _installCrashHandlers();
 
-  // Registered before runApp so a CarPlay-only launch (no window scene, no
-  // widgets) can browse and start playback.
+  // Registered before runApp so a CarPlay-only launch can browse and start playback.
   if (PlatformDetection.isIOS && !GetIt.instance.isRegistered<CarPlayService>()) {
     try {
       final carPlayService = CarPlayService(
@@ -845,18 +857,26 @@ void main() async {
 
   // Register Theme Store themes before the active theme is resolved so a
   // store-saved theme applies on launch.
-  await ThemeStoreService(
-    GetIt.instance<StoragePathService>(),
-  ).loadAndRegister();
+  try {
+    await ThemeStoreService(
+      GetIt.instance<StoragePathService>(),
+    ).loadAndRegister().timeout(const Duration(seconds: 2));
+  } catch (_) {}
 
   if (PlatformDetection.isDesktop) {
-    await _restoreWindowGeometry();
+    try {
+      await _restoreWindowGeometry();
+    } catch (_) {}
   }
 
-  // Audio and notification services are only needed once playback or a
-  // download can happen, so they initialize after the first frame.
+  // Audio, notification, and background trimming services initialize after the first frame
+  // so they never block or delay the initial UI paint.
   WidgetsBinding.instance.addPostFrameCallback((_) {
     unawaited(_initDeferredStartupServices(prefs));
+    if (PlatformDetection.isAndroid) {
+      unawaited(_preWarmWebView());
+    }
+    unawaited(WebViewCacheTrimmer.trim());
   });
 
   // tvOS: keep the system Now Playing card fed for music (the native
