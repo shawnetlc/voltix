@@ -712,12 +712,6 @@ void main() async {
     configureHttpOverrides();
   } catch (_) {}
 
-  if (PlatformDetection.isDesktop) {
-    try {
-      ScrollSensitivityBinding.ensureInitialized();
-    } catch (_) {}
-  }
-
   // Show detailed error screens instead of silent grey/black boxes on errors
   ErrorWidget.builder = (FlutterErrorDetails details) {
     return Directionality(
@@ -736,15 +730,12 @@ void main() async {
     );
   };
 
-  // Pre-warms the liquid_glass_widgets shader programs so the first glass
-  // pane doesn't white-flash.
-  try {
-    await LiquidGlassWidgets.initialize().timeout(const Duration(seconds: 1));
-  } catch (e) {
-    debugPrint('[Voltix] LiquidGlassWidgets initialization skipped: $e');
+  if (PlatformDetection.isDesktop) {
+    try {
+      ScrollSensitivityBinding.ensureInitialized();
+      await windowManager.ensureInitialized();
+    } catch (_) {}
   }
-
-  registerGameCoreLicenses();
 
   if (!PlatformDetection.isWeb && PlatformDetection.isWindows) {
     try {
@@ -762,14 +753,84 @@ void main() async {
     } catch (_) {}
   }
 
-  if (PlatformDetection.isDesktop) {
+  if (PlatformDetection.isMobile) {
     try {
-      await windowManager.ensureInitialized();
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        systemNavigationBarColor: Colors.transparent,
+      ));
+    } catch (_) {}
+
+    try {
+      FirebaseMessaging.onBackgroundMessage(pushBackgroundHandler);
     } catch (_) {}
   }
 
-  // Apple runs entirely on AetherEngine, so media_kit isn't initialized there
-  // and its native libs are out of those builds.
+  _configureImageCache();
+
+  // Initialize dependency injection container
+  await configureDependencies();
+  _installCrashHandlers();
+
+  final prefs = GetIt.instance<UserPreferences>();
+  _bindScrollSensitivity(prefs);
+  WidgetsBinding.instance.addObserver(_PreferenceWriteFlushObserver(prefs));
+  WidgetsBinding.instance.addObserver(_ImageCacheSweepObserver(prefs));
+  WidgetsBinding.instance.addObserver(_CapabilityRefreshObserver());
+
+  GetIt.instance<PlaybackManager>().queueService.queueChangedStream.listen((_) {
+    final activeItem = GetIt.instance<PlaybackManager>().queueService.currentItem;
+    if (activeItem is AggregatedItem) {
+      prefs.unhideFromContinueWatching(activeItem.id);
+      if (activeItem.seriesId != null && activeItem.seriesId!.isNotEmpty) {
+        prefs.unhideFromContinueWatching(activeItem.seriesId!);
+        prefs.unhideFromNextUp(activeItem.seriesId!);
+      }
+    }
+  });
+
+  if (!GetIt.instance.isRegistered<PlaybackLifecycleHandler>()) {
+    GetIt.instance.registerSingleton<PlaybackLifecycleHandler>(
+      PlaybackLifecycleHandler(GetIt.instance<PlaybackManager>()),
+    );
+  }
+
+  // tvOS: keep the system Now Playing card fed for music
+  if (PlatformDetection.isAppleTV &&
+      !GetIt.instance.isRegistered<AppleTvAudioNowPlayingFeeder>()) {
+    try {
+      final feeder = AppleTvAudioNowPlayingFeeder(
+        manager: GetIt.instance<PlaybackManager>(),
+        clientFactory: GetIt.instance<MediaServerClientFactory>(),
+        backend: GetIt.instance<AppleTvBackend>(),
+      )..start();
+      GetIt.instance.registerSingleton<AppleTvAudioNowPlayingFeeder>(feeder);
+    } catch (_) {}
+  }
+
+  try {
+    GetIt.instance<AirPlayCommandBridge>().start();
+  } catch (_) {}
+
+  // All background probing, hardware queries, shader pre-warming, and deferred services
+  // run asynchronously after the first frame paints so the UI appears instantaneously.
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    unawaited(_runDeferredStartupTasks(prefs));
+  });
+
+  runApp(const VoltixApp());
+}
+
+Future<void> _runDeferredStartupTasks(UserPreferences prefs) async {
+  try {
+    registerGameCoreLicenses();
+  } catch (_) {}
+
+  try {
+    await LiquidGlassWidgets.initialize().timeout(const Duration(seconds: 1));
+  } catch (_) {}
+
   if (!PlatformDetection.isTizen &&
       !PlatformDetection.isAppleTV &&
       !PlatformDetection.isIOS &&
@@ -804,37 +865,16 @@ void main() async {
     } catch (_) {}
   }
 
-  _configureImageCache();
   try {
     await configureImageDiskCache();
   } catch (_) {}
 
-  // On Linux the GTK font pipeline loads fonts asynchronously.
   if (PlatformDetection.isLinux ||
       PlatformDetection.isTizen ||
       PlatformDetection.isAppleTV) {
     WidgetsBinding.instance.scheduleWarmUpFrame();
   }
 
-  if (PlatformDetection.isMobile) {
-    try {
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-      SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
-        systemNavigationBarColor: Colors.transparent,
-      ));
-    } catch (_) {}
-
-    // Registered before runApp so a background/terminated push can be handled.
-    try {
-      FirebaseMessaging.onBackgroundMessage(pushBackgroundHandler);
-    } catch (_) {}
-  }
-
-  await configureDependencies();
-  _installCrashHandlers();
-
-  // Registered before runApp so a CarPlay-only launch can browse and start playback.
   if (PlatformDetection.isIOS && !GetIt.instance.isRegistered<CarPlayService>()) {
     try {
       final carPlayService = CarPlayService(
@@ -845,26 +885,6 @@ void main() async {
     } catch (_) {}
   }
 
-  final prefs = GetIt.instance<UserPreferences>();
-  _bindScrollSensitivity(prefs);
-  WidgetsBinding.instance.addObserver(_PreferenceWriteFlushObserver(prefs));
-  WidgetsBinding.instance.addObserver(_ImageCacheSweepObserver(prefs));
-  WidgetsBinding.instance.addObserver(_CapabilityRefreshObserver());
-  WidgetsBinding.instance.addPostFrameCallback((_) => _sweepImageCache(prefs));
-
-  GetIt.instance<PlaybackManager>().queueService.queueChangedStream.listen((_) {
-    final activeItem = GetIt.instance<PlaybackManager>().queueService.currentItem;
-    if (activeItem is AggregatedItem) {
-      prefs.unhideFromContinueWatching(activeItem.id);
-      if (activeItem.seriesId != null && activeItem.seriesId!.isNotEmpty) {
-        prefs.unhideFromContinueWatching(activeItem.seriesId!);
-        prefs.unhideFromNextUp(activeItem.seriesId!);
-      }
-    }
-  });
-
-  // Register Theme Store themes before the active theme is resolved so a
-  // store-saved theme applies on launch.
   try {
     await ThemeStoreService(
       GetIt.instance<StoragePathService>(),
@@ -877,41 +897,13 @@ void main() async {
     } catch (_) {}
   }
 
-  // Audio, notification, and background trimming services initialize after the first frame
-  // so they never block or delay the initial UI paint.
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    unawaited(_initDeferredStartupServices(prefs));
-    if (PlatformDetection.isAndroid) {
-      unawaited(_preWarmWebView());
-    }
-    unawaited(WebViewCacheTrimmer.trim());
-  });
+  _sweepImageCache(prefs);
+  await _initDeferredStartupServices(prefs);
 
-  // tvOS: keep the system Now Playing card fed for music (the native
-  // NowPlayingController handles video; audio has no view controller to feed it).
-  if (PlatformDetection.isAppleTV &&
-      !GetIt.instance.isRegistered<AppleTvAudioNowPlayingFeeder>()) {
-    try {
-      final feeder = AppleTvAudioNowPlayingFeeder(
-        manager: GetIt.instance<PlaybackManager>(),
-        clientFactory: GetIt.instance<MediaServerClientFactory>(),
-        backend: GetIt.instance<AppleTvBackend>(),
-      )..start();
-      GetIt.instance.registerSingleton<AppleTvAudioNowPlayingFeeder>(feeder);
-    } catch (_) {}
+  if (PlatformDetection.isAndroid) {
+    unawaited(_preWarmWebView());
   }
-
-  if (!GetIt.instance.isRegistered<PlaybackLifecycleHandler>()) {
-    GetIt.instance.registerSingleton<PlaybackLifecycleHandler>(
-      PlaybackLifecycleHandler(GetIt.instance<PlaybackManager>()),
-    );
-  }
-
-  try {
-    GetIt.instance<AirPlayCommandBridge>().start();
-  } catch (_) {}
-
-  runApp(const VoltixApp());
+  unawaited(WebViewCacheTrimmer.trim());
 }
 
 /// Startup work that runs after the first frame. The internal order matters:

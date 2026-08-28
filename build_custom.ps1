@@ -34,7 +34,7 @@ try {
 
     # 2. Building Android TV release APK
     Write-Host "1. Building Android TV release APK..." -ForegroundColor Yellow
-    flutter build apk --release --flavor androidTv --build-name "$tvBuildName" --build-number "$tvBuildNumber" --dart-define=DISTRIBUTION_CHANNEL=android_tv_apk
+    flutter build apk --release --flavor androidTv --build-name "$tvBuildName" --build-number "$tvBuildNumber" --dart-define=DISTRIBUTION_CHANNEL=android_tv_apk --dart-define=VOLTIX_FORCE_TV=true
     if ($LASTEXITCODE -ne 0 -or !(Test-Path $tvApkSource)) {
         throw "Flutter build Android TV APK failed with exit code $LASTEXITCODE"
     }
