@@ -280,9 +280,24 @@ class PluginSyncService extends ChangeNotifier {
   Future<void> syncOnLogin(MediaServerClient client, {String? serverId}) async {
     try {
       _activeThemeCacheServerId = serverId;
-      await _hydrateCachedThemes(client, serverId: serverId);
 
+      // Detection first, and theme hydration isolated behind its own catch.
+      //
+      // Hydration reads and writes the on-disk theme cache. It threw here on a
+      // device with no writable cache directory, and because the whole method
+      // shares one try/catch that took the availability probe down with it --
+      // the plugin was never even asked about, on every login, for a reason
+      // that has nothing to do with the plugin.
       final availability = await _refreshAvailabilityStatus(client);
+
+      try {
+        await _hydrateCachedThemes(client, serverId: serverId);
+      } catch (e) {
+        ServerLog.network(
+          '✗ Cached theme hydration failed (continuing): $e',
+          level: ServerLogLevel.error,
+        );
+      }
 
       final syncInitializedPref =
           UserPreferences.pluginSyncInitializedForServer(
@@ -564,19 +579,82 @@ class PluginSyncService extends ChangeNotifier {
     return true;
   }
 
+  /// The plugin's Ping payload, or null when no plugin answers.
+  ///
+  /// Reached through the Voltix proxy this is
+  /// `<host>/api/jellyfin/<id>/Moonfin/Ping`, and the proxy forwards it to the
+  /// media server unchanged. Two things about that round trip used to make a
+  /// perfectly good plugin look absent:
+  ///
+  ///   * The body was accepted only when Dio had already parsed it into a Map.
+  ///     Dio decides that from the response's content type, and a proxy does
+  ///     not necessarily preserve `application/json` -- forward it as
+  ///     `text/plain` or with no type at all and Dio hands back a String, which
+  ///     this then discarded as "not a plugin". Direct connections set the
+  ///     header correctly, so it only ever failed for proxied users. A String
+  ///     body is now decoded before being given up on.
+  ///
+  ///   * Every failure was swallowed by `catch (_) {}`, so a 404 (no plugin), a
+  ///     401 (token not accepted), a timeout and a malformed body were
+  ///     indistinguishable -- the only symptom anywhere was the plugin quietly
+  ///     not appearing. Each attempt now logs what happened.
+  ///
+  /// Bounded too: this runs during login, and an unanswered probe should cost
+  /// a few seconds, not the session.
   Future<Map<String, dynamic>?> _ping(MediaServerClient client) async {
     final headers = _authHeaders(client);
-    if (headers == null) return null;
+    if (headers == null) {
+      ServerLog.network(
+        '✗ Plugin ping skipped — no access token for ${client.baseUrl}',
+        level: ServerLogLevel.error,
+      );
+      return null;
+    }
 
     for (final prefix in const ['Moonfin', 'Voltix']) {
+      final url = '${client.baseUrl}/$prefix/Ping';
       try {
-        final response = await _dio.get(
-          '${client.baseUrl}/$prefix/Ping',
-          options: Options(headers: headers),
-        );
-        if (response.data is Map<String, dynamic>) {
+        final response = await _dio
+            .get(
+              url,
+              options: Options(
+                headers: headers,
+                // Any status is a result worth reporting rather than an
+                // exception that hides which one it was.
+                validateStatus: (_) => true,
+              ),
+            )
+            .timeout(const Duration(seconds: 10));
+
+        final parsed = _asJsonMap(response.data);
+        if (parsed != null) {
           _pluginPrefix = prefix;
-          return response.data as Map<String, dynamic>;
+          ServerLog.network('← plugin detected at /$prefix (${response.statusCode})');
+          return parsed;
+        }
+
+        ServerLog.network(
+          '✗ $url → ${response.statusCode} '
+          '(${response.data.runtimeType}) — not a plugin response',
+        );
+      } catch (e) {
+        ServerLog.network('✗ $url failed: $e', level: ServerLogLevel.error);
+      }
+    }
+    return null;
+  }
+
+  /// [raw] as a JSON object, whether Dio decoded it or handed back the text.
+  static Map<String, dynamic>? _asJsonMap(dynamic raw) {
+    if (raw is Map<String, dynamic>) return raw;
+    if (raw is Map) return raw.map((k, v) => MapEntry(k.toString(), v));
+    if (raw is String) {
+      final text = raw.trim();
+      if (text.isEmpty || !text.startsWith('{')) return null;
+      try {
+        final decoded = jsonDecode(text);
+        if (decoded is Map) {
+          return decoded.map((k, v) => MapEntry(k.toString(), v));
         }
       } catch (_) {}
     }
