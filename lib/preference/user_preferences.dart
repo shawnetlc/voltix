@@ -1225,7 +1225,7 @@ class UserPreferences extends ChangeNotifier {
   /// it; the toggle exists so it can be hidden on devices that never cast.
   static final showRemoteControlButton = Preference(
     key: 'pref_show_remote_control_button',
-    defaultValue: true,
+    defaultValue: false,
   );
 
   /// Whether the remote shows a D-pad (arrows, select, back) for driving the
@@ -1300,14 +1300,32 @@ class UserPreferences extends ChangeNotifier {
     key: 'pref_use_detailed_sub_headings',
     defaultValue: true,
   );
+  /// Transcoding limits, defaulted conservatively on TV.
+  ///
+  /// 120 Mbps and "auto" are effectively no limit: the player asks the server
+  /// for the original file and tries to decode it locally. That is right on a
+  /// desktop or a capable box, and wrong on the hardware most TV installs
+  /// actually run on -- an entry-level panel handed a 40GB 4K remux does not
+  /// fail loudly, it simply never starts, which is indistinguishable from the
+  /// app being broken.
+  ///
+  /// So TV defaults to 20 Mbps and 1080p, which the server transcodes down to
+  /// and every Android TV device can decode. Both are ordinary settings, so a
+  /// Shield or a capable 4K box raises them once in
+  /// Settings > Video Playback > Transcoding limits and the choice sticks.
+  ///
+  /// Defaults apply only where nothing is stored, so anyone who has already
+  /// chosen a limit keeps it.
   static final maxBitrate = Preference(
     key: 'pref_max_bitrate',
-    defaultValue: '120',
+    defaultValue: PlatformDetection.isTV ? '20' : '120',
   );
 
   static final maxVideoResolution = EnumPreference(
     key: 'pref_max_video_resolution',
-    defaultValue: MaxVideoResolution.auto,
+    defaultValue: PlatformDetection.isTV
+        ? MaxVideoResolution.res1080p
+        : MaxVideoResolution.auto,
     values: MaxVideoResolution.values,
   );
 
@@ -2745,7 +2763,7 @@ class UserPreferences extends ChangeNotifier {
 
   static final playbackTimeAboveRight = EnumPreference(
     key: 'playback_time_above_right',
-    defaultValue: PlaybackTimeSlot.endsAt,
+    defaultValue: PlaybackTimeSlot.none,
     values: PlaybackTimeSlot.values,
   );
 
