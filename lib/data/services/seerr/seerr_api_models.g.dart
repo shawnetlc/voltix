@@ -236,6 +236,7 @@ SeerrDiscoverItem _$SeerrDiscoverItemFromJson(Map<String, dynamic> json) =>
       character: json['character'] as String?,
       job: json['job'] as String?,
       department: json['department'] as String?,
+      profilePath: json['profilePath'] as String?,
     );
 
 Map<String, dynamic> _$SeerrDiscoverItemToJson(SeerrDiscoverItem instance) =>
@@ -261,6 +262,7 @@ Map<String, dynamic> _$SeerrDiscoverItemToJson(SeerrDiscoverItem instance) =>
       'character': instance.character,
       'job': instance.job,
       'department': instance.department,
+      'profilePath': instance.profilePath,
     };
 
 SeerrMovieDetails _$SeerrMovieDetailsFromJson(

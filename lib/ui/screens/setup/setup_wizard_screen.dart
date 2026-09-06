@@ -7,7 +7,11 @@ import 'package:go_router/go_router.dart';
 import 'package:voltix_design/voltix_design.dart';
 import 'package:server_core/server_core.dart';
 
+import '../../../auth/store/voltix_session_store.dart';
+import '../../../data/repositories/taste_profile_repository.dart';
 import '../../../data/services/media_server_client_factory.dart';
+import '../../../data/services/user_settings_sync_service.dart';
+import '../taste_profile/taste_onboarding_wizard.dart';
 import '../../../l10n/app_localizations.dart';
 import '../../../preference/preference_constants.dart';
 import '../../../preference/user_preferences.dart';
@@ -15,6 +19,7 @@ import '../../../util/focus/dpad_keys.dart';
 import '../../../util/platform_detection.dart';
 import '../../navigation/destinations.dart';
 import '../../theme/app_theme_controller.dart';
+import '../../widgets/login_scaffold.dart';
 import '../../widgets/navigation_layout.dart';
 import 'setup_wizard_gate.dart';
 import 'setup_wizard_previews.dart';
@@ -37,6 +42,14 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
 
   final _scopeNode = FocusScopeNode(debugLabel: 'setupWizard');
   final _skipNode = FocusNode(debugLabel: 'setupWizardSkip');
+  // Reused across every step. The Next/Back/Skip buttons never lose focus on
+  // their own when `setState` swaps the step body in underneath them --
+  // that Row is never rebuilt from scratch, so autofocus on a fresh option
+  // card can't win against a FocusNode that already holds focus elsewhere
+  // in the same FocusScope. Requesting focus onto this node explicitly after
+  // every step change is what actually moves the d-pad/keyboard cursor onto
+  // the new step's default selection.
+  final _stepDefaultFocusNode = FocusNode(debugLabel: 'setupStepDefault');
 
   List<SetupStep> _steps = const [];
   int _index = 0;
@@ -47,6 +60,15 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
   // Held rather than written as they are chosen. Each write kicks off a full
   // profile push that the plugin then echoes back, so the answers across the
   // steps become one batch at the end.
+  // Cloud data lives behind a network probe, so the step is appended only
+  // once the probe answers -- and only after every default step is done.
+  bool _cloudPromptPending = false;
+  // Taste needs no probe -- a preference says whether it has been offered.
+  bool _tastePromptPending = false;
+  bool _tasteChoice = true;
+  String? _cloudUsername;
+  CloudDataAction? _cloudChoice;
+
   NavbarPosition? _navbar;
   String? _mediaBar;
   HomeRowsStyle? _homeRows;
@@ -70,7 +92,19 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
   void dispose() {
     _scopeNode.dispose();
     _skipNode.dispose();
+    _stepDefaultFocusNode.dispose();
     super.dispose();
+  }
+
+  /// Moves focus onto whichever card the current step marks as its default
+  /// selection. Called after every step transition (and once the first step
+  /// is ready) because autofocus alone won't grab focus away from whatever
+  /// already holds it -- see the field doc on [_stepDefaultFocusNode].
+  void _focusStepDefault() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _stepDefaultFocusNode.requestFocus();
+    });
   }
 
   Future<void> _prepare() async {
@@ -90,6 +124,7 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
     // Kicked off now so the previews carry real artwork by the time the user
     // reaches them. Home shares the same view model, so nothing loads twice.
     unawaited(SetupPreviewData.ensureLoaded());
+    unawaited(_probeCloudData());
 
     final steps = _gate.remainingSteps();
     if (steps.isEmpty) {
@@ -100,10 +135,86 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
       return;
     }
 
+    var tastePromptPending = !_prefs.get(UserPreferences.tasteOnboardingSeen);
+
+    // Same restore-before-asking check as the login screen: a profile
+    // already completed elsewhere (roaming DisplayPreferences, or an Azure
+    // backup from a previous device) should skip this step rather than make
+    // the user answer it again just because it is a fresh install here.
+    if (tastePromptPending &&
+        GetIt.instance.isRegistered<TasteProfileRepository>() &&
+        GetIt.instance.isRegistered<MediaServerClient>()) {
+      try {
+        final tasteClient = GetIt.instance<MediaServerClient>();
+        final userId = tasteClient.userId?.trim() ?? '';
+        if (userId.isNotEmpty) {
+          final restored = await GetIt.instance<TasteProfileRepository>()
+              .loadProfile(userId: userId, serverId: tasteClient.baseUrl)
+              .timeout(const Duration(seconds: 6));
+          if (restored.isCompleted) {
+            tastePromptPending = false;
+            await _prefs.set(UserPreferences.tasteOnboardingSeen, true);
+          }
+        }
+      } catch (_) {
+        // A restore failure just means the step still gets asked, which is
+        // the safe default -- it must not block the rest of the wizard.
+      }
+    }
+
+    if (!mounted) return;
     setState(() {
       _steps = steps;
+      _tastePromptPending = tastePromptPending;
       _ready = true;
     });
+    _focusStepDefault();
+  }
+
+  /// Asks the sync service whether this user has cloud data, in the
+  /// background. Deliberately not awaited: the questions are answerable
+  /// without it, and the answer is only needed once they are done.
+  Future<void> _probeCloudData() async {
+    if (!GetIt.instance.isRegistered<UserSettingsSyncService>()) return;
+    final username = GetIt.instance<VoltixSessionStore>().username?.trim();
+    if (username == null || username.isEmpty) return;
+
+    final pending = await GetIt.instance<UserSettingsSyncService>()
+        .hasPendingCloudPrompt(username);
+    if (!mounted || !pending) return;
+
+    setState(() {
+      _cloudPromptPending = true;
+      _cloudUsername = username;
+    });
+  }
+
+  /// The steps that only make sense once every default question is answered,
+  /// in the order they are added. Cloud comes first: an import can restore a
+  /// taste profile, and asking someone to rate titles they already rated on
+  /// another device is the one thing worth avoiding here.
+  SetupStep? _pendingTrailingStep() {
+    if (_cloudPromptPending && !_steps.contains(SetupStep.cloudSync)) {
+      return SetupStep.cloudSync;
+    }
+    if (_tastePromptPending && !_steps.contains(SetupStep.taste)) {
+      return SetupStep.taste;
+    }
+    return null;
+  }
+
+  /// Appends the next trailing step, after the last default one. Returns true
+  /// if it took over, so the caller advances instead of finishing.
+  bool _appendTrailingStepIfPending() {
+    final next = _pendingTrailingStep();
+    if (next == null) return false;
+    setState(() {
+      _steps = [..._steps, next];
+      _advancing = true;
+      _index++;
+    });
+    _focusStepDefault();
+    return true;
   }
 
   /// Stand down without marking anything done, so a later launch can try again.
@@ -121,6 +232,23 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
   Future<void> _finish() async {
     final client = _client;
     final navbar = _navbar;
+
+    // Applied BEFORE the answers below. An import restores a whole stored
+    // profile, including the four things this wizard just asked about, so
+    // writing the answers afterwards keeps the choices made seconds ago from
+    // being silently undone by a profile saved months ago.
+    final cloudChoice = _cloudChoice;
+    final cloudUsername = _cloudUsername;
+    if (cloudChoice != null &&
+        cloudUsername != null &&
+        GetIt.instance.isRegistered<UserSettingsSyncService>()) {
+      try {
+        await GetIt.instance<UserSettingsSyncService>()
+            .applyCloudChoice(cloudChoice, cloudUsername);
+      } catch (_) {
+        // A failed import must not strand the user in the wizard.
+      }
+    }
 
     await _prefs.batchNotifications(() async {
       if (navbar != null) {
@@ -148,6 +276,18 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
     }
 
     if (client != null) await _gate.markComplete(client);
+
+    // Launched after the wizard has marked itself complete, so a taste run
+    // that is abandoned part way cannot strand the user back in setup on the
+    // next launch. The seen flag is written only once it has actually been
+    // shown, for the same reason.
+    if (_steps.contains(SetupStep.taste)) {
+      if (_tasteChoice && mounted) {
+        await TasteOnboardingWizard.showAsDialog(context);
+      }
+      await _prefs.set(UserPreferences.tasteOnboardingSeen, true);
+    }
+
     _goHome();
   }
 
@@ -164,6 +304,7 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
 
   void _advance() {
     if (_index >= _steps.length - 1) {
+      if (_appendTrailingStepIfPending()) return;
       unawaited(_finish());
       return;
     }
@@ -174,6 +315,7 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
       _advancing = true;
       _index++;
     });
+    _focusStepDefault();
   }
 
   void _goBack() {
@@ -182,6 +324,7 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
       _advancing = false;
       _index--;
     });
+    _focusStepDefault();
   }
 
   /// BACK never leaves the wizard on the first press. It moves to Skip, so the
@@ -217,9 +360,14 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
       },
       child: Scaffold(
         backgroundColor: AppColorScheme.background,
-        // Keeps the action row clear of the OS gesture bar on phones.
-        body: SafeArea(
-          child: FocusScope(
+        // Same animated gradient/particle backdrop as the Welcome/login
+        // screen, so both first-run setup and "Run Setup Again" from
+        // Settings feel like a continuation of that screen rather than a
+        // flatter, unrelated one.
+        body: WelcomeBackdrop(
+          // Keeps the action row clear of the OS gesture bar on phones.
+          child: SafeArea(
+            child: FocusScope(
             node: _scopeNode,
             autofocus: true,
             // The route owns the whole screen, so the scope is the trap: there is
@@ -241,6 +389,7 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
             ),
           ),
         ),
+      ),
       ),
     );
   }
@@ -377,6 +526,8 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
     SetupStep.homeRows => l10n.setupHomeRowsQuestion,
     SetupStep.detailStyle => l10n.setupDetailQuestion,
     SetupStep.tour => l10n.setupTourQuestion,
+    SetupStep.cloudSync => 'We found saved settings in your Voltix cloud.',
+    SetupStep.taste => 'Want recommendations picked for your taste?',
   };
 
   Widget _buildStepBody(
@@ -388,7 +539,12 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
     SetupStep.mediaBar => _buildMediaBarStep(l10n),
     SetupStep.homeRows => _buildHomeRowsStep(l10n),
     SetupStep.detailStyle => _buildDetailStyleStep(l10n),
-    SetupStep.tour => _SetupTourStep(prefs: _prefs),
+    SetupStep.tour => _SetupTourStep(
+      prefs: _prefs,
+      focusNode: _stepDefaultFocusNode,
+    ),
+    SetupStep.cloudSync => _buildCloudSyncStep(l10n),
+    SetupStep.taste => _buildTasteStep(l10n),
   };
 
   Widget _buildNavbarStep(AppLocalizations l10n) {
@@ -413,6 +569,7 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
             label: labels[positions[i]] ?? positions[i].name,
             selected: selected == positions[i],
             autofocus: selected == positions[i],
+            focusNode: selected == positions[i] ? _stepDefaultFocusNode : null,
             preview: SetupPreview(child: navbarPreview(positions[i])),
             onPressed: () => setState(() => _navbar = positions[i]),
           ),
@@ -450,6 +607,7 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
             label: labels[modes[i]] ?? modes[i],
             selected: selected == modes[i],
             autofocus: selected == modes[i],
+            focusNode: selected == modes[i] ? _stepDefaultFocusNode : null,
             preview: SetupPreview(child: mediaBarPreview(modes[i])),
             onPressed: () => setState(() => _mediaBar = modes[i]),
           ),
@@ -468,6 +626,8 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
           hint: l10n.setupRowsClassicHint,
           selected: selected == HomeRowsStyle.v1,
           autofocus: selected == HomeRowsStyle.v1,
+          focusNode:
+              selected == HomeRowsStyle.v1 ? _stepDefaultFocusNode : null,
           preview: SetupPreview(child: homeRowsPreview(modern: false)),
           onPressed: () => setState(() => _homeRows = HomeRowsStyle.v1),
         ),
@@ -477,6 +637,8 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
           hint: l10n.setupRowsModernHint,
           selected: selected == HomeRowsStyle.v2,
           autofocus: selected == HomeRowsStyle.v2,
+          focusNode:
+              selected == HomeRowsStyle.v2 ? _stepDefaultFocusNode : null,
           preview: SetupPreview(child: homeRowsPreview(modern: true)),
           onPressed: () => setState(() => _homeRows = HomeRowsStyle.v2),
         ),
@@ -496,6 +658,9 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
           hint: l10n.setupDetailClassicHint,
           selected: selected == DetailScreenStyle.classic,
           autofocus: selected == DetailScreenStyle.classic,
+          focusNode: selected == DetailScreenStyle.classic
+              ? _stepDefaultFocusNode
+              : null,
           preview: SetupPreview(child: detailStylePreview(modern: false)),
           onPressed: () =>
               setState(() => _detailStyle = DetailScreenStyle.classic),
@@ -506,6 +671,9 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
           hint: l10n.setupDetailModernHint,
           selected: selected == DetailScreenStyle.modern,
           autofocus: selected == DetailScreenStyle.modern,
+          focusNode: selected == DetailScreenStyle.modern
+              ? _stepDefaultFocusNode
+              : null,
           preview: SetupPreview(child: detailStylePreview(modern: true)),
           onPressed: () =>
               setState(() => _detailStyle = DetailScreenStyle.modern),
@@ -514,8 +682,111 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
     );
   }
 
+  /// The cloud step has nothing to mock up the way the layout steps do, so
+  /// the card art is a plain glyph on the same preview surface.
+  Widget _cloudPreview(IconData icon, Color color) => SetupPreview(
+    child: Center(child: Icon(icon, size: 44, color: color)),
+  );
+
+  Widget _buildCloudSyncStep(AppLocalizations l10n) {
+    final selected = _cloudChoice;
+    final account = _cloudUsername ?? '';
+    return _OptionLayout(
+      columns: 3,
+      children: [
+        _OptionCard(
+          order: 0,
+          label: 'Import',
+          preview: _cloudPreview(
+            Icons.cloud_download_rounded,
+            AppColorScheme.accent,
+          ),
+          hint: 'Restore the settings saved for @$account. '
+              'Your answers on the previous steps are kept.',
+          selected: selected == CloudDataAction.importAll,
+          autofocus: selected == null || selected == CloudDataAction.importAll,
+          focusNode:
+              (selected == null || selected == CloudDataAction.importAll)
+                  ? _stepDefaultFocusNode
+                  : null,
+          onPressed: () =>
+              setState(() => _cloudChoice = CloudDataAction.importAll),
+        ),
+        _OptionCard(
+          order: 1,
+          label: 'Start fresh',
+          preview: _cloudPreview(
+            Icons.auto_awesome_rounded,
+            AppColorScheme.onSurface,
+          ),
+          hint: 'Leave the cloud copy untouched and carry on with the '
+              'settings on this device.',
+          selected: selected == CloudDataAction.skip,
+          autofocus: selected == CloudDataAction.skip,
+          focusNode:
+              selected == CloudDataAction.skip ? _stepDefaultFocusNode : null,
+          onPressed: () => setState(() => _cloudChoice = CloudDataAction.skip),
+        ),
+        _OptionCard(
+          order: 2,
+          label: 'Delete cloud data',
+          preview: _cloudPreview(
+            Icons.delete_outline_rounded,
+            const Color(0xFFEF4444),
+          ),
+          hint: 'Remove the saved copy from the cloud for good. This cannot '
+              'be undone.',
+          selected: selected == CloudDataAction.delete,
+          autofocus: selected == CloudDataAction.delete,
+          focusNode: selected == CloudDataAction.delete
+              ? _stepDefaultFocusNode
+              : null,
+          onPressed: () =>
+              setState(() => _cloudChoice = CloudDataAction.delete),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTasteStep(AppLocalizations l10n) {
+    return _OptionLayout(
+      columns: 2,
+      children: [
+        _OptionCard(
+          order: 0,
+          label: 'Personalise',
+          preview: _cloudPreview(
+            Icons.auto_awesome_motion_rounded,
+            AppColorScheme.accent,
+          ),
+          hint: 'Rate a few titles and genres so the home screen can suggest '
+              'things worth watching. Takes a couple of minutes.',
+          selected: _tasteChoice,
+          autofocus: _tasteChoice,
+          focusNode: _tasteChoice ? _stepDefaultFocusNode : null,
+          onPressed: () => setState(() => _tasteChoice = true),
+        ),
+        _OptionCard(
+          order: 1,
+          label: 'Not now',
+          preview: _cloudPreview(
+            Icons.schedule_rounded,
+            AppColorScheme.onSurface,
+          ),
+          hint: 'Skip for now. You can build a taste profile at any time from '
+              'Settings.',
+          selected: !_tasteChoice,
+          autofocus: !_tasteChoice,
+          focusNode: !_tasteChoice ? _stepDefaultFocusNode : null,
+          onPressed: () => setState(() => _tasteChoice = false),
+        ),
+      ],
+    );
+  }
+
   Widget _buildActions(BuildContext context, AppLocalizations l10n) {
-    final isLast = _index >= _steps.length - 1;
+    final isLast =
+        _index >= _steps.length - 1 && _pendingTrailingStep() == null;
     return Row(
       children: [
         if (_index > 0)
@@ -658,6 +929,7 @@ class _OptionCard extends StatelessWidget {
     required this.onPressed,
     this.hint,
     this.autofocus = false,
+    this.focusNode,
   });
 
   final int order;
@@ -666,6 +938,7 @@ class _OptionCard extends StatelessWidget {
   final Widget preview;
   final bool selected;
   final bool autofocus;
+  final FocusNode? focusNode;
   final VoidCallback onPressed;
 
   @override
@@ -675,6 +948,7 @@ class _OptionCard extends StatelessWidget {
     return _Focusable(
       order: order,
       autofocus: autofocus,
+      focusNode: focusNode,
       onPressed: onPressed,
       builder: (focused) => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -850,9 +1124,10 @@ class _SetupPrimaryButton extends StatelessWidget {
 /// The closing screen: pick a look, then a list of what else lives in
 /// Settings. Only the theme writes anything.
 class _SetupTourStep extends StatefulWidget {
-  const _SetupTourStep({required this.prefs});
+  const _SetupTourStep({required this.prefs, this.focusNode});
 
   final UserPreferences prefs;
+  final FocusNode? focusNode;
 
   @override
   State<_SetupTourStep> createState() => _SetupTourStepState();
@@ -863,6 +1138,10 @@ class _SetupTourStepState extends State<_SetupTourStep> {
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
     final active = widget.prefs.get(UserPreferences.visualTheme);
+
+    // Glass is registered in ThemeRegistry now, so every built-in theme
+    // Settings > Appearance can show is offered here too -- no exclusion.
+    final availableThemes = VisualThemeId.values.toList();
 
     return SingleChildScrollView(
       child: Column(
@@ -880,20 +1159,30 @@ class _SetupTourStepState extends State<_SetupTourStep> {
             spacing: AppSpacing.spaceMd,
             runSpacing: AppSpacing.spaceMd,
             children: [
-              for (var i = 0; i < VisualThemeId.values.length; i++)
+              for (var i = 0; i < availableThemes.length; i++)
                 _ThemeSwatch(
                   order: i,
-                  theme: VisualThemeId.values[i],
-                  selected: active == VisualThemeId.values[i],
-                  autofocus: active == VisualThemeId.values[i],
+                  theme: availableThemes[i],
+                  selected: active == availableThemes[i],
+                  autofocus: active == availableThemes[i],
+                  focusNode: active == availableThemes[i]
+                      ? widget.focusNode
+                      : null,
                   // Written straight away rather than held back with the
                   // rest, because the point is that the wizard restyles
                   // around you as you move across the row.
+                  //
+                  // Must go through AppThemeController, not a bare prefs.set:
+                  // writing the preference alone never calls
+                  // ThemeRegistry.setActiveById or notifies the controller
+                  // the rest of the app listens to, so the swatch would show
+                  // as selected while the actual theme around it never
+                  // changed. applyThemeById also clears any leftover
+                  // customThemeId from a synced/plugin theme, which would
+                  // otherwise keep overriding this choice.
                   onPressed: () async {
-                    await widget.prefs.set(
-                      UserPreferences.visualTheme,
-                      VisualThemeId.values[i],
-                    );
+                    await AppThemeScope.of(context)
+                        .applyThemeSelection(widget.prefs, availableThemes[i]);
                     if (mounted) setState(() {});
                   },
                 ),
@@ -983,12 +1272,14 @@ class _ThemeSwatch extends StatelessWidget {
     required this.selected,
     required this.autofocus,
     required this.onPressed,
+    this.focusNode,
   });
 
   final int order;
   final VisualThemeId theme;
   final bool selected;
   final bool autofocus;
+  final FocusNode? focusNode;
   final VoidCallback onPressed;
 
   @override
@@ -1007,6 +1298,7 @@ class _ThemeSwatch extends StatelessWidget {
     return _Focusable(
       order: order,
       autofocus: autofocus,
+      focusNode: focusNode,
       onPressed: onPressed,
       builder: (focused) => Column(
         spacing: AppSpacing.spaceXs,

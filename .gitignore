@@ -163,3 +163,6 @@ web/drift_worker.js.map
 /scripts/.cache/
 /.arb-work/
 /.arb-work-brand/
+
+# Scratch copies made while editing. Never meant to be committed.
+*.bak-*

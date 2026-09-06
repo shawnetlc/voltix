@@ -209,6 +209,13 @@ class _HomeRowTogglesScreenState extends State<HomeRowTogglesScreen> {
     setState(() {});
   }
 
+  void _onLatestMediaRowsToggleChanged() {
+    _pushPersonalizationSync();
+    _reloadHomeRows();
+    if (!mounted) return;
+    setState(() {});
+  }
+
   void _onAudioRowsToggleChanged() {
     _pushPersonalizationSync();
     if (!mounted) return;
@@ -448,6 +455,18 @@ class _HomeRowTogglesScreenState extends State<HomeRowTogglesScreen> {
                 onChanged: _onSeerrRowsToggleChanged,
               ),
             ],
+            // Not yet in app_en.arb -- literal, matching the pattern used
+            // elsewhere in this file for strings ported without
+            // flutter gen-l10n available in this environment.
+            _SectionHeader('LATEST MEDIA'),
+            SwitchPreferenceTile(
+              preference: UserPreferences.displayLatestMediaRows,
+              title: 'Display Latest Media Rows',
+              subtitle:
+                  'Show a "Latest in <library>" row for each of your libraries on the home screen. Off by default.',
+              icon: Icons.new_releases,
+              onChanged: _onLatestMediaRowsToggleChanged,
+            ),
             _SectionHeader('SINCE YOU WATCHED'),
             SwitchPreferenceTile(
               preference: UserPreferences.displaySinceYouWatchedRows,

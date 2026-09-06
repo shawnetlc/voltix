@@ -18,6 +18,15 @@ class EpgHeroPreview extends StatelessWidget {
   final String? channelNumber;
   final bool isLive;
   final bool apple;
+  /// Programme artwork. Optional: falls back to a channel-tinted placeholder
+  /// so the band keeps its shape while focus moves between items that do and
+  /// do not have art.
+  final String? imageUrl;
+  /// Shown as a Play button when provided. Kept out of the focus order on
+  /// purpose -- the list itself is what the remote drives, and OK on a
+  /// programme already starts playback; this is for pointer users.
+  final VoidCallback? onPlay;
+  final String playLabel;
 
   const EpgHeroPreview({
     super.key,
@@ -30,7 +39,70 @@ class EpgHeroPreview extends StatelessWidget {
     required this.channelNumber,
     required this.isLive,
     required this.apple,
+    this.imageUrl,
+    this.onPlay,
+    this.playLabel = 'Watch',
   });
+
+  Widget _artwork() {
+    const w = 168.0;
+    const h = 94.0;
+    final placeholder = Container(
+      width: w,
+      height: h,
+      color: AppColorScheme.onSurface.withValues(alpha: 0.06),
+      child: Icon(
+        Icons.live_tv,
+        color: AppColorScheme.onSurface.withValues(alpha: 0.28),
+        size: 30,
+      ),
+    );
+    return ClipRRect(
+      borderRadius: AppRadius.circular(apple ? 14 : 10),
+      child: (imageUrl != null && imageUrl!.isNotEmpty)
+          ? CachedNetworkImage(
+              imageUrl: imageUrl!,
+              width: w,
+              height: h,
+              fit: BoxFit.cover,
+              fadeInDuration: const Duration(milliseconds: 140),
+              placeholder: (_, _) => placeholder,
+              errorWidget: (_, _, _) => placeholder,
+            )
+          : placeholder,
+    );
+  }
+
+  Widget _playButton(TextTheme textTheme) => Padding(
+        padding: const EdgeInsets.only(top: 10),
+        child: Material(
+          color: AppColorScheme.accent,
+          borderRadius: AppRadius.circular(999),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(999),
+            onTap: onPlay,
+            child: Padding(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.play_arrow_rounded,
+                      size: 18, color: AppColorScheme.onAccent),
+                  const SizedBox(width: 4),
+                  Text(
+                    playLabel,
+                    style: textTheme.labelLarge?.copyWith(
+                      color: AppColorScheme.onAccent,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -47,6 +119,8 @@ class EpgHeroPreview extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          _artwork(),
+          const SizedBox(width: 16),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -68,11 +142,12 @@ class EpgHeroPreview extends StatelessWidget {
                 if (synopsis != null && synopsis!.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   Text(synopsis!,
-                      maxLines: 2,
+                      maxLines: 3,
                       overflow: TextOverflow.ellipsis,
                       style: textTheme.bodySmall?.copyWith(
                           color: AppColorScheme.onSurface.withValues(alpha: 0.6))),
                 ],
+                if (onPlay != null) _playButton(textTheme),
               ],
             ),
           ),

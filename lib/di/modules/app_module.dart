@@ -7,13 +7,15 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../auth/repositories/session_repository.dart';
 import '../../auth/store/authentication_store.dart';
 import '../../auth/store/credential_store.dart';
+import '../../data/repositories/dstv_epg_repository.dart';
 import '../../data/repositories/mdblist_repository.dart';
 import '../../data/repositories/multi_server_repository.dart';
 import '../../data/repositories/media_bar_repository.dart';
 import '../../data/repositories/offline_repository.dart';
-import '../../data/repositories/taste_profile_repository.dart';
 import '../../data/services/media_server_client_factory.dart';
 import '../../data/repositories/seerr_repository.dart';
+import '../../data/repositories/taste_profile_repository.dart';
+import '../../data/services/taste_profile/taste_row_builder.dart';
 import '../../data/repositories/tmdb_repository.dart';
 import '../../data/repositories/user_views_repository.dart';
 import '../../data/repositories/search_repository.dart';
@@ -39,10 +41,6 @@ import '../../data/services/socket_handler.dart';
 import '../../data/services/sync_service.dart';
 import '../../data/services/theme_music_service.dart';
 import '../../data/services/voltix_watch_registry_service.dart';
-import '../../data/services/crash_report_service.dart';
-import '../../data/services/push_messaging_service.dart';
-import '../../data/services/retro_artwork/retro_artwork_activity_gate.dart';
-import '../../util/game_library.dart';
 import '../../data/viewmodels/media_bar_view_model.dart';
 import '../../data/viewmodels/seerr_discover_view_model.dart';
 import '../../playback/external_player_service.dart';
@@ -79,8 +77,14 @@ void resetUserScopedSingletons() {
   unregister<ItemMutationRepository>();
   unregister<SearchRepository>();
   unregister<UserViewsRepository>();
-  unregister<TasteProfileRepository>();
   unregister<VoltixWatchRegistryService>();
+  // Registered in _registerUserScopedSingletons below; missing here meant a
+  // second sign-in in the same app session (switch user, log out/in again,
+  // link a device after already being signed in) hit registerLazySingleton
+  // for a type GetIt still had from the first login and threw "already
+  // registered" instead of ever reaching the home screen.
+  unregister<TasteRowBuilder>();
+  unregister<TasteProfileRepository>();
 
   _registerUserScopedSingletons();
 }
@@ -152,18 +156,42 @@ void registerAppModule() {
     () => SyncService(_getIt<OfflineRepository>()),
   );
   _getIt.registerLazySingleton(() => const ExternalPlayerService());
+  // Public DStv guide data, unrelated to which server/user is signed
+  // in -- registered once here rather than per-session like the
+  // user-scoped singletons below.
   _getIt.registerLazySingleton(
-    () => CrashReportService(_getIt<UserPreferences>(), _getIt<MediaServerClientFactory>()),
+    () => DstvEpgRepository(),
+    dispose: (repository) => repository.dispose(),
   );
-  _getIt.registerLazySingleton(() => PushMessagingService());
-  _getIt.registerLazySingleton(() => GameLibraryRegistry());
-  _getIt.registerLazySingleton(() => RetroArtworkActivityGate());
 
   _registerUserScopedSingletons();
 }
 
 void _registerUserScopedSingletons() {
   _getIt.registerLazySingleton(() => VoltixWatchRegistryService());
+  // Never registered even though the Settings screen and the setup wizard's
+  // taste-onboarding step both call GetIt.instance<TasteProfileRepository>()
+  // directly in a field initializer -- with nothing registered that throws
+  // immediately on construction, before the screen ever gets to build a
+  // Scaffold, which is what showed up as a blank white page rather than a
+  // visible error. Every other dependency below PreferenceStore/
+  // MediaServerClient is optional and self-constructs inside
+  // TasteProfileRepository's own constructor, so this is the whole fix.
+  _getIt.registerLazySingleton(
+    () => TasteProfileRepository(
+      _getIt<PreferenceStore>(),
+      _getIt<MediaServerClient>(),
+    ),
+    dispose: (repository) => repository.dispose(),
+  );
+
+  // Not a second instance: this hands out the builder the repository already
+  // owns, so RowDataSource can reach it without importing the repository and
+  // creating an import cycle, and without a second TasteServerContext that
+  // could drift from the first on a session switch.
+  _getIt.registerLazySingleton<TasteRowBuilder>(
+    () => _getIt<TasteProfileRepository>().rowBuilder,
+  );
   _getIt.registerLazySingleton(
     () => MultiServerRepository(
       _getIt<AuthenticationStore>(),
@@ -182,13 +210,6 @@ void _registerUserScopedSingletons() {
   );
   _getIt.registerLazySingleton(() => SearchRepository(_getIt()));
   _getIt.registerLazySingleton(() => ItemMutationRepository(_getIt()));
-  _getIt.registerLazySingleton(
-    () => TasteProfileRepository(
-      _getIt<PreferenceStore>(),
-      _getIt<MediaServerClient>(),
-    ),
-    dispose: (repo) => repo.dispose(),
-  );
   _getIt.registerLazySingleton(
     () => RowDataSource(_getIt<MediaServerClient>()),
   );

@@ -51,6 +51,10 @@ class _AudioPreferencesScreenState extends State<_AudioPreferencesScreen> {
       AudioRouteType.earc => l10n.settingsAudioRouteEarc,
       AudioRouteType.bluetooth => l10n.settingsAudioRouteBluetooth,
       AudioRouteType.speaker => l10n.settingsAudioRouteSpeaker,
+      // Not yet in app_en.arb -- ported from upstream 2.5.0 as a literal to
+      // avoid hand-editing every locale's .arb file without flutter
+      // gen-l10n available in this environment.
+      AudioRouteType.headphones => 'Headphones',
       AudioRouteType.other => l10n.unknown,
     };
   }

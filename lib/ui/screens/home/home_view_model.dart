@@ -14,7 +14,10 @@ import '../../../data/models/iptv_models.dart';
 import '../../../data/repositories/voltix_iptv_repository.dart';
 import '../../../data/services/iptv_recent_store.dart';
 import '../../../data/repositories/multi_server_repository.dart';
+import '../../../data/repositories/taste_profile_repository.dart';
 import '../../../data/services/home_row_cache_store.dart';
+import '../../../data/services/taste_profile/taste_row_builder.dart';
+import '../../../data/models/taste_profile/taste_profile_models.dart';
 import '../../../data/services/row_data_source.dart';
 import '../../../data/services/custom_external_lists_service.dart';
 import '../../../data/services/topshelf_service.dart';
@@ -674,6 +677,9 @@ class HomeViewModel extends ChangeNotifier {
         return row.id == 'sonarr_calendar';
       case HomeSectionType.rewatch:
         return row.rowType == HomeRowType.latestMedia && row.id == 'rewatch';
+      case HomeSectionType.personalization:
+        // The section owns every taste row it produced, however many that is.
+        return row.rowType == HomeRowType.personalization;
       case HomeSectionType.sinceYouWatched1:
       case HomeSectionType.sinceYouWatched2:
       case HomeSectionType.sinceYouWatched3:
@@ -964,6 +970,8 @@ class HomeViewModel extends ChangeNotifier {
         return const {'sonarrCalendar'};
       case HomeSectionType.rewatch:
         return const {'rewatch'};
+      case HomeSectionType.personalization:
+        return const {'personalization'};
       case HomeSectionType.sinceYouWatched1:
         return const {'sinceYouWatched1'};
       case HomeSectionType.sinceYouWatched2:
@@ -1069,6 +1077,41 @@ class HomeViewModel extends ChangeNotifier {
   }
 
 
+  /// The taste profile block: up to six personalization rows, strongest
+  /// first.
+  ///
+  /// Silent when there is no completed profile — someone who has not finished
+  /// the wizard should see the home screen they had before, not a gap where
+  /// personalized rows would go.
+  Future<List<HomeRow>> _loadPersonalizationRows() async {
+    if (!GetIt.instance.isRegistered<TasteProfileRepository>() ||
+        !GetIt.instance.isRegistered<TasteRowBuilder>()) {
+      return const [];
+    }
+
+    final profile = GetIt.instance<TasteProfileRepository>().currentProfile;
+    if (profile == null || profile.status != TasteProfileStatus.completed) {
+      return const [];
+    }
+
+    final rows = await GetIt.instance<TasteRowBuilder>().buildHomeRows(
+      profile: profile,
+      serverId: _serverId,
+    );
+
+    return rows
+        .map(
+          (r) => HomeRow(
+            id: r.rowId,
+            title: r.title,
+            rowType: HomeRowType.personalization,
+            items: r.mediaItems,
+            totalCount: r.items.length,
+          ),
+        )
+        .toList(growable: false);
+  }
+
   Future<List<HomeRow>> _loadSection(HomeSectionType section) async {
     final l10n = currentAppLocalizations();
     final favoritesSortBy = _prefs
@@ -1083,6 +1126,8 @@ class HomeViewModel extends ChangeNotifier {
         .includeItemTypes;
     const sortOrder = 'Ascending';
     switch (section) {
+      case HomeSectionType.personalization:
+        return _loadPersonalizationRows();
       case HomeSectionType.resume:
         // IPTV progress is shown in its own rows directly below Continue
         // Watching / Next Up (see HomeSectionType.iptvContinue*), so it is NOT
@@ -1160,6 +1205,10 @@ class HomeViewModel extends ChangeNotifier {
       case HomeSectionType.rewatch:
         return [await _dataSource.loadRewatchRow(_serverId)];
       case HomeSectionType.latestMedia:
+        // Off by default on this version -- see the preference doc comment.
+        if (!_prefs.get(UserPreferences.displayLatestMediaRows)) {
+          return [];
+        }
         return _multiServerEnabled
             ? await _multiServerRepo.getAggregatedLatestMediaRows()
             : _loadLatestMediaRows();
@@ -1451,6 +1500,10 @@ class HomeViewModel extends ChangeNotifier {
   }
 
   Future<List<HomeRow>> _loadLatestMediaRows() async {
+    // Off by default on this version -- see the preference doc comment.
+    if (!_prefs.get(UserPreferences.displayLatestMediaRows)) {
+      return const [];
+    }
     final viewsFuture = _client.userViewsApi.getUserViews();
     final configFuture = _client.usersApi
         .getUserConfiguration()
@@ -1497,6 +1550,15 @@ class HomeViewModel extends ChangeNotifier {
   HomeRow? _placeholderForSection(HomeSectionType section) {
     final l10n = currentAppLocalizations();
     switch (section) {
+      case HomeSectionType.personalization:
+        // One placeholder for a section that resolves into several rows. It is
+        // cleared by _rowBelongsToConfig as soon as the real rows land.
+        return const HomeRow(
+          id: 'taste_personalization_loading',
+          title: 'Recommended for You',
+          rowType: HomeRowType.personalization,
+          isLoading: true,
+        );
       case HomeSectionType.resume:
         return HomeRow(
           id: 'resume',

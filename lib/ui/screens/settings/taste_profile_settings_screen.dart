@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get_it/get_it.dart';
 import 'package:intl/intl.dart';
+import 'package:server_core/server_core.dart';
 import 'package:voltix_design/voltix_design.dart';
 
 import '../../../data/models/taste_profile/taste_profile_models.dart';
@@ -31,10 +32,70 @@ class _TasteProfileSettingsScreenState
   final _tasteRepo = GetIt.instance<TasteProfileRepository>();
   bool _isGeneratingGrokInsight = false;
 
+  // TasteProfileRepository.currentProfile is only ever populated by
+  // loadProfile(), and the only callers were the login screen (and then only
+  // when the onboarding wizard had NOT been seen) and the first-run setup
+  // wizard. Every other route into this screen arrived with currentProfile
+  // still null, and the body below rendered a bare CircularProgressIndicator
+  // for that case -- a spinner with nothing behind it, which is why the page
+  // appeared to hang forever instead of loading. The screen now owns its own
+  // load, with a real failure state instead of an endless spinner.
+  bool _isLoadingProfile = false;
+  String? _profileLoadError;
+
   @override
   void initState() {
     super.initState();
     _tasteRepo.addListener(_onRepoChanged);
+    if (_tasteRepo.currentProfile == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _loadProfile());
+    }
+  }
+
+  /// The signed-in server session to load a profile for. Prefers the live
+  /// MediaServerClient (the same source the login screen uses); falls back to
+  /// the repository's own server context, which is only populated once
+  /// loadProfile has run at least one time.
+  (String userId, String serverId)? _resolveSession() {
+    try {
+      if (GetIt.instance.isRegistered<MediaServerClient>()) {
+        final client = GetIt.instance<MediaServerClient>();
+        final userId = client.userId?.trim() ?? '';
+        final serverId = client.baseUrl.trim();
+        if (userId.isNotEmpty && serverId.isNotEmpty) return (userId, serverId);
+      }
+    } catch (_) {}
+    final ctx = _tasteRepo.serverContext;
+    final userId = ctx.authenticatedUserId?.trim() ?? '';
+    final serverId = ctx.primaryServerId?.trim() ?? '';
+    if (userId.isNotEmpty && serverId.isNotEmpty) return (userId, serverId);
+    return null;
+  }
+
+  Future<void> _loadProfile() async {
+    if (_isLoadingProfile || !mounted) return;
+    setState(() {
+      _isLoadingProfile = true;
+      _profileLoadError = null;
+    });
+    try {
+      final session = _resolveSession();
+      if (session == null) {
+        throw StateError(
+          'Not signed in to a media server, so there is no profile to load.',
+        );
+      }
+      // Bounded: loadProfile can reach for the Azure backup, and an
+      // unreachable container must surface as an error the user can retry,
+      // never as another indefinite spinner.
+      await _tasteRepo
+          .loadProfile(userId: session.$1, serverId: session.$2)
+          .timeout(const Duration(seconds: 25));
+    } catch (e) {
+      if (mounted) setState(() => _profileLoadError = e.toString());
+    } finally {
+      if (mounted) setState(() => _isLoadingProfile = false);
+    }
   }
 
   @override
@@ -73,12 +134,15 @@ class _TasteProfileSettingsScreenState
               const SizedBox(height: 18),
 
               if (profile == null) ...[
-                const Center(
-                  child: Padding(
-                    padding: EdgeInsets.all(32),
-                    child: CircularProgressIndicator(),
-                  ),
-                ),
+                if (_isLoadingProfile)
+                  const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(32),
+                      child: CircularProgressIndicator(),
+                    ),
+                  )
+                else
+                  _buildProfileUnavailableCard(theme),
               ] else ...[
                 // 2. Profile Status
                 _buildStatusCard(theme, profile),
@@ -117,6 +181,11 @@ class _TasteProfileSettingsScreenState
                 // 9. Grok AI Intelligence & Insights
                 _buildSectionHeader(theme, 'Grok AI Intelligence & Analysis'),
                 _buildGrokAiCard(theme, profile),
+                const SizedBox(height: 20),
+
+                // 9b. Awards data for the Oscar / award-season rows
+                _buildSectionHeader(theme, 'Awards Data'),
+                _buildAwardsCard(theme),
                 const SizedBox(height: 20),
 
                 // 10. Dynamic Home Rows
@@ -209,6 +278,52 @@ class _TasteProfileSettingsScreenState
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// Shown when there is no profile and nothing is being loaded: says why and
+  /// offers a retry, instead of the spinner that used to sit here forever.
+  Widget _buildProfileUnavailableCard(ThemeData theme) {
+    final error = _profileLoadError;
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.person_off_outlined, size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Taste profile unavailable',
+                    style: theme.textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              error ??
+                  'No taste profile could be loaded for the signed-in user yet. '
+                      'Run the onboarding wizard to build one, or retry the load.',
+              style: theme.textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 16),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: FilledButton.tonalIcon(
+                onPressed: _isLoadingProfile ? null : _loadProfile,
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('Retry'),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -901,6 +1016,119 @@ class _TasteProfileSettingsScreenState
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
             child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Awards lookups for the Oscar Winners, From Nominee to Winner and Award
+  /// Season Essentials rows.
+  Widget _buildAwardsCard(ThemeData theme) {
+    final prefs = GetIt.instance<UserPreferences>();
+    final hasKey = prefs.get(UserPreferences.omdbApiKey).trim().isNotEmpty;
+
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Column(
+        children: [
+          TvFocusHighlight(
+            builder: (ctx, focused) => ListTile(
+              leading: Icon(
+                hasKey
+                    ? Icons.emoji_events_rounded
+                    : Icons.emoji_events_outlined,
+                size: 22,
+                color: hasKey ? AppColorScheme.accent : null,
+              ),
+              title: const Text('Awards Lookup (OMDb)'),
+              subtitle: Text(
+                hasKey
+                    ? 'Using your own key, with its own daily allowance.'
+                    : 'Using the built-in key, shared with every Voltix '
+                        'install. Add your own for a private allowance.',
+                style: const TextStyle(fontSize: 12, height: 1.3),
+              ),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: () {
+                HapticFeedback.lightImpact();
+                _showAwardsConfigDialog(context);
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showAwardsConfigDialog(BuildContext context) {
+    final prefs = GetIt.instance<UserPreferences>();
+    final keyController =
+        TextEditingController(text: prefs.get(UserPreferences.omdbApiKey));
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Awards Lookup'),
+        content: SizedBox(
+          width: 480,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Nothing in a media library records what a title won, so the '
+                  'award rows look it up from OMDb. Voltix ships with a key, '
+                  'so this works without any setup.',
+                  style: TextStyle(fontSize: 13, height: 1.3),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'That built-in key allows 1,000 lookups a day and is shared '
+                  'by everyone using Voltix. Adding your own free key from '
+                  'omdbapi.com gives you that allowance to yourself.',
+                  style: TextStyle(fontSize: 12, height: 1.3),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: keyController,
+                  decoration: const InputDecoration(
+                    labelText: 'Your OMDb API Key (optional)',
+                    hintText: 'Leave empty to use the built-in key',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              HapticFeedback.lightImpact();
+              final messenger = ScaffoldMessenger.of(context);
+              final nav = Navigator.of(ctx);
+              await prefs.set(
+                UserPreferences.omdbApiKey,
+                keyController.text.trim(),
+              );
+              // Cached "unknown" verdicts were recorded without a key, so they
+              // would otherwise survive and keep the rows empty.
+              _tasteRepo.awardsIndex.clear();
+              _tasteRepo.rowBuilder.invalidate();
+              if (mounted) setState(() {});
+              nav.pop();
+              messenger.showSnackBar(
+                const SnackBar(content: Text('Awards lookup saved.')),
+              );
+            },
+            child: const Text('Save'),
           ),
         ],
       ),

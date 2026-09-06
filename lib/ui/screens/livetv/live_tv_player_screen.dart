@@ -1745,6 +1745,7 @@ class _LiveTvPlayerScreenState extends State<LiveTvPlayerScreen>
   Widget _buildBottomOverlay() {
     final padding = MediaQuery.of(context).padding;
     final program = _currentProgram;
+    final channel = _currentChannel;
 
     return Positioned(
       bottom: 0,
@@ -1768,6 +1769,51 @@ class _LiveTvPlayerScreenState extends State<LiveTvPlayerScreen>
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Repeats the channel name from the top overlay right next to
+            // what's currently airing, so it reads correctly even once the
+            // top overlay has faded and only the controls remain on screen.
+            Padding(
+              padding: const EdgeInsets.only(bottom: AppSpacing.spaceXs),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Flexible(
+                    child: Text(
+                      channel.name,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: AppTypography.fontSizeMd,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (program?.name.isNotEmpty == true) ...[
+                    const Padding(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: AppSpacing.spaceXs,
+                      ),
+                      child: Text(
+                        '•',
+                        style: TextStyle(color: Colors.white54),
+                      ),
+                    ),
+                    Flexible(
+                      child: Text(
+                        program!.name,
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: AppTypography.fontSizeMd,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
             if (program?.episodeTitle != null)
               Padding(
                 padding: const EdgeInsets.only(bottom: AppSpacing.spaceXs),

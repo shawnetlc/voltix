@@ -307,6 +307,12 @@ enum HomeSectionType {
   radarrCalendar('radarr_calendar'),
   sonarrCalendar('sonarr_calendar'),
   rewatch('rewatch'),
+
+  /// The taste profile block. One section emitting several rows, rather than
+  /// one section per row: which rows appear is already the taste profile's own
+  /// setting (`enabledHomeRows`), and a second copy of that list here would be
+  /// one more thing to keep in step.
+  personalization('personalization'),
   none('none');
 
   const HomeSectionType(this.serializedName);

@@ -22,6 +22,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Build-time secrets, shared with the other Android build scripts.
+$sasConfig = Join-Path $PSScriptRoot 'build-secrets.ps1'
+if (Test-Path $sasConfig) { . $sasConfig }
+if (Get-Command Write-AzureSasStatus -ErrorAction SilentlyContinue) { Write-AzureSasStatus }
+
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 function Resolve-FlutterBin {
@@ -117,6 +122,9 @@ try {
     $dartDefines = @("--dart-define=DISTRIBUTION_CHANNEL=huawei")
     if ($AppGalleryAppId) {
         $dartDefines += "--dart-define=APPGALLERY_APP_ID=$AppGalleryAppId"
+    }
+    if (Get-Command Get-AzureSasDartDefines -ErrorAction SilentlyContinue) {
+        $dartDefines += Get-AzureSasDartDefines
     }
 
     Write-Host "3. Building AppGallery APK..."

@@ -28,19 +28,14 @@ class LiveTvScreen extends StatelessWidget {
         onTap: () => context.push(Destinations.liveTvGuide),
       ),
       (
-        icon: Icons.fiber_dvr,
-        title: l10n.recordings,
+        icon: Icons.replay_circle_filled,
+        title: 'Catch Up',
         onTap: () => context.push(Destinations.liveTvRecordings),
       ),
       (
         icon: Icons.schedule,
         title: l10n.schedule,
         onTap: () => context.push(Destinations.liveTvSchedule),
-      ),
-      (
-        icon: Icons.repeat,
-        title: l10n.seriesRecordings,
-        onTap: () => context.push(Destinations.liveTvSeriesRecordings),
       ),
     ];
 
@@ -74,10 +69,21 @@ class LiveTvScreen extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
+                            Image.asset(
+                              'assets/images/voltix_bolt.png',
+                              width: 56,
+                              height: 56,
+                              fit: BoxFit.contain,
+                              // Decoded at 2x display size so it stays crisp
+                              // without holding a full-res bitmap on TVs.
+                              cacheWidth: 112,
+                              errorBuilder: (_, _, _) =>
+                                  const SizedBox.shrink(),
+                            ),
+                            const SizedBox(width: 16),
                             Text(
-                              'Live TV',
+                              'Voltix TV',
                               style: Theme.of(context).textTheme.headlineMedium
                                   ?.copyWith(
                                     color: Colors.white,
@@ -88,7 +94,7 @@ class LiveTvScreen extends StatelessWidget {
                         ),
                         const SizedBox(height: 10),
                         Text(
-                          l10n.guide,
+                          'Live channels, guide, catch up and scheduled recordings',
                           style: Theme.of(context).textTheme.titleMedium
                               ?.copyWith(color: Colors.white70),
                         ),

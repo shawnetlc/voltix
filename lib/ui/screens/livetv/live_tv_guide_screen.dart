@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:get_it/get_it.dart';
@@ -92,7 +93,51 @@ class LiveTvGuideScreen extends StatefulWidget {
   State<LiveTvGuideScreen> createState() => _LiveTvGuideScreenState();
 }
 
-class _LiveTvGuideScreenState extends State<LiveTvGuideScreen> {
+class _LiveTvGuideScreenState extends State<LiveTvGuideScreen>
+    with WidgetsBindingObserver {
+  // Keeps the guide honest about "now". Without it the window stayed wherever
+  // it was first anchored: leave the app open over an hour boundary (or
+  // overnight) and come back, and the guide was still showing the schedule
+  // for the hour it was opened in, with the now-line off in the past.
+  Timer? _nowTicker;
+
+  // Navigation settling.
+  //
+  // Holding the d-pad walks focus through dozens of programmes a second. Every
+  // one of those used to publish itself to the hero preview immediately, which
+  // meant an artwork fetch and a lazy-load check per item flown past -- the
+  // requests all landed, mostly for programmes the user never stopped on, and
+  // the guide stuttered while they queued. Now a move only *arms* the preview;
+  // nothing is published (and no batch is requested) until movement actually
+  // stops, so exactly one item's worth of work is done: the one being looked
+  // at.
+  static const _settleDelay = Duration(milliseconds: 220);
+  Timer? _settleTimer;
+  bool _navigating = false;
+  GuideProgram? _pendingProgram;
+  GuideChannel? _pendingChannel;
+  int? _pendingLoadMoreIndex;
+
+  /// Records where focus has landed and restarts the settle clock. Called on
+  /// every focus move; only the last one before the pause takes effect.
+  void _armPreview({GuideProgram? program, GuideChannel? channel}) {
+    _pendingProgram = program;
+    _pendingChannel = channel;
+    _navigating = true;
+    _settleTimer?.cancel();
+    _settleTimer = Timer(_settleDelay, _settleNavigation);
+  }
+
+  void _settleNavigation() {
+    if (!mounted) return;
+    _navigating = false;
+    _focusedProgram.value = _pendingProgram;
+    _focusedChannel.value = _pendingChannel;
+    final index = _pendingLoadMoreIndex;
+    _pendingLoadMoreIndex = null;
+    if (index != null) _maybeLoadMore(index);
+  }
+
   late final LiveTvGuideViewModel _vm;
   final _prefs = GetIt.instance<UserPreferences>();
   final _channelScrollController = ScrollController();
@@ -140,6 +185,29 @@ class _LiveTvGuideScreenState extends State<LiveTvGuideScreen> {
       final width = MediaQuery.sizeOf(context).width - _contentLeftInset();
       _vm.load(windowHours: _guideHoursForWidth(width));
     });
+
+    WidgetsBinding.instance.addObserver(this);
+    // A minute is fine: it keeps the now-line moving, and only re-fetches on
+    // the rare tick where the clock has actually left the loaded window.
+    _nowTicker = Timer.periodic(const Duration(minutes: 1), (_) {
+      if (!mounted) return;
+      final now = DateTime.now();
+      if (now.isBefore(_vm.windowStart) || now.isAfter(_vm.windowEnd)) {
+        unawaited(_vm.goToNow());
+      } else {
+        setState(() {});
+      }
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    // Coming back from standby is the case that matters on a TV: the box can
+    // sit asleep for hours, and the guide it wakes up on has to be today's.
+    if (state == AppLifecycleState.resumed && mounted) {
+      unawaited(_vm.goToNow());
+    }
   }
 
   void _syncVerticalScroll() {
@@ -365,6 +433,9 @@ class _LiveTvGuideScreenState extends State<LiveTvGuideScreen> {
 
   @override
   void dispose() {
+    _nowTicker?.cancel();
+    _settleTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     _vm.removeListener(_onChanged);
     _vm.dispose();
     _channelScrollController.dispose();
@@ -433,6 +504,12 @@ class _LiveTvGuideScreenState extends State<LiveTvGuideScreen> {
   // Called from row itemBuilders: as the guide scrolls toward the lazily-loaded
   // edge, request the next batch of programs (the VM guards against re-entry).
   void _maybeLoadMore(int index) {
+    // Deferred while the remote is still moving; _settleNavigation replays the
+    // last index once it stops.
+    if (_navigating) {
+      _pendingLoadMoreIndex = index;
+      return;
+    }
     if (_vm.hasMorePrograms &&
         index + _kProgramPrefetchRows >= _vm.programsHighWater) {
       _vm.loadMorePrograms();
@@ -570,7 +647,18 @@ class _LiveTvGuideScreenState extends State<LiveTvGuideScreen> {
         final isLive = program != null &&
             now.isAfter(program.startDate) &&
             now.isBefore(program.endDate);
+        final artUrl = (program?.imageTag != null &&
+                program?.imageItemId != null)
+            ? _vm.imageApi.getPrimaryImageUrl(
+                program!.imageItemId!,
+                maxHeight: 240,
+                tag: program.imageTag,
+              )
+            : null;
         return EpgHeroPreview(
+          imageUrl: artUrl,
+          onPlay: channel == null ? null : () => _watchChannel(channel.id),
+          playLabel: isLive ? 'Watch live' : 'Watch channel',
           title: program?.name ??
               channel?.name ??
               AppLocalizations.of(context).guideTimeline,
@@ -612,7 +700,6 @@ class _LiveTvGuideScreenState extends State<LiveTvGuideScreen> {
   }
 
   Widget _buildMobileHeader() {
-    final l10n = AppLocalizations.of(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(8, 4, 8, 0),
       child: Row(
@@ -624,7 +711,7 @@ class _LiveTvGuideScreenState extends State<LiveTvGuideScreen> {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              l10n.guideTimeline,
+              'Voltix IPTV Guide',
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: AppTypography.fontSizeLg,
@@ -649,6 +736,15 @@ class _LiveTvGuideScreenState extends State<LiveTvGuideScreen> {
                 ? Icons.view_agenda
                 : Icons.grid_view,
             onPressed: _toggleMobileView,
+          ),
+          const SizedBox(width: 8),
+          Image.asset(
+            'assets/images/voltix_bolt.png',
+            width: 32,
+            height: 32,
+            fit: BoxFit.contain,
+            cacheWidth: 64,
+            errorBuilder: (_, _, _) => const SizedBox.shrink(),
           ),
         ],
       ),
@@ -889,6 +985,19 @@ class _LiveTvGuideScreenState extends State<LiveTvGuideScreen> {
             ),
             const SizedBox(width: 8),
           ],
+          // Only on TV: a phone has its own header above this row, and the
+          // pills already fill the width there.
+          if (PlatformDetection.isTV) ...[
+            const Text(
+              'Voltix IPTV Guide',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(width: 16),
+          ],
           _GuidePillButton(
             icon: Icons.chevron_left,
             onPressed: () => _vm.shiftWindow(-_vm.guideWindowHours),
@@ -926,8 +1035,17 @@ class _LiveTvGuideScreenState extends State<LiveTvGuideScreen> {
           const SizedBox(width: 8),
           _GuidePillButton(
             icon: Icons.fiber_dvr,
-            label: AppLocalizations.of(context).recordings,
+            label: 'Catch Up',
             onPressed: _openRecordings,
+          ),
+          const Spacer(),
+          Image.asset(
+            'assets/images/voltix_bolt.png',
+            width: 48,
+            height: 48,
+            fit: BoxFit.contain,
+            cacheWidth: 96,
+            errorBuilder: (_, _, _) => const SizedBox.shrink(),
           ),
         ],
       ),
@@ -1107,8 +1225,7 @@ class _LiveTvGuideScreenState extends State<LiveTvGuideScreen> {
       onFocusChange: (focused) {
         if (!focused) return;
         _scrollToRow(index);
-        _focusedProgram.value = null;
-        _focusedChannel.value = channel;
+        _armPreview(channel: channel);
       },
       builder: (focused) => Container(
         height: _kRowHeight,
@@ -1147,17 +1264,23 @@ class _LiveTvGuideScreenState extends State<LiveTvGuideScreen> {
       windowEnd: _vm.windowEnd,
       apple: _apple,
       onLeftEdge: () => _focusChannelRow(rowIndex),
-      onProgramSelected: widget.miniPlayerMode
-          ? (program) => _watchChannel(program.channelId)
-          : _showProgramDetails,
+      // Selecting a programme plays that channel immediately -- the same
+      // thing the user would get by opening it from Live TV -- rather than
+      // making them go through a details dialog first. The dialog (record,
+      // favourite) is still reachable on long press.
+      onProgramSelected: (program) => _watchChannel(program.channelId),
+      onProgramLongPressed:
+          widget.miniPlayerMode ? null : _showProgramDetails,
       onTopEdge: rowIndex == 0
           ? (widget.miniPlayerMode
               ? _focusMiniPlayer
               : () => _filterFocusNodeFor(0).requestFocus())
           : null,
       onProgramFocused: (program, left, width) {
-        _focusedProgram.value = program;
-        _focusedChannel.value = _vm.channelForId(program.channelId);
+        _armPreview(
+          program: program,
+          channel: _vm.channelForId(program.channelId),
+        );
         _scrollToRow(rowIndex);
         if (_guideHorizontalScrollController.hasClients) {
           final viewport = _guideHorizontalScrollController.position.viewportDimension;
@@ -1456,6 +1579,7 @@ class _GuidePillButtonState extends State<_GuidePillButton> {
 
 class _GuideFocusableSurface extends StatefulWidget {
   final VoidCallback? onPressed;
+  final VoidCallback? onLongPress;
   final ValueChanged<bool>? onFocusChange;
   final Widget Function(bool focused) builder;
   final BorderRadiusGeometry? borderRadius;
@@ -1465,6 +1589,7 @@ class _GuideFocusableSurface extends StatefulWidget {
   const _GuideFocusableSurface({
     required this.builder,
     this.onPressed,
+    this.onLongPress,
     this.onFocusChange,
     this.borderRadius,
     this.focusNode,
@@ -1516,6 +1641,7 @@ class _GuideFocusableSurfaceState extends State<_GuideFocusableSurface> {
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: widget.onPressed,
+        onLongPress: widget.onLongPress,
         child: child,
       ),
     );
@@ -1531,6 +1657,7 @@ class _GuideProgramRow extends StatefulWidget {
   final VoidCallback? onLeftEdge;
   final VoidCallback? onTopEdge;
   final ValueChanged<GuideProgram> onProgramSelected;
+  final ValueChanged<GuideProgram>? onProgramLongPressed;
   final void Function(GuideProgram program, double left, double width)
   onProgramFocused;
   final String Function(DateTime) formatTime;
@@ -1544,6 +1671,7 @@ class _GuideProgramRow extends StatefulWidget {
     this.onLeftEdge,
     this.onTopEdge,
     required this.onProgramSelected,
+    this.onProgramLongPressed,
     required this.onProgramFocused,
     required this.formatTime,
   });
@@ -1667,6 +1795,9 @@ class _GuideProgramRowState extends State<_GuideProgramRow> {
         child: _GuideFocusableSurface(
           focusNode: _focusNodes[index],
           onPressed: () => widget.onProgramSelected(program),
+          onLongPress: widget.onProgramLongPressed == null
+              ? null
+              : () => widget.onProgramLongPressed!(program),
           onKeyEvent: (node, event) =>
               _handleProgramKeyEvent(index, node, event),
           onFocusChange: (focused) {

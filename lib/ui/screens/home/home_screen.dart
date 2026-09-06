@@ -404,6 +404,19 @@ class _HomeShellState extends State<_HomeShell>
               ),
               if (seasonalEffect != 'none')
                 Positioned.fill(child: SeasonalEffects(effect: seasonalEffect)),
+              // Voltix brand mark, top-right corner of the home hero.
+              Positioned(
+                top: 20,
+                right: 32,
+                child: Image.asset(
+                  'assets/images/voltix_bolt.png',
+                  width: 32,
+                  height: 32,
+                  fit: BoxFit.contain,
+                  cacheWidth: 64,
+                  errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                ),
+              ),
             ],
           ),
         ),
@@ -3326,12 +3339,10 @@ class _ContentRowsState extends State<_ContentRows>
         ? <_LiveTvAction>[
             _LiveTvAction(Icons.live_tv_rounded, 'Voltix Live TV', Destinations.voltixLiveTv),
             _LiveTvAction(Icons.tv_rounded, l10n.guide, Destinations.liveTvGuide),
-            _LiveTvAction(Icons.fiber_manual_record_rounded, l10n.recordings,
+            _LiveTvAction(Icons.replay_circle_filled, 'Catch Up',
                 Destinations.liveTvRecordings),
             _LiveTvAction(Icons.schedule_rounded, l10n.schedule,
                 Destinations.liveTvSchedule),
-            _LiveTvAction(Icons.movie_creation, l10n.series,
-                Destinations.liveTvSeriesRecordings),
           ]
         : <_LiveTvAction>[
             _LiveTvAction(Icons.live_tv_rounded, 'Voltix Live TV', Destinations.voltixLiveTv),
@@ -4228,9 +4239,10 @@ class _ContentRowsState extends State<_ContentRows>
       final mediaType = item.type == 'Series' || item.type == 'tv'
           ? 'tv'
           : 'movie';
+      // mediaType must travel in the URL, not via extra: -- see the note
+      // in item_detail_screen.dart's seerrMedia navigation for why.
       context.push(
-        Destinations.seerrMedia(item.id),
-        extra: {'mediaType': mediaType},
+        Destinations.seerrMedia(item.id, mediaType: mediaType),
       );
     }
   }
@@ -4553,6 +4565,9 @@ class _ContentRowsState extends State<_ContentRows>
       HomeRowType.iptvFavoriteSeries => HomeSectionType.iptvFavoriteSeries,
       HomeRowType.iptvContinueSeries => HomeSectionType.iptvContinueSeries,
       HomeRowType.iptvContinueMovies => HomeSectionType.iptvContinueMovies,
+      // Hiding any taste row hides the block: they are one section, and the
+      // per-row switches live in the taste profile settings instead.
+      HomeRowType.personalization => HomeSectionType.personalization,
       _ => null,
     };
   }

@@ -19,6 +19,19 @@ class AzureBlobStorageService {
       String.fromEnvironment('AZURE_BLOB_ACCOUNT_NAME');
   static const String _envContainerName =
       String.fromEnvironment('AZURE_BLOB_CONTAINER_NAME');
+  /// SAS for the settings container specifically.
+  ///
+  /// A SAS is scoped to one container, and this service writes to
+  /// `voltix-user-settings` while the taste-profile client writes to
+  /// `voltix-taste-profiles` -- so the two need separate tokens. This one
+  /// covers both settings and watch history, which live in the same container
+  /// under different path prefixes rather than in containers of their own.
+  static const String _envSettingsSasToken =
+      String.fromEnvironment('AZURE_BLOB_SETTINGS_SAS_TOKEN');
+
+  /// Older single-token builds. Kept as a fallback so a build that only sets
+  /// AZURE_BLOB_SAS_TOKEN behaves as it did before, rather than silently
+  /// losing the direct path.
   static const String _envSasToken =
       String.fromEnvironment('AZURE_BLOB_SAS_TOKEN');
   static const String _envCustomEndpoint =
@@ -55,10 +68,13 @@ class AzureBlobStorageService {
     return 'voltix-user-settings';
   }
 
+  /// The container-specific token first, then the legacy shared one.
   String get envSasToken {
+    if (_envSettingsSasToken.isNotEmpty) return _envSettingsSasToken;
     if (_envSasToken.isNotEmpty) return _envSasToken;
     try {
-      final platEnv = Platform.environment['AZURE_BLOB_SAS_TOKEN'];
+      final platEnv = Platform.environment['AZURE_BLOB_SETTINGS_SAS_TOKEN'] ??
+          Platform.environment['AZURE_BLOB_SAS_TOKEN'];
       if (platEnv != null && platEnv.isNotEmpty) return platEnv;
     } catch (_) {}
     return '';

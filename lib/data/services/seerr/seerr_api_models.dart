@@ -301,6 +301,7 @@ class SeerrDiscoverItem {
   final String? character;
   final String? job;
   final String? department;
+  final String? profilePath;
 
   const SeerrDiscoverItem({
     required this.id,
@@ -324,6 +325,7 @@ class SeerrDiscoverItem {
     this.character,
     this.job,
     this.department,
+    this.profilePath,
   });
 
   String get displayTitle => title ?? name ?? '';

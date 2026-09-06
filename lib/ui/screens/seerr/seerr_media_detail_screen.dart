@@ -1332,8 +1332,10 @@ class _SeerrMediaDetailScreenState extends State<SeerrMediaDetailScreen> {
           onTap: () {
             final mediaType = item.mediaType ?? 'movie';
             context.push(
-              Destinations.seerrMedia(item.id.toString()),
-              extra: {'mediaType': mediaType},
+              Destinations.seerrMedia(
+                item.id.toString(),
+                mediaType: mediaType,
+              ),
             );
           },
         );

@@ -52,6 +52,19 @@ Future<void> configureImageDiskCache() async {
   } catch (_) {}
 }
 
+// RECONSTRUCTED: this function was called from main.dart but missing from
+// this file after an accidental staged-changes rollback was reverted
+// (2026-08-31) -- the original implementation could not be recovered from
+// git history. This is a conservative placeholder: it enforces the same
+// disk-cache budget approach used elsewhere in this file, scoped to Apple TV
+// (tvOS's stricter, App Store-reviewed storage constraints are why
+// configureImageDiskCache above already special-cases it). If the original
+// had different tuning, replace this with that.
+Future<void> configureAppleTvImageCache() async {
+  if (!PlatformDetection.isAppleTV) return;
+  await enforceImageCacheBudget(150 << 20, throttle: false);
+}
+
 // Game artwork has its own fixed budget, so browsing games never displaces
 // movie, TV, or music artwork from the user's media cache allocation.
 Future<void> enforceImageCacheBudget(

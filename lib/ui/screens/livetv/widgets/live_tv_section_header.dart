@@ -34,7 +34,20 @@ class LiveTvSectionHeader extends StatelessWidget {
                   ),
                 ),
               ),
-              const SizedBox(width: 48),
+              // Brand mark, top-right. Replaces the spacer that was only
+              // here to keep the centred title balanced against the back
+              // button -- the logo occupies that space instead.
+              SizedBox(
+                width: 48,
+                child: Image.asset(
+                  'assets/images/voltix_bolt.png',
+                  width: 44,
+                  height: 44,
+                  fit: BoxFit.contain,
+                  cacheWidth: 88,
+                  errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 8),

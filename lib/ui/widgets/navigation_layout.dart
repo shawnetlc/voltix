@@ -137,9 +137,17 @@ class _NavigationLayoutState extends State<NavigationLayout> with WidgetsBinding
 
   @override
   Widget build(BuildContext context) {
-    if (!widget.showNavigationChrome) {
-      return widget.child;
-    }
+    // showNavigationChrome only decides whether the navbar/toolbar is *in* the
+    // Stack -- never whether this wrapper exists at all. Returning
+    // widget.child bare when the chrome hides put the child at a different
+    // depth in the tree, so Flutter could not reuse its Element: every screen
+    // below this point was torn down and rebuilt from scratch, losing its
+    // State, its ScrollControllers (scroll offset back to 0) and every
+    // FocusNode it owned. On the Modern details page that fires the moment
+    // the page scrolls past 50px or focus enters a tab's content, which is
+    // what made the page look unscrollable and left the d-pad stuck on the
+    // tab bar. Keeping the shape identical in both states keeps the Element,
+    // the scroll offset and the focus alive.
     return switch (_position) {
       NavbarPosition.left => _buildSidebar(),
       NavbarPosition.top => _buildToolbar(),
@@ -157,9 +165,11 @@ class _NavigationLayoutState extends State<NavigationLayout> with WidgetsBinding
     return Column(
       children: [
         Expanded(child: content),
-        const DownloadProgressBar(),
-        const BottomMusicBar(),
-        MobileBottomNavBar(activeRoute: widget.activeRoute),
+        if (widget.showNavigationChrome) ...[
+          const DownloadProgressBar(),
+          const BottomMusicBar(),
+          MobileBottomNavBar(activeRoute: widget.activeRoute),
+        ],
       ],
     );
   }
@@ -195,16 +205,28 @@ class _NavigationLayoutState extends State<NavigationLayout> with WidgetsBinding
     // translates with scroll, so its reserve belongs in the scrolling list
     // inset instead and is handled there.
     final musicExtra = TopToolbar.musicBarExtraHeight();
-    final insetBody = (!translateWithScroll && musicExtra > 0)
-        ? Padding(padding: EdgeInsets.only(top: musicExtra), child: body)
-        : body;
+    // Always a Padding, even at zero: swapping the Padding in and out would
+    // reshape the tree above `body` for the same reason described in build().
+    final insetBody = Padding(
+      padding: EdgeInsets.only(
+        top: (!translateWithScroll && widget.showNavigationChrome)
+            ? musicExtra
+            : 0.0,
+      ),
+      child: body,
+    );
     return Column(
       children: [
         Expanded(
           child: Stack(
             children: [
               Positioned.fill(child: insetBody),
-              if (translateWithScroll)
+              if (!widget.showNavigationChrome)
+                // Chrome hidden: the Stack still exists so `content` keeps its
+                // Element (and its scroll offset and focus); only the toolbar
+                // layer drops out.
+                const SizedBox.shrink(key: ValueKey('navChromeHidden'))
+              else if (translateWithScroll)
                 ValueListenableBuilder<double>(
                   valueListenable: _toolbarScrollOffset,
                   builder: (_, offset, child) {
@@ -231,7 +253,7 @@ class _NavigationLayoutState extends State<NavigationLayout> with WidgetsBinding
             ],
           ),
         ),
-        const DownloadProgressBar(),
+        if (widget.showNavigationChrome) const DownloadProgressBar(),
       ],
     );
   }
@@ -256,16 +278,17 @@ class _NavigationLayoutState extends State<NavigationLayout> with WidgetsBinding
             child: Stack(
               children: [
                 Positioned.fill(child: content),
-                Positioned(
-                  top: 0,
-                  left: 0,
-                  bottom: 0,
-                  child: sidebar,
-                ),
+                if (widget.showNavigationChrome)
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    bottom: 0,
+                    child: sidebar,
+                  ),
               ],
             ),
           ),
-          const DownloadProgressBar(),
+          if (widget.showNavigationChrome) const DownloadProgressBar(),
         ],
       );
     }
@@ -276,9 +299,10 @@ class _NavigationLayoutState extends State<NavigationLayout> with WidgetsBinding
           child: Stack(
             children: [
               Positioned.fill(child: content),
-              Positioned.fill(
-                child: sidebar,
-              ),
+              if (widget.showNavigationChrome)
+                Positioned.fill(
+                  child: sidebar,
+                ),
             ],
           ),
         ),

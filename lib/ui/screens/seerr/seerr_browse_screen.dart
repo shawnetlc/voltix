@@ -259,8 +259,10 @@ class _SeerrBrowseScreenState extends State<SeerrBrowseScreen> {
                     onTap: () {
                       final mt = item.mediaType ?? widget.mediaType ?? 'movie';
                       context.push(
-                        Destinations.seerrMedia(item.id.toString()),
-                        extra: {'mediaType': mt},
+                        Destinations.seerrMedia(
+                          item.id.toString(),
+                          mediaType: mt,
+                        ),
                       );
                     },
                   );

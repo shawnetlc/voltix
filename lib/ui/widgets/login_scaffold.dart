@@ -25,18 +25,12 @@ class LoginScaffold extends StatefulWidget {
 }
 
 class _LoginScaffoldState extends State<LoginScaffold> with TickerProviderStateMixin {
-  late AnimationController _particleController;
   late AnimationController _borderController;
   late Animation<Color?> _borderColorAnimation;
 
   @override
   void initState() {
     super.initState();
-    _particleController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 20),
-    )..repeat();
-
     _borderController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 3),
@@ -53,7 +47,6 @@ class _LoginScaffoldState extends State<LoginScaffold> with TickerProviderStateM
 
   @override
   void dispose() {
-    _particleController.dispose();
     _borderController.dispose();
     super.dispose();
   }
@@ -61,48 +54,13 @@ class _LoginScaffoldState extends State<LoginScaffold> with TickerProviderStateM
   @override
   Widget build(BuildContext context) {
     final isVoltix = ThemeRegistry.active.id == ThemeRegistry.voltixId;
-    final gradientColors = isVoltix
-        ? const [Color(0xFF0a0a0a), Color(0xFF1a1a2e), Color(0xFF16213e)]
-        : [
-            AppColorScheme.background,
-            AppColorScheme.surfaceVariant,
-            AppColorScheme.surface,
-          ];
     final cardColor = isVoltix
         ? _kVoltixCardColor
         : AppColorScheme.surface.withAlpha(0xCC);
 
     return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: gradientColors,
-          ),
-          image: isVoltix
-              ? const DecorationImage(
-                  image: AssetImage('assets/images/login_bg.png'),
-                  fit: BoxFit.cover,
-                )
-              : null,
-        ),
-        child: Stack(
-          children: [
-            if (isVoltix)
-              Positioned.fill(
-                child: AnimatedBuilder(
-                  animation: _particleController,
-                  builder: (context, _) {
-                    return CustomPaint(
-                      painter: _ParticlePainter(
-                        progress: _particleController.value,
-                      ),
-                    );
-                  },
-                ),
-              ),
-            SafeArea(
+      body: WelcomeBackdrop(
+        child: SafeArea(
               child: Align(
                 alignment: const Alignment(0, -0.6),
                 child: SingleChildScrollView(
@@ -137,8 +95,86 @@ class _LoginScaffoldState extends State<LoginScaffold> with TickerProviderStateM
                 ),
               ),
             ),
-          ],
+      ),
+    );
+  }
+}
+
+/// The animated gradient + particle backdrop used behind Welcome/Login.
+///
+/// Also reused behind the setup wizard (both on first run and on "Run Setup
+/// Again" from Settings) so re-entering setup doesn't feel like landing on a
+/// flatter, unrelated screen.
+class WelcomeBackdrop extends StatefulWidget {
+  final Widget child;
+
+  const WelcomeBackdrop({super.key, required this.child});
+
+  @override
+  State<WelcomeBackdrop> createState() => _WelcomeBackdropState();
+}
+
+class _WelcomeBackdropState extends State<WelcomeBackdrop>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _particleController;
+
+  @override
+  void initState() {
+    super.initState();
+    _particleController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 20),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _particleController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isVoltix = ThemeRegistry.active.id == ThemeRegistry.voltixId;
+    final gradientColors = isVoltix
+        ? const [Color(0xFF0a0a0a), Color(0xFF1a1a2e), Color(0xFF16213e)]
+        : [
+            AppColorScheme.background,
+            AppColorScheme.surfaceVariant,
+            AppColorScheme.surface,
+          ];
+
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: gradientColors,
         ),
+        image: isVoltix
+            ? const DecorationImage(
+                image: AssetImage('assets/images/login_bg.png'),
+                fit: BoxFit.cover,
+              )
+            : null,
+      ),
+      child: Stack(
+        children: [
+          if (isVoltix)
+            Positioned.fill(
+              child: AnimatedBuilder(
+                animation: _particleController,
+                builder: (context, _) {
+                  return CustomPaint(
+                    painter: _ParticlePainter(
+                      progress: _particleController.value,
+                    ),
+                  );
+                },
+              ),
+            ),
+          widget.child,
+        ],
       ),
     );
   }

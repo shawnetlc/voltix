@@ -26,12 +26,17 @@ class TasteSyncManager extends ChangeNotifier {
   final TasteGenreService _genreService;
   final TasteHistoryAnalyzer _analyzer;
 
+  /// Kept as part of the constructor's shape, but no longer paid between
+  /// steps: the steps run concurrently now, so there is nothing to pace, and
+  /// the pause was time the viewer spent waiting for an animation rather than
+  /// for their library.
+  @Deprecated('No longer used; steps run concurrently and report as they land.')
   int minimumStepTransitionDelayMs = 150;
 
   SyncProgressState _progressState = SyncProgressState(
     currentStep: SyncStep.preparation,
     statusMessage:
-        'Retrieving stream choices to personalize your viewing experience. This may take a minute - it will be with the wait.',
+        'Retrieving stream choices to personalize your viewing experience. This may take a minute - it will be worth the wait.',
     lastUpdatedUtc: DateTime.now().toUtc(),
   );
 
@@ -58,6 +63,7 @@ class TasteSyncManager extends ChangeNotifier {
     required TasteLocalStore localStore,
     required TasteGenreService genreService,
     required TasteHistoryAnalyzer analyzer,
+    // ignore: deprecated_member_use_from_same_package
     this.minimumStepTransitionDelayMs = 150,
   })  : _serverContext = serverContext,
         _localStore = localStore,
@@ -110,7 +116,7 @@ class TasteSyncManager extends ChangeNotifier {
       _progressState = SyncProgressState(
         currentStep: SyncStep.preparation,
         statusMessage:
-            'Retrieving stream choices to personalize your viewing experience. This may take a minute - it will be with the wait.',
+            'Retrieving stream choices to personalize your viewing experience. This may take a minute - it will be worth the wait.',
         lastUpdatedUtc: DateTime.now().toUtc(),
       );
       notifyListeners();
@@ -132,6 +138,37 @@ class TasteSyncManager extends ChangeNotifier {
     }
   }
 
+  /// The steps that actually do work, in the order the UI narrates them.
+  ///
+  /// Moods and Perfect Experience are deliberately absent: neither ever
+  /// fetched or computed anything -- they added themselves to the completed
+  /// set, moved the bar and paid a transition delay. They are finalisation
+  /// beats now, not pipeline stages.
+  /// Fields the taste engine actually reads.
+  ///
+  /// MediaStreams is by far the heaviest of these on a Jellyfin item query and
+  /// is only needed to check audio languages, so it is asked for only when
+  /// foreign content is actually being excluded. On a library where it is not,
+  /// this drops the largest part of the payload for nothing lost.
+  static const _baseFields =
+      'Genres,PrimaryImageAspectRatio,UserData,CommunityRating,VoteCount,'
+      'CriticRating,ProductionYear,OfficialRating,RunTimeTicks,CollectionId,'
+      'SeriesId,ImageTags,Overview,People,ProviderIds';
+  static const _languageFields =
+      ',OriginalLanguage,SpokenLanguages,MediaStreams';
+
+  static String _fieldsFor(LanguageSettings settings) =>
+      settings.excludeForeignContent
+          ? '$_baseFields$_languageFields'
+          : _baseFields;
+
+  static const _workSteps = <SyncStep>[
+    SyncStep.movies,
+    SyncStep.series,
+    SyncStep.genres,
+    SyncStep.viewingLab,
+  ];
+
   Future<void> _runSyncPipeline({
     required String serverId,
     required String userId,
@@ -141,227 +178,81 @@ class TasteSyncManager extends ChangeNotifier {
     final completed = Set<SyncStep>.from(_progressState.completedSteps);
 
     try {
-      // ────────────────────────────────────────────────────────────────────────
-      // Step 1 — Movies
-      // ────────────────────────────────────────────────────────────────────────
-      if (!completed.contains(SyncStep.movies)) {
-        if (token.isCancelled) return;
+      // All four are independent: three are separate server queries and the
+      // fourth analyses watch history, which needs none of the other three.
+      // They used to run strictly one after another with an artificial pause
+      // between each, which is most of why this screen felt slow. Whichever
+      // are still outstanding now go out together, and each reports as it
+      // lands so the bar still moves in steps.
+      final outstanding =
+          _workSteps.where((s) => !completed.contains(s)).toList();
+
+      if (outstanding.isNotEmpty) {
         _updateProgress(
-          step: SyncStep.movies,
-          percent: 14.0,
+          step: outstanding.first,
+          percent: _percentFor(completed),
           status:
               'Downloading the goods (faster than Netflix buffering on date night)...',
-        );
-
-        final movies = await _syncMoviesWithFailover(
-          primaryServerId: serverId,
-          userId: userId,
-          languageSettings: languageSettings,
-          token: token,
-        );
-
-        if (token.isCancelled) return;
-        if (movies.isNotEmpty) {
-          _cachedMovies = movies;
-          await _localStore.saveCachedMovies(
-            serverId: serverId,
-            userId: userId,
-            movies: movies,
-          );
-        }
-
-        completed.add(SyncStep.movies);
-        _updateProgress(
-          step: SyncStep.movies,
-          percent: 28.0,
-          records: movies.length,
-          total: movies.length,
-          status: 'Movies indexed successfully.',
           completed: completed,
         );
-        await _localStore.saveSyncProgress(
-          serverId: serverId,
-          userId: userId,
-          state: _progressState,
-        );
-        await _stepTransitionDelay(token);
+
+        await Future.wait([
+          if (outstanding.contains(SyncStep.movies))
+            _stepMovies(
+              serverId: serverId,
+              userId: userId,
+              languageSettings: languageSettings,
+              token: token,
+              completed: completed,
+            ),
+          if (outstanding.contains(SyncStep.series))
+            _stepSeries(
+              serverId: serverId,
+              userId: userId,
+              languageSettings: languageSettings,
+              token: token,
+              completed: completed,
+            ),
+          if (outstanding.contains(SyncStep.genres))
+            _stepGenres(
+              serverId: serverId,
+              userId: userId,
+              token: token,
+              completed: completed,
+            ),
+          if (outstanding.contains(SyncStep.viewingLab))
+            _stepViewingLab(
+              serverId: serverId,
+              userId: userId,
+              token: token,
+              completed: completed,
+            ),
+        ]);
       }
 
-      // ────────────────────────────────────────────────────────────────────────
-      // Step 2 — Series
-      // ────────────────────────────────────────────────────────────────────────
-      if (!completed.contains(SyncStep.series)) {
-        if (token.isCancelled) return;
-        _updateProgress(
-          step: SyncStep.series,
-          percent: 28.0,
-          status: "Scouting series that'll ruin your sleep schedule...",
-          completed: completed,
-        );
+      if (token.isCancelled) return;
 
-        final series = await _syncSeriesWithFailover(
-          primaryServerId: serverId,
-          userId: userId,
-          languageSettings: languageSettings,
-          token: token,
-        );
+      // Finalisation. These carry no work, so they are reported rather than
+      // performed -- with one short beat so the jump to "ready" is legible
+      // instead of a flash.
+      completed
+        ..add(SyncStep.moodsAndVibes)
+        ..add(SyncStep.perfectExperience);
 
-        if (token.isCancelled) return;
-        if (series.isNotEmpty) {
-          _cachedSeries = series;
-          await _localStore.saveCachedSeries(
-            serverId: serverId,
-            userId: userId,
-            series: series,
-          );
-        }
-
-        completed.add(SyncStep.series);
-        _updateProgress(
-          step: SyncStep.series,
-          percent: 42.0,
-          records: series.length,
-          total: series.length,
-          status: 'Series indexed successfully.',
-          completed: completed,
-        );
-        await _localStore.saveSyncProgress(
-          serverId: serverId,
-          userId: userId,
-          state: _progressState,
-        );
-        await _stepTransitionDelay(token);
-      }
-
-      // ────────────────────────────────────────────────────────────────────────
-      // Step 3 — Genres
-      // ────────────────────────────────────────────────────────────────────────
-      if (!completed.contains(SyncStep.genres)) {
-        if (token.isCancelled) return;
-        _updateProgress(
-          step: SyncStep.genres,
-          percent: 42.0,
-          status:
-              'Genre-bending like a showrunner on their third espresso...',
-          completed: completed,
-        );
-
-        final genres = await _genreService.discoverServerGenres(
-          userId: userId,
-          forceRefresh: true,
-        );
-
-        if (token.isCancelled) return;
-        _cachedServerGenres = genres;
-
-        completed.add(SyncStep.genres);
-        _updateProgress(
-          step: SyncStep.genres,
-          percent: 57.0,
-          records: genres.length,
-          total: genres.length,
-          status: 'Server genres populated.',
-          completed: completed,
-        );
-        await _localStore.saveSyncProgress(
-          serverId: serverId,
-          userId: userId,
-          state: _progressState,
-        );
-        await _stepTransitionDelay(token);
-      }
-
-      // ────────────────────────────────────────────────────────────────────────
-      // Step 4 — Viewing Experience Lab
-      // ────────────────────────────────────────────────────────────────────────
-      if (!completed.contains(SyncStep.viewingLab)) {
-        if (token.isCancelled) return;
-        _updateProgress(
-          step: SyncStep.viewingLab,
-          percent: 57.0,
-          status: 'Preloading viewing history signals...',
-          completed: completed,
-        );
-
-        // Preload inferred watch history signals
-        final inferred = await _analyzer.analyzeHistory(userId: userId);
-        if (token.isCancelled) return;
-        _cachedInferredProfile = inferred;
-
-        completed.add(SyncStep.viewingLab);
-        _updateProgress(
-          step: SyncStep.viewingLab,
-          percent: 71.0,
-          records: inferred.genreAffinities.length,
-          total: inferred.genreAffinities.length,
-          status: 'History signals analyzed.',
-          completed: completed,
-        );
-        await _localStore.saveSyncProgress(
-          serverId: serverId,
-          userId: userId,
-          state: _progressState,
-        );
-        await _stepTransitionDelay(token);
-      }
-
-      // ────────────────────────────────────────────────────────────────────────
-      // Step 5 — Moods and Vibes
-      // ────────────────────────────────────────────────────────────────────────
-      if (!completed.contains(SyncStep.moodsAndVibes)) {
-        if (token.isCancelled) return;
-        _updateProgress(
-          step: SyncStep.moodsAndVibes,
-          percent: 71.0,
-          status: 'Synchronizing mood and vibe taxonomy...',
-          completed: completed,
-        );
-
-        completed.add(SyncStep.moodsAndVibes);
-        _updateProgress(
-          step: SyncStep.moodsAndVibes,
-          percent: 85.0,
-          records: TasteMoodRegistry.categories.length,
-          total: 200,
-          status: 'Vibe categories prepared.',
-          completed: completed,
-        );
-        await _localStore.saveSyncProgress(
-          serverId: serverId,
-          userId: userId,
-          state: _progressState,
-        );
-        await _stepTransitionDelay(token);
-      }
-
-      // ────────────────────────────────────────────────────────────────────────
-      // Step 6 — Perfect Experience
-      // ────────────────────────────────────────────────────────────────────────
-      if (!completed.contains(SyncStep.perfectExperience)) {
-        if (token.isCancelled) return;
-        _updateProgress(
-          step: SyncStep.perfectExperience,
-          percent: 85.0,
-          status: 'Finalizing stream retrieval...',
-          completed: completed,
-        );
-
-        completed.add(SyncStep.perfectExperience);
-        _updateProgress(
-          step: SyncStep.perfectExperience,
-          percent: 100.0,
-          records: _cachedMovies.length + _cachedSeries.length,
-          total: _cachedMovies.length + _cachedSeries.length,
-          status: 'Library retrieval complete. Ready to personalize!',
-          isComplete: true,
-          completed: completed,
-        );
-        await _localStore.saveSyncProgress(
-          serverId: serverId,
-          userId: userId,
-          state: _progressState,
-        );
-      }
+      _updateProgress(
+        step: SyncStep.perfectExperience,
+        percent: 100.0,
+        records: _cachedMovies.length + _cachedSeries.length,
+        total: _cachedMovies.length + _cachedSeries.length,
+        status: 'Library retrieval complete. Ready to personalize!',
+        isComplete: true,
+        completed: completed,
+      );
+      await _localStore.saveSyncProgress(
+        serverId: serverId,
+        userId: userId,
+        state: _progressState,
+      );
     } catch (e, st) {
       debugPrint('[TasteSyncManager] Sync pipeline failed: $e\n$st');
       _progressState = _progressState.copyWith(
@@ -372,17 +263,155 @@ class TasteSyncManager extends ChangeNotifier {
     }
   }
 
-  Future<void> _stepTransitionDelay(SyncCancellationToken token) async {
-    if (token.isCancelled || minimumStepTransitionDelayMs <= 0) return;
-    final delayMs = minimumStepTransitionDelayMs;
-    const intervalMs = 100;
-    int elapsed = 0;
-    while (elapsed < delayMs) {
-      if (token.isCancelled) return;
-      await Future.delayed(const Duration(milliseconds: intervalMs));
-      elapsed += intervalMs;
-    }
+  /// Progress as a share of the real work, rather than a number hand-written
+  /// per step. With the steps running concurrently there is no single "we are
+  /// here" any more -- what the viewer can be told honestly is how many of the
+  /// four have landed.
+  double _percentFor(Set<SyncStep> completed) {
+    final done = _workSteps.where(completed.contains).length;
+    // Caps at 92 so the finalisation beat still has somewhere to travel.
+    return (done / _workSteps.length) * 92.0;
   }
+
+  /// Marks a step done, tells the UI, and checkpoints so a cancelled or
+  /// crashed sync resumes from here rather than from the beginning.
+  Future<void> _finishStep({
+    required SyncStep step,
+    required String serverId,
+    required String userId,
+    required Set<SyncStep> completed,
+    required String status,
+    int records = 0,
+  }) async {
+    completed.add(step);
+    _updateProgress(
+      step: step,
+      percent: _percentFor(completed),
+      records: records,
+      total: records,
+      status: status,
+      completed: completed,
+    );
+    await _localStore.saveSyncProgress(
+      serverId: serverId,
+      userId: userId,
+      state: _progressState,
+    );
+  }
+
+  Future<void> _stepMovies({
+    required String serverId,
+    required String userId,
+    required LanguageSettings languageSettings,
+    required SyncCancellationToken token,
+    required Set<SyncStep> completed,
+  }) async {
+    if (token.isCancelled) return;
+    final movies = await _syncMoviesWithFailover(
+      primaryServerId: serverId,
+      userId: userId,
+      languageSettings: languageSettings,
+      token: token,
+    );
+    if (token.isCancelled) return;
+
+    if (movies.isNotEmpty) {
+      _cachedMovies = movies;
+      await _localStore.saveCachedMovies(
+        serverId: serverId,
+        userId: userId,
+        movies: movies,
+      );
+    }
+    await _finishStep(
+      step: SyncStep.movies,
+      serverId: serverId,
+      userId: userId,
+      completed: completed,
+      records: movies.length,
+      status: 'Movies indexed successfully.',
+    );
+  }
+
+  Future<void> _stepSeries({
+    required String serverId,
+    required String userId,
+    required LanguageSettings languageSettings,
+    required SyncCancellationToken token,
+    required Set<SyncStep> completed,
+  }) async {
+    if (token.isCancelled) return;
+    final series = await _syncSeriesWithFailover(
+      primaryServerId: serverId,
+      userId: userId,
+      languageSettings: languageSettings,
+      token: token,
+    );
+    if (token.isCancelled) return;
+
+    if (series.isNotEmpty) {
+      _cachedSeries = series;
+      await _localStore.saveCachedSeries(
+        serverId: serverId,
+        userId: userId,
+        series: series,
+      );
+    }
+    await _finishStep(
+      step: SyncStep.series,
+      serverId: serverId,
+      userId: userId,
+      completed: completed,
+      records: series.length,
+      status: 'Series indexed successfully.',
+    );
+  }
+
+  Future<void> _stepGenres({
+    required String serverId,
+    required String userId,
+    required SyncCancellationToken token,
+    required Set<SyncStep> completed,
+  }) async {
+    if (token.isCancelled) return;
+    final genres = await _genreService.discoverServerGenres(
+      userId: userId,
+      forceRefresh: true,
+    );
+    if (token.isCancelled) return;
+    _cachedServerGenres = genres;
+
+    await _finishStep(
+      step: SyncStep.genres,
+      serverId: serverId,
+      userId: userId,
+      completed: completed,
+      records: genres.length,
+      status: 'Server genres populated.',
+    );
+  }
+
+  Future<void> _stepViewingLab({
+    required String serverId,
+    required String userId,
+    required SyncCancellationToken token,
+    required Set<SyncStep> completed,
+  }) async {
+    if (token.isCancelled) return;
+    final inferred = await _analyzer.analyzeHistory(userId: userId);
+    if (token.isCancelled) return;
+    _cachedInferredProfile = inferred;
+
+    await _finishStep(
+      step: SyncStep.viewingLab,
+      serverId: serverId,
+      userId: userId,
+      completed: completed,
+      records: inferred.genreAffinities.length,
+      status: 'History signals analyzed.',
+    );
+  }
+
 
   void _updateProgress({
     required SyncStep step,
@@ -431,7 +460,7 @@ class TasteSyncManager extends ChangeNotifier {
           sortBy: 'CommunityRating,ProductionYear',
           sortOrder: 'Descending',
           fields:
-              'Genres,PrimaryImageAspectRatio,UserData,CommunityRating,VoteCount,CriticRating,ProductionYear,OfficialRating,RunTimeTicks,OriginalLanguage,MediaStreams,SpokenLanguages,CollectionId,SeriesId,ImageTags,Overview,People,ProviderIds',
+              _fieldsFor(languageSettings),
           limit: 150,
         );
 
@@ -463,49 +492,66 @@ class TasteSyncManager extends ChangeNotifier {
     if (items.length < 24) {
       final failovers = _serverContext.failoverSessions;
       if (failovers.isNotEmpty) {
+        // Holds the bar where it is rather than asserting a number: with the
+        // steps running concurrently, a hardcoded percentage here would drag
+        // the bar backwards over whatever another step had just reported.
         _updateProgress(
           step: SyncStep.movies,
-          percent: 20.0,
+          percent: _progressState.progressPercent,
           status:
               'Downloading the goods (faster than Netflix buffering on date night)...',
           failover:
               'Primary server missed a title, checking the backup shelves...',
         );
 
-        for (final failover in failovers) {
-          if (token.isCancelled) break;
-          final fClient = _serverContext.getClientForServer(failover.serverId);
-          if (fClient == null) continue;
-
-          try {
-            final fRes = await fClient.itemsApi.getItems(
-              recursive: true,
-              includeItemTypes: const ['Movie'],
-              sortBy: 'CommunityRating,ProductionYear',
-              sortOrder: 'Descending',
-              fields:
-                  'Genres,PrimaryImageAspectRatio,UserData,CommunityRating,VoteCount,CriticRating,ProductionYear,OfficialRating,RunTimeTicks,OriginalLanguage,MediaStreams,SpokenLanguages,CollectionId,SeriesId,ImageTags,Overview,People,ProviderIds',
-              limit: 50,
-            );
-            final fRaw = (fRes['Items'] as List? ?? [])
-                .whereType<Map<String, dynamic>>();
-            for (final r in fRaw) {
-              final item = AggregatedItem(
-                id: r['Id']?.toString() ?? '',
-                serverId: failover.serverId,
-                rawData: r,
+        // Backup shelves are queried together, not one after another: they
+        // are separate servers, so waiting for each in turn just adds their
+        // latencies up. Merging stays sequential afterwards, against a seen
+        // set rather than a linear scan of everything gathered so far.
+        final responses = await Future.wait(
+          failovers.map((failover) async {
+            if (token.isCancelled) return null;
+            final fClient =
+                _serverContext.getClientForServer(failover.serverId);
+            if (fClient == null) return null;
+            try {
+              final fRes = await fClient.itemsApi.getItems(
+                recursive: true,
+                includeItemTypes: const ['Movie'],
+                sortBy: 'CommunityRating,ProductionYear',
+                sortOrder: 'Descending',
+                fields: _fieldsFor(languageSettings),
+                limit: 50,
               );
-              if (item.id.isNotEmpty &&
-                  !items.any((i) => i.id == item.id) &&
-                  TasteRecommendationEngine.isLanguageAllowed(
-                    item: item,
-                    languageSettings: languageSettings,
-                    isOnboarding: true,
-                  )) {
-                items.add(item);
-              }
+              return (failover.serverId, fRes);
+            } catch (_) {
+              return null;
             }
-          } catch (_) {}
+          }),
+        );
+
+        final seenIds = items.map((i) => i.id).toSet();
+        for (final response in responses) {
+          if (response == null) continue;
+          final (failoverServerId, fRes) = response;
+          final fRaw =
+              (fRes['Items'] as List? ?? []).whereType<Map<String, dynamic>>();
+          for (final r in fRaw) {
+            final item = AggregatedItem(
+              id: r['Id']?.toString() ?? '',
+              serverId: failoverServerId,
+              rawData: r,
+            );
+            if (item.id.isNotEmpty &&
+                seenIds.add(item.id) &&
+                TasteRecommendationEngine.isLanguageAllowed(
+                  item: item,
+                  languageSettings: languageSettings,
+                  isOnboarding: true,
+                )) {
+              items.add(item);
+            }
+          }
         }
       }
     }
@@ -534,7 +580,7 @@ class TasteSyncManager extends ChangeNotifier {
           sortBy: 'CommunityRating,ProductionYear',
           sortOrder: 'Descending',
           fields:
-              'Genres,PrimaryImageAspectRatio,UserData,CommunityRating,VoteCount,CriticRating,ProductionYear,OfficialRating,RunTimeTicks,OriginalLanguage,MediaStreams,SpokenLanguages,CollectionId,SeriesId,ImageTags,Overview,People,ProviderIds,Status,CumulativeRunTimeTicks',
+              '${_fieldsFor(languageSettings)},Status,CumulativeRunTimeTicks',
           limit: 150,
         );
 
@@ -567,46 +613,60 @@ class TasteSyncManager extends ChangeNotifier {
       if (failovers.isNotEmpty) {
         _updateProgress(
           step: SyncStep.series,
-          percent: 35.0,
+          percent: _progressState.progressPercent,
           status: "Scouting series that'll ruin your sleep schedule...",
           failover:
               'Primary server missed a series, checking the backup shelves...',
         );
 
-        for (final failover in failovers) {
-          if (token.isCancelled) break;
-          final fClient = _serverContext.getClientForServer(failover.serverId);
-          if (fClient == null) continue;
-
-          try {
-            final fRes = await fClient.itemsApi.getItems(
-              recursive: true,
-              includeItemTypes: const ['Series'],
-              sortBy: 'CommunityRating,ProductionYear',
-              sortOrder: 'Descending',
-              fields:
-                  'Genres,PrimaryImageAspectRatio,UserData,CommunityRating,VoteCount,CriticRating,ProductionYear,OfficialRating,RunTimeTicks,OriginalLanguage,MediaStreams,SpokenLanguages,CollectionId,SeriesId,ImageTags,Overview,People,ProviderIds',
-              limit: 50,
-            );
-            final fRaw = (fRes['Items'] as List? ?? [])
-                .whereType<Map<String, dynamic>>();
-            for (final r in fRaw) {
-              final item = AggregatedItem(
-                id: r['Id']?.toString() ?? '',
-                serverId: failover.serverId,
-                rawData: r,
+        // Backup shelves are queried together, not one after another: they
+        // are separate servers, so waiting for each in turn just adds their
+        // latencies up. Merging stays sequential afterwards, against a seen
+        // set rather than a linear scan of everything gathered so far.
+        final responses = await Future.wait(
+          failovers.map((failover) async {
+            if (token.isCancelled) return null;
+            final fClient =
+                _serverContext.getClientForServer(failover.serverId);
+            if (fClient == null) return null;
+            try {
+              final fRes = await fClient.itemsApi.getItems(
+                recursive: true,
+                includeItemTypes: const ['Series'],
+                sortBy: 'CommunityRating,ProductionYear',
+                sortOrder: 'Descending',
+                fields: _fieldsFor(languageSettings),
+                limit: 50,
               );
-              if (item.id.isNotEmpty &&
-                  !items.any((i) => i.id == item.id) &&
-                  TasteRecommendationEngine.isLanguageAllowed(
-                    item: item,
-                    languageSettings: languageSettings,
-                    isOnboarding: true,
-                  )) {
-                items.add(item);
-              }
+              return (failover.serverId, fRes);
+            } catch (_) {
+              return null;
             }
-          } catch (_) {}
+          }),
+        );
+
+        final seenIds = items.map((i) => i.id).toSet();
+        for (final response in responses) {
+          if (response == null) continue;
+          final (failoverServerId, fRes) = response;
+          final fRaw =
+              (fRes['Items'] as List? ?? []).whereType<Map<String, dynamic>>();
+          for (final r in fRaw) {
+            final item = AggregatedItem(
+              id: r['Id']?.toString() ?? '',
+              serverId: failoverServerId,
+              rawData: r,
+            );
+            if (item.id.isNotEmpty &&
+                seenIds.add(item.id) &&
+                TasteRecommendationEngine.isLanguageAllowed(
+                  item: item,
+                  languageSettings: languageSettings,
+                  isOnboarding: true,
+                )) {
+              items.add(item);
+            }
+          }
         }
       }
     }

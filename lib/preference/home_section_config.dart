@@ -178,6 +178,14 @@ class HomeSectionConfig {
       order: 0,
     ),
     HomeSectionConfig(type: HomeSectionType.resume, enabled: true, order: 1),
+    // Directly below Continue Watching: the taste rows answer "what next",
+    // which is the question someone is already asking at that point on the
+    // page.
+    HomeSectionConfig(
+      type: HomeSectionType.personalization,
+      enabled: true,
+      order: 2,
+    ),
     // Moonfin Recommends rows. These carry a toggle preference too, but they
     // still need a section entry: without one there is nowhere for turning the
     // row off to persist, so the next sync brings it back.

@@ -169,6 +169,15 @@ class _ModernDetailContentState extends State<ModernDetailContent> {
   final Map<String, FocusNode> _boxSetRowFirstFocusNodes = {};
   final Map<String, FocusNode> _collectionRowFocusNodes = {};
   final Map<String, FocusNode> _featuresFirstFocusNodes = {};
+  // Series "Episodes" tab (the accordion of season headers + episode cards):
+  // one node per season header (keyed by season number, first season reuses
+  // _episodesFirstFocusNode) and one per episode card (keyed by episode id),
+  // so Down/Up can be chained explicitly the same way every other tab does
+  // it, instead of relying on Flutter's default spatial focus traversal --
+  // which doesn't reliably cross the Padding/Column boundaries this
+  // accordion rebuilds every time a season is expanded or collapsed.
+  final Map<int, FocusNode> _seriesSeasonHeaderFocusNodes = {};
+  final Map<String, FocusNode> _seriesEpisodeFocusNodes = {};
 
   FocusNode _collectionRowFocusNodeFor(String colId) {
     return _collectionRowFocusNodes.putIfAbsent(
@@ -692,6 +701,14 @@ class _ModernDetailContentState extends State<ModernDetailContent> {
       node.dispose();
     }
     _featuresFirstFocusNodes.clear();
+    for (final node in _seriesSeasonHeaderFocusNodes.values) {
+      node.dispose();
+    }
+    _seriesSeasonHeaderFocusNodes.clear();
+    for (final node in _seriesEpisodeFocusNodes.values) {
+      node.dispose();
+    }
+    _seriesEpisodeFocusNodes.clear();
     super.dispose();
   }
 
@@ -769,7 +786,9 @@ class _ModernDetailContentState extends State<ModernDetailContent> {
   void _focusSelectedTab() {
     // On TV _selectedTab starts at -1 (no tab chosen); guard the list index.
     if (_selectedTab < 0) return;
-    _tabNode(_selectedTab).requestFocus();
+    final node = _tabNode(_selectedTab);
+    node.requestFocus();
+    _ensureFocusVisible(node);
   }
 
   // Moves D-pad focus into the first track of the track list, using the same
@@ -777,7 +796,56 @@ class _ModernDetailContentState extends State<ModernDetailContent> {
   void _focusFirstTrack() {
     if (_vm.tracks.isEmpty) return;
     final id = _vm.tracks.first.id;
-    _trackFocusNodes.putIfAbsent(id, () => FocusNode()).requestFocus();
+    final node = _trackFocusNodes.putIfAbsent(id, () => FocusNode());
+    node.requestFocus();
+    _ensureFocusVisible(node);
+  }
+
+  // Requests focus on [node], retrying on the next frame if its widget
+  // hasn't attached to the tree yet (node.context == null). A tab switch can
+  // trigger a full rebuild of a large grid (posters, cast photos, etc.), and
+  // on slower TV hardware that layout can easily take longer than a single
+  // frame. The old code fired a flat 50ms timer with no retry: if the target
+  // widget wasn't attached yet at the 50ms mark, requestFocus() was a silent
+  // no-op and focus was stuck on the tab bar forever, with no way to reach
+  // the tab's content via the remote. Retrying for a couple of seconds of
+  // frames covers slow devices without risking an infinite loop.
+  void _requestFocusRetrying(FocusNode? node, {int attempts = 0}) {
+    if (node == null || !mounted) return;
+    if (node.context != null) {
+      node.requestFocus();
+      return;
+    }
+    if (attempts >= 90) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _requestFocusRetrying(node, attempts: attempts + 1);
+    });
+  }
+
+  void _ensureFocusVisible(FocusNode node) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final ctx = node.context;
+      if (ctx == null) return;
+      scrollFocusIntoView(ctx);
+    });
+  }
+
+  /// Last-resort escape from the tab bar.
+  ///
+  /// [_onTabBarNavigateDown] aims at a specific "first node" per tab, which
+  /// depends on the tab label matching, that node being attached, and nothing
+  /// pulling focus straight back. When any of those misses, the old code left
+  /// focus sitting on the tab bar with the remote apparently dead -- pressing
+  /// Down did nothing at all, which is the "stuck on the tab" report. This
+  /// checks a beat later and, if the tab bar still has focus, hands the move
+  /// to Flutter's own directional traversal, which finds whatever focusable
+  /// widget is below without needing to know which tab is open.
+  void _focusBelowTabsFallback() {
+    if (!mounted) return;
+    final stuck = _tabFocusNodes.firstWhereOrNull((n) => n.hasFocus);
+    if (stuck == null) return;
+    stuck.focusInDirection(TraversalDirection.down);
   }
 
   void _onTabBarNavigateDown(int tabIndex) {
@@ -785,7 +853,9 @@ class _ModernDetailContentState extends State<ModernDetailContent> {
     if (_selectedTab != tabIndex) {
       _selectTab(tabIndex);
     }
-    Future.delayed(const Duration(milliseconds: 50), () {
+    // Runs after the targeted attempt below has had a frame or two to land.
+    Future.delayed(const Duration(milliseconds: 140), _focusBelowTabsFallback);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final l10n = AppLocalizations.of(context);
       final tabs = _tabsFor(_vm.item!, l10n);
@@ -799,51 +869,55 @@ class _ModernDetailContentState extends State<ModernDetailContent> {
           }
         }
         if (extraCat != null) {
-          _featuresFirstFocusNodes[extraCat]?.requestFocus();
+          _requestFocusRetrying(_featuresFirstFocusNodes[extraCat]);
         } else if (label == l10n.castMembers) {
-          _castFirstFocusNode.requestFocus();
+          _requestFocusRetrying(_castFirstFocusNode);
         } else if (label == l10n.crewSection) {
-          _crewFirstFocusNode.requestFocus();
+          _requestFocusRetrying(_crewFirstFocusNode);
         } else if (label == l10n.studios) {
-          _studiosFirstFocusNode.requestFocus();
+          _requestFocusRetrying(_studiosFirstFocusNode);
         } else if (label == l10n.chapters) {
-          _chaptersFirstFocusNode.requestFocus();
+          _requestFocusRetrying(_chaptersFirstFocusNode);
         } else if (label == l10n.details) {
-          _detailsTabFocusNode.requestFocus();
+          _requestFocusRetrying(_detailsTabFocusNode);
         } else if (label == l10n.similar) {
-          _similarFirstFocusNode.requestFocus();
+          _requestFocusRetrying(_similarFirstFocusNode);
         } else if (label == l10n.collections) {
           if (_vm.parentCollections.length == 1) {
-            _collectionFirstFocusNode.requestFocus();
+            _requestFocusRetrying(_collectionFirstFocusNode);
           } else if (_vm.parentCollections.isNotEmpty) {
-            _collectionRowFocusNodeFor(_vm.parentCollections.first.id).requestFocus();
+            _requestFocusRetrying(
+              _collectionRowFocusNodeFor(_vm.parentCollections.first.id),
+            );
           }
         } else if (label == l10n.seasons) {
-          _seasonsFirstFocusNode.requestFocus();
+          _requestFocusRetrying(_seasonsFirstFocusNode);
         } else if (label == l10n.episodes) {
-          _episodesFirstFocusNode.requestFocus();
+          _requestFocusRetrying(_episodesFirstFocusNode);
         } else if (label == l10n.movies) {
           if (_vm.item?.type == 'BoxSet') {
-            _moviesFirstFocusNode.requestFocus();
+            _requestFocusRetrying(_moviesFirstFocusNode);
           } else {
-            _personMoviesFirstFocusNode.requestFocus();
+            _requestFocusRetrying(_personMoviesFirstFocusNode);
           }
         } else if (label == l10n.series) {
           if (_vm.item?.type == 'BoxSet') {
-            _seriesFirstFocusNode.requestFocus();
+            _requestFocusRetrying(_seriesFirstFocusNode);
           } else {
-            _personSeriesFirstFocusNode.requestFocus();
+            _requestFocusRetrying(_personSeriesFirstFocusNode);
           }
         } else if (label ==
             GetIt.instance<SeerrPreferences>().labelOrDefault(l10n.seerr)) {
           final state = seerrItemTabState(_vm);
-          if (state != null) _seerrTabChain(state).firstOrNull?.requestFocus();
+          if (state != null) {
+            _requestFocusRetrying(_seerrTabChain(state).firstOrNull);
+          }
         } else if (label == l10n.appearancesSeerr) {
-          _personSeerrAppearancesFirstFocusNode.requestFocus();
+          _requestFocusRetrying(_personSeerrAppearancesFirstFocusNode);
         } else if (label == l10n.crewContributionsSeerr) {
-          _personSeerrCrewCreditsFirstFocusNode.requestFocus();
+          _requestFocusRetrying(_personSeerrCrewCreditsFirstFocusNode);
         } else if (label == l10n.albums || label == l10n.items || label == l10n.appearances) {
-          _gridFirstFocusNode.requestFocus();
+          _requestFocusRetrying(_gridFirstFocusNode);
         } else if (label == l10n.trackList) {
           _focusFirstTrack();
         } else if (label == l10n.playlist) {
@@ -1281,6 +1355,14 @@ class _ModernDetailContentState extends State<ModernDetailContent> {
     // episode so the cyan "next up" border still renders correctly.
     final nextUpId = _vm.nextUp?.id ??
         _vm.episodes.firstWhereOrNull((e) => !e.isPlayed)?.id;
+    final eps = _vm.episodes;
+
+    FocusNode episodeNodeFor(int index) => index == 0
+        ? _episodesFirstFocusNode
+        : _seriesEpisodeFocusNodes.putIfAbsent(
+            eps[index].id,
+            () => FocusNode(debugLabel: 'episodeList_${eps[index].id}'),
+          );
 
     return Focus(
       canRequestFocus: false,
@@ -1294,25 +1376,36 @@ class _ModernDetailContentState extends State<ModernDetailContent> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          for (var i = 0; i < _vm.episodes.length; i++)
+          for (var i = 0; i < eps.length; i++)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: DetailEpisodeCard(
-                episode: _vm.episodes[i],
+                episode: eps[i],
                 imageApi: _vm.imageApi,
                 onChanged: () => _vm.load(),
-                isActive: _vm.episodes[i].id == nextUpId,
+                isActive: eps[i].id == nextUpId,
                 contextSeasonId: _vm.effectiveSeasonId,
-                focusNode: i == 0 ? _episodesFirstFocusNode : null,
-                onKeyEvent: i == 0
-                    ? (node, event) {
-                        if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.arrowUp) {
-                          _focusSelectedTab();
-                          return KeyEventResult.handled;
-                        }
-                        return KeyEventResult.ignored;
-                      }
-                    : null,
+                focusNode: episodeNodeFor(i),
+                onKeyEvent: (node, event) {
+                  if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+                    return KeyEventResult.ignored;
+                  }
+                  if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+                    if (i == 0) {
+                      _focusSelectedTab();
+                    } else {
+                      _requestFocusRetrying(episodeNodeFor(i - 1));
+                    }
+                    return KeyEventResult.handled;
+                  }
+                  if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+                    if (i + 1 < eps.length) {
+                      _requestFocusRetrying(episodeNodeFor(i + 1));
+                    }
+                    return KeyEventResult.handled;
+                  }
+                  return KeyEventResult.ignored;
+                },
               ),
             ),
         ],
@@ -1367,19 +1460,59 @@ class _ModernDetailContentState extends State<ModernDetailContent> {
       }
     }
 
+    // Explicit Up/Down chaining across season headers AND individual
+    // episode cards. This used to rely entirely on Flutter's default
+    // spatial focus traversal (no onNavigateDown on the header, no
+    // focusNode/onKeyEvent at all on the episode cards), which doesn't
+    // reliably find the next focusable widget across the Padding/Column
+    // tree that gets rebuilt every time a season is expanded or collapsed --
+    // in practice, pressing Down from the Episodes tab's first season header
+    // could go nowhere.
+    final seasonEntries = seasonGroups.entries.toList();
+    FocusNode headerNodeFor(int index) => index == 0
+        ? _episodesFirstFocusNode
+        : _seriesSeasonHeaderFocusNodes.putIfAbsent(
+            seasonEntries[index].key,
+            () => FocusNode(debugLabel: 'seasonHeader_${seasonEntries[index].key}'),
+          );
+    FocusNode episodeNodeFor(AggregatedItem episode) =>
+        _seriesEpisodeFocusNodes.putIfAbsent(
+          episode.id,
+          () => FocusNode(debugLabel: 'seriesEpisode_${episode.id}'),
+        );
+
     final children = <Widget>[];
-    for (final entry in seasonGroups.entries) {
-      final season = entry.key;
-      final eps = entry.value;
+    for (var si = 0; si < seasonEntries.length; si++) {
+      final season = seasonEntries[si].key;
+      final eps = seasonEntries[si].value;
       final isExpanded = _expandedSeasons.contains(season);
-      final isFirst = children.isEmpty;
+      final isFirst = si == 0;
+      final headerNode = headerNodeFor(si);
+      final nextHeaderNode =
+          si + 1 < seasonEntries.length ? headerNodeFor(si + 1) : null;
 
       children.add(
         Padding(
           padding: const EdgeInsets.only(bottom: 6),
           child: FocusableWrapper(
-            onNavigateUp: isFirst ? _focusSelectedTab : null,
-            focusNode: isFirst ? _episodesFirstFocusNode : null,
+            onNavigateUp: isFirst
+                ? _focusSelectedTab
+                : () {
+                    final prev = seasonEntries[si - 1];
+                    if (_expandedSeasons.contains(prev.key) && prev.value.isNotEmpty) {
+                      _requestFocusRetrying(episodeNodeFor(prev.value.last));
+                    } else {
+                      _requestFocusRetrying(headerNodeFor(si - 1));
+                    }
+                  },
+            onNavigateDown: () {
+              if (isExpanded && eps.isNotEmpty) {
+                _requestFocusRetrying(episodeNodeFor(eps.first));
+              } else if (nextHeaderNode != null) {
+                _requestFocusRetrying(nextHeaderNode);
+              }
+            },
+            focusNode: headerNode,
             onSelect: () {
               setState(() {
                 if (_expandedSeasons.contains(season)) {
@@ -1428,17 +1561,41 @@ class _ModernDetailContentState extends State<ModernDetailContent> {
             padding: const EdgeInsets.only(left: 12, bottom: 12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: eps.map((episode) {
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: DetailEpisodeCard(
-                    episode: episode,
-                    imageApi: _vm.imageApi,
-                    onChanged: () => _vm.load(),
-                    isActive: episode.id == _vm.nextUp?.id,
+              children: [
+                for (var ei = 0; ei < eps.length; ei++)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: DetailEpisodeCard(
+                      episode: eps[ei],
+                      imageApi: _vm.imageApi,
+                      onChanged: () => _vm.load(),
+                      isActive: eps[ei].id == _vm.nextUp?.id,
+                      focusNode: episodeNodeFor(eps[ei]),
+                      onKeyEvent: (node, event) {
+                        if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+                          return KeyEventResult.ignored;
+                        }
+                        if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+                          if (ei == 0) {
+                            _requestFocusRetrying(headerNode);
+                          } else {
+                            _requestFocusRetrying(episodeNodeFor(eps[ei - 1]));
+                          }
+                          return KeyEventResult.handled;
+                        }
+                        if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+                          if (ei + 1 < eps.length) {
+                            _requestFocusRetrying(episodeNodeFor(eps[ei + 1]));
+                          } else if (nextHeaderNode != null) {
+                            _requestFocusRetrying(nextHeaderNode);
+                          }
+                          return KeyEventResult.handled;
+                        }
+                        return KeyEventResult.ignored;
+                      },
+                    ),
                   ),
-                );
-              }).toList(),
+              ],
             ),
           ),
         );
@@ -2653,7 +2810,40 @@ class _ModernDetailContentState extends State<ModernDetailContent> {
         ),
       );
     }
-    return const SizedBox.shrink();
+    // No playable media source resolved (a container item like a Playlist,
+    // an item whose MediaSources haven't loaded yet, etc). Returning an
+    // empty SizedBox here used to leave `_detailsTabFocusNode` attached to
+    // nothing, so pressing Down from the tab bar silently did nothing --
+    // the tab looked selected but navigation dead-ended. Always give the
+    // tab SOME focusable content instead.
+    final l10n = AppLocalizations.of(context);
+    return Focus(
+      canRequestFocus: false,
+      onFocusChange: (focused) {
+        if (focused && mounted) {
+          widget.onToggleNavbar?.call(false);
+        } else if (!focused && mounted) {
+          widget.onToggleNavbar?.call(true);
+        }
+      },
+      child: _DetailsContainer(
+        isScrollable: false,
+        hasAudioButton: false,
+        hasSubtitleButton: false,
+        audioButtonFocusNode: _audioShowAllFocusNode,
+        subtitleButtonFocusNode: _subtitleShowAllFocusNode,
+        canRequestFocus: true,
+        focusNode: _detailsTabFocusNode,
+        onNavigateUp: _focusSelectedTab,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 24),
+          child: Text(
+            l10n.unavailable,
+            style: const TextStyle(color: Colors.white70, fontSize: 14),
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _buildFileInformation(
@@ -3533,13 +3723,6 @@ class _ModernDetailContentState extends State<ModernDetailContent> {
             onFocusChange: (focused) {
               if (focused) {
                 widget.onToggleNavbar?.call(true);
-                if (_scrollController.hasClients) {
-                  _scrollController.animateTo(
-                    0.0,
-                    duration: const Duration(milliseconds: 250),
-                    curve: Curves.easeInOut,
-                  );
-                }
               }
             },
             child: DetailActionButtons(
@@ -3733,13 +3916,6 @@ class _ModernDetailContentState extends State<ModernDetailContent> {
             onFocusChange: (focused) {
               if (focused) {
                 widget.onToggleNavbar?.call(true);
-                if (_scrollController.hasClients) {
-                  _scrollController.animateTo(
-                    0.0,
-                    duration: const Duration(milliseconds: 250),
-                    curve: Curves.easeInOut,
-                  );
-                }
               }
             },
             child: DetailActionButtons(
@@ -4000,13 +4176,6 @@ class _ModernDetailContentState extends State<ModernDetailContent> {
           onFocusChange: (focused) {
             if (focused) {
               widget.onToggleNavbar?.call(true);
-              if (_scrollController.hasClients) {
-                _scrollController.animateTo(
-                  0.0,
-                  duration: const Duration(milliseconds: 250),
-                  curve: Curves.easeInOut,
-                );
-              }
             }
           },
           child: DetailActionButtons(

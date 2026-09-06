@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get_it/get_it.dart';
@@ -10,6 +11,7 @@ import '../../../data/models/taste_profile/taste_profile_models.dart';
 import '../../../data/repositories/taste_profile_repository.dart';
 import '../../../data/services/taste_profile/taste_recommendation_engine.dart';
 import '../../widgets/bounded_network_image.dart';
+import '../../../util/focus/key_event_utils.dart';
 import '../../widgets/focus/request_initial_focus.dart';
 
 /// Interactive 8-Step Onboarding Wizard for Jellyfin Taste Profile & Recommendations.
@@ -158,19 +160,32 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
       }
     }
 
-    // 2. Load saved sync progress or start synchronisation
-    await _tasteRepo.syncManager.loadSavedProgress(
-      serverId: serverId,
-      userId: userId,
-    );
+    // Bounded and guarded as one unit. Every await below can reach the
+    // server, and this screen is hosted in a barrier-less fullscreen dialog
+    // with no way out but the back button. Unbounded, a slow or unreachable
+    // server left _loading true forever, which the user sees as a blank screen
+    // that never resolves. Empty caches are a perfectly usable starting state
+    // -- the sync kicked off below refills them -- so failing here degrades
+    // rather than blocks.
+    try {
+      await () async {
+        // 2. Load saved sync progress or start synchronisation
+        await _tasteRepo.syncManager.loadSavedProgress(
+          serverId: serverId,
+          userId: userId,
+        );
 
-    // 3. Populate local candidates from cache if already indexed
-    _allMovies = await _tasteRepo.loadCachedMovies();
-    _allSeries = await _tasteRepo.loadCachedSeries();
-    _serverGenres = await _tasteRepo.genreService.discoverServerGenres(
-      userId: userId,
-      selectedGenreKeys: _genreRatings.keys.toSet(),
-    );
+        // 3. Populate local candidates from cache if already indexed
+        _allMovies = await _tasteRepo.loadCachedMovies();
+        _allSeries = await _tasteRepo.loadCachedSeries();
+        _serverGenres = await _tasteRepo.genreService.discoverServerGenres(
+          userId: userId,
+          selectedGenreKeys: _genreRatings.keys.toSet(),
+        );
+      }().timeout(const Duration(seconds: 15));
+    } catch (e) {
+      debugPrint('[TasteOnboarding] Setup data unavailable, continuing: $e');
+    }
 
     _splitRestoredRatings();
     _applyMovieFilters();
@@ -563,19 +578,28 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
     final theme = Theme.of(context);
 
     if (_loading) {
-      return const Center(
-        child: Padding(
-          padding: EdgeInsets.all(40),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircularProgressIndicator(),
-              SizedBox(height: 16),
-              Text(
-                'Retrieving stream choices to personalize your viewing experience. This may take a minute - it will be with the wait.',
-                textAlign: TextAlign.center,
-              ),
-            ],
+      // Painted explicitly. This screen is hosted in a Dialog.fullscreen, which
+      // takes its background from the ambient Material theme -- so a bare
+      // Center rendered as a full WHITE screen carrying a spinner that is all
+      // but invisible on a TV across the room.
+      return ColoredBox(
+        color: AppColorScheme.background,
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(40),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const CircularProgressIndicator(),
+                const SizedBox(height: 16),
+                Text(
+                  'Retrieving stream choices to personalize your viewing '
+                  'experience. This may take a minute.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: AppColorScheme.onSurface),
+                ),
+              ],
+            ),
           ),
         ),
       );
@@ -804,7 +828,7 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
                 const SizedBox(width: 14),
                 Expanded(
                   child: Text(
-                    'Retrieving stream choices to personalize your viewing experience. This may take a minute - it will be with the wait.',
+                    'Retrieving stream choices to personalize your viewing experience. This may take a minute - it will be worth the wait.',
                     style: theme.textTheme.bodyMedium?.copyWith(
                       fontWeight: FontWeight.w500,
                     ),
@@ -1068,62 +1092,64 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
               Expanded(
                 child: SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: [
-                      _buildFilterChip(
-                        label: 'All Decades',
-                        selected: _movieDecadeFilter == 'all',
-                        onSelected: () => setState(() {
-                          _movieDecadeFilter = 'all';
-                          _applyMovieFilters();
-                        }),
-                      ),
-                      const SizedBox(width: 8),
-                      _buildFilterChip(
-                        label: '2020s',
-                        selected: _movieDecadeFilter == '2020',
-                        onSelected: () => setState(() {
-                          _movieDecadeFilter = '2020';
-                          _applyMovieFilters();
-                        }),
-                      ),
-                      const SizedBox(width: 8),
-                      _buildFilterChip(
-                        label: '2010s',
-                        selected: _movieDecadeFilter == '2010',
-                        onSelected: () => setState(() {
-                          _movieDecadeFilter = '2010';
-                          _applyMovieFilters();
-                        }),
-                      ),
-                      const SizedBox(width: 8),
-                      _buildFilterChip(
-                        label: '2000s',
-                        selected: _movieDecadeFilter == '2000',
-                        onSelected: () => setState(() {
-                          _movieDecadeFilter = '2000';
-                          _applyMovieFilters();
-                        }),
-                      ),
-                      const SizedBox(width: 8),
-                      _buildFilterChip(
-                        label: '1990s',
-                        selected: _movieDecadeFilter == '1990',
-                        onSelected: () => setState(() {
-                          _movieDecadeFilter = '1990';
-                          _applyMovieFilters();
-                        }),
-                      ),
-                      const SizedBox(width: 8),
-                      _buildFilterChip(
-                        label: 'Classics',
-                        selected: _movieDecadeFilter == 'classic',
-                        onSelected: () => setState(() {
-                          _movieDecadeFilter = 'classic';
-                          _applyMovieFilters();
-                        }),
-                      ),
-                    ],
+                  child: _HorizontalWheelGuard(
+                    child: Row(
+                      children: [
+                        _buildFilterChip(
+                          label: 'All Decades',
+                          selected: _movieDecadeFilter == 'all',
+                          onSelected: () => setState(() {
+                            _movieDecadeFilter = 'all';
+                            _applyMovieFilters();
+                          }),
+                        ),
+                        const SizedBox(width: 8),
+                        _buildFilterChip(
+                          label: '2020s',
+                          selected: _movieDecadeFilter == '2020',
+                          onSelected: () => setState(() {
+                            _movieDecadeFilter = '2020';
+                            _applyMovieFilters();
+                          }),
+                        ),
+                        const SizedBox(width: 8),
+                        _buildFilterChip(
+                          label: '2010s',
+                          selected: _movieDecadeFilter == '2010',
+                          onSelected: () => setState(() {
+                            _movieDecadeFilter = '2010';
+                            _applyMovieFilters();
+                          }),
+                        ),
+                        const SizedBox(width: 8),
+                        _buildFilterChip(
+                          label: '2000s',
+                          selected: _movieDecadeFilter == '2000',
+                          onSelected: () => setState(() {
+                            _movieDecadeFilter = '2000';
+                            _applyMovieFilters();
+                          }),
+                        ),
+                        const SizedBox(width: 8),
+                        _buildFilterChip(
+                          label: '1990s',
+                          selected: _movieDecadeFilter == '1990',
+                          onSelected: () => setState(() {
+                            _movieDecadeFilter = '1990';
+                            _applyMovieFilters();
+                          }),
+                        ),
+                        const SizedBox(width: 8),
+                        _buildFilterChip(
+                          label: 'Classics',
+                          selected: _movieDecadeFilter == 'classic',
+                          onSelected: () => setState(() {
+                            _movieDecadeFilter = 'classic';
+                            _applyMovieFilters();
+                          }),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -1344,35 +1370,37 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
               Expanded(
                 child: SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: [
-                      _buildFilterChip(
-                        label: 'All Formats',
-                        selected: _seriesFormatFilter == 'all',
-                        onSelected: () => setState(() {
-                          _seriesFormatFilter = 'all';
-                          _applySeriesFilters();
-                        }),
-                      ),
-                      const SizedBox(width: 8),
-                      _buildFilterChip(
-                        label: 'Limited Series',
-                        selected: _seriesFormatFilter == 'limited',
-                        onSelected: () => setState(() {
-                          _seriesFormatFilter = 'limited';
-                          _applySeriesFilters();
-                        }),
-                      ),
-                      const SizedBox(width: 8),
-                      _buildFilterChip(
-                        label: 'Bingeable Favorites',
-                        selected: _seriesFormatFilter == 'bingeable',
-                        onSelected: () => setState(() {
-                          _seriesFormatFilter = 'bingeable';
-                          _applySeriesFilters();
-                        }),
-                      ),
-                    ],
+                  child: _HorizontalWheelGuard(
+                    child: Row(
+                      children: [
+                        _buildFilterChip(
+                          label: 'All Formats',
+                          selected: _seriesFormatFilter == 'all',
+                          onSelected: () => setState(() {
+                            _seriesFormatFilter = 'all';
+                            _applySeriesFilters();
+                          }),
+                        ),
+                        const SizedBox(width: 8),
+                        _buildFilterChip(
+                          label: 'Limited Series',
+                          selected: _seriesFormatFilter == 'limited',
+                          onSelected: () => setState(() {
+                            _seriesFormatFilter = 'limited';
+                            _applySeriesFilters();
+                          }),
+                        ),
+                        const SizedBox(width: 8),
+                        _buildFilterChip(
+                          label: 'Bingeable Favorites',
+                          selected: _seriesFormatFilter == 'bingeable',
+                          onSelected: () => setState(() {
+                            _seriesFormatFilter = 'bingeable';
+                            _applySeriesFilters();
+                          }),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -1457,7 +1485,7 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
           if (isFocused) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (ctx.mounted) {
-                Scrollable.ensureVisible(
+                _ensureVisibleWithinNearestScrollable(
                   ctx,
                   alignment: 0.5,
                   alignmentPolicy: ScrollPositionAlignmentPolicy.explicit,
@@ -2147,7 +2175,7 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
           if (isFocused) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (ctx.mounted) {
-                Scrollable.ensureVisible(
+                _ensureVisibleWithinNearestScrollable(
                   ctx,
                   alignment: 0.5,
                   alignmentPolicy: ScrollPositionAlignmentPolicy.explicit,
@@ -2391,7 +2419,18 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
     required bool selected,
     required VoidCallback onSelected,
   }) {
-    return FocusableActionDetector(
+    // The chip's own actions only fire if something upstream turns the remote's
+    // OK press into an ActivateIntent. Hosted inside a fullscreen dialog that
+    // plumbing does not reach these chips, so the press focused them and did
+    // nothing. Handling the key here as well makes selection work on its own
+    // terms, and handleOneShotSelect is what keeps the D-Pad's key-repeat from
+    // toggling a chip twice per press -- the same repeat behaviour already
+    // documented on _stepCooldown above.
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onKeyEvent: (node, event) => handleOneShotSelect(event, onSelected),
+      child: FocusableActionDetector(
       actions: <Type, Action<Intent>>{
         ActivateIntent: CallbackAction<ActivateIntent>(
           onInvoke: (intent) {
@@ -2414,7 +2453,7 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
           if (isFocused) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (ctx.mounted) {
-                Scrollable.ensureVisible(
+                _ensureVisibleWithinNearestScrollable(
                   ctx,
                   alignment: 0.5,
                   alignmentPolicy: ScrollPositionAlignmentPolicy.explicit,
@@ -2471,6 +2510,7 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
           );
         },
       ),
+      ),
     );
   }
 
@@ -2503,7 +2543,7 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
           if (isFocused) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (ctx.mounted) {
-                Scrollable.ensureVisible(
+                _ensureVisibleWithinNearestScrollable(
                   ctx,
                   alignment: 0.5,
                   alignmentPolicy: ScrollPositionAlignmentPolicy.explicit,
@@ -2700,6 +2740,70 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
       case TasteRating.neutral:
         return '';
     }
+  }
+}
+
+/// A [Scrollable.ensureVisible] that stops at the nearest enclosing
+/// [Scrollable] instead of climbing into every ancestor Scrollable the way
+/// the built-in static method does.
+///
+/// Scrollable.ensureVisible walks outward and animates EVERY Scrollable it
+/// finds along the way -- useful when a focused item sits inside nested
+/// lists that all need to reveal it, but wrong here: every chip and card in
+/// this wizard lives inside the wizard's own outer PageView, which is also
+/// a Scrollable. NeverScrollableScrollPhysics on that PageView only blocks
+/// user drag, not a programmatic ensureVisible, so the built-in helper was
+/// quietly nudging the whole page over and back on every focus change --
+/// what read as the entire wizard screen jumping each time focus moved
+/// between the era/format chips (or the Shuffle button beside them).
+Future<void> _ensureVisibleWithinNearestScrollable(
+  BuildContext context, {
+  double alignment = 0.0,
+  Duration duration = Duration.zero,
+  Curve curve = Curves.ease,
+  ScrollPositionAlignmentPolicy alignmentPolicy =
+      ScrollPositionAlignmentPolicy.explicit,
+}) async {
+  final scrollable = Scrollable.maybeOf(context);
+  final renderObject = context.findRenderObject();
+  if (scrollable == null || renderObject == null) return;
+  await scrollable.position.ensureVisible(
+    renderObject,
+    alignment: alignment,
+    duration: duration,
+    curve: curve,
+    alignmentPolicy: alignmentPolicy,
+  );
+}
+
+/// Stops a vertical mouse-wheel scroll from dragging a horizontal filter
+/// strip sideways.
+///
+/// Flutter's default [Scrollable] falls back to the wheel's vertical delta
+/// whenever the horizontal delta is zero, which is exactly what a plain
+/// mouse wheel reports. That made the decade/format filter chips next to
+/// the Shuffle button visibly slide left/right any time the cursor merely
+/// passed over that row while the user was scrolling the page below.
+/// Wrapping the chip [Row] in this [Listener] intercepts vertical-dominant
+/// wheel events before the ancestor [SingleChildScrollView] sees them
+/// (child listeners are dispatched before their ancestors), consuming
+/// those and leaving genuine horizontal wheel/trackpad input -- and
+/// drag / D-Pad `Scrollable.ensureVisible` scrolling -- untouched.
+class _HorizontalWheelGuard extends StatelessWidget {
+  final Widget child;
+  const _HorizontalWheelGuard({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      onPointerSignal: (event) {
+        if (event is PointerScrollEvent &&
+            event.scrollDelta.dy.abs() >= event.scrollDelta.dx.abs()) {
+          GestureBinding.instance.pointerSignalResolver.register(event, (_) {});
+        }
+      },
+      child: child,
+    );
   }
 }
 

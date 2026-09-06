@@ -10,7 +10,9 @@ import 'package:voltix_design/voltix_design.dart';
 import '../../../data/repositories/seerr_repository.dart';
 import '../../../data/services/seerr/seerr_api_models.dart';
 import '../../../data/viewmodels/seerr_person_view_model.dart';
+import '../../../preference/preference_constants.dart';
 import '../../../preference/user_preferences.dart';
+import '../../../util/platform_detection.dart';
 import '../../navigation/destinations.dart';
 import '../../widgets/library_row.dart';
 import '../../widgets/media_card.dart';
@@ -132,12 +134,19 @@ class _SeerrPersonScreenState extends State<SeerrPersonScreen> {
     final l10n = AppLocalizations.of(context);
     final theme = Theme.of(context);
     final topPad = MediaQuery.of(context).padding.top;
+    // The left navbar floats over the content rather than reserving its own
+    // column (see NavigationLayout), so every screen using it has to add its
+    // own clearance. This screen never did, so on a left-navbar layout the
+    // sidebar sat on top of the profile photo and every poster row.
+    final navbarIsLeft = GetIt.instance<UserPreferences>().get(UserPreferences.navbarPosition) ==
+        NavbarPosition.left;
+    final leftInset = (navbarIsLeft && !PlatformDetection.useMobileUi) ? 56.0 : 0.0;
 
     return CustomScrollView(
       slivers: [
         SliverToBoxAdapter(
           child: Padding(
-            padding: EdgeInsets.fromLTRB(32, topPad + 16, 32, 0),
+            padding: EdgeInsets.fromLTRB(32 + leftInset, topPad + 16, 32, 0),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -186,14 +195,22 @@ class _SeerrPersonScreenState extends State<SeerrPersonScreen> {
           ),
         ),
         if (person.biography != null && person.biography!.isNotEmpty)
-          SliverToBoxAdapter(child: _buildBiography(person.biography!)),
+          SliverToBoxAdapter(
+            child: _buildBiography(person.biography!, leftInset: leftInset),
+          ),
         if (s.castCredits.isNotEmpty)
           SliverToBoxAdapter(
-            child: _buildCreditsRow(l10n.appearances, s.castCredits, true),
+            child: Padding(
+              padding: EdgeInsets.only(left: leftInset),
+              child: _buildCreditsRow(l10n.appearances, s.castCredits, true),
+            ),
           ),
         if (s.crewCredits.isNotEmpty)
           SliverToBoxAdapter(
-            child: _buildCreditsRow(l10n.crewSection, s.crewCredits, false),
+            child: Padding(
+              padding: EdgeInsets.only(left: leftInset),
+              child: _buildCreditsRow(l10n.crewSection, s.crewCredits, false),
+            ),
           ),
         const SliverToBoxAdapter(child: SizedBox(height: 80)),
       ],
@@ -248,7 +265,7 @@ class _SeerrPersonScreenState extends State<SeerrPersonScreen> {
     );
   }
 
-  Widget _buildBiography(String bio) {
+  Widget _buildBiography(String bio, {double leftInset = 0.0}) {
     final l10n = AppLocalizations.of(context);
     final textStyle = TextStyle(
       color: AppColorScheme.onSurface.withValues(alpha: 0.85),
@@ -257,7 +274,7 @@ class _SeerrPersonScreenState extends State<SeerrPersonScreen> {
     );
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(32, 20, 32, 0),
+      padding: EdgeInsets.fromLTRB(32 + leftInset, 20, 32, 0),
       child: LayoutBuilder(
         builder: (context, constraints) {
           final textPainter = TextPainter(
@@ -398,8 +415,10 @@ class _SeerrPersonScreenState extends State<SeerrPersonScreen> {
               onTap: () {
                 final mediaType = item.mediaType ?? 'movie';
                 context.push(
-                  Destinations.seerrMedia(item.id.toString()),
-                  extra: {'mediaType': mediaType},
+                  Destinations.seerrMedia(
+                    item.id.toString(),
+                    mediaType: mediaType,
+                  ),
                 );
               },
             ),

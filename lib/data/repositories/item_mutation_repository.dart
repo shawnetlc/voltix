@@ -25,6 +25,10 @@ class ItemMutationRepository {
     await _client.userLibraryApi.updateUserRating(itemId, likes: likes);
   }
 
+  Future<void> setNumericRating(String itemId, {required double rating}) async {
+    await _client.userLibraryApi.updateNumericUserRating(itemId, rating: rating);
+  }
+
   Future<void> clearRating(String itemId) async {
     await _client.userLibraryApi.deleteUserRating(itemId);
   }

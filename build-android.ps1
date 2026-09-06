@@ -1,5 +1,10 @@
 $ErrorActionPreference = 'Stop'
 
+# Build-time secrets, shared with the other Android build scripts.
+$sasConfig = Join-Path $PSScriptRoot 'build-secrets.ps1'
+if (Test-Path $sasConfig) { . $sasConfig }
+if (Get-Command Write-AzureSasStatus -ErrorAction SilentlyContinue) { Write-AzureSasStatus }
+
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 function Get-FlutterCommand {
@@ -59,7 +64,14 @@ try {
   }
 
   Write-Host "Building Android release APK (arm64-v8a only)..."
-  & $flutterExe build apk --release --target-platform android-arm64
+  # This script passed no dart-defines at all, so its APKs shipped without a
+  # DISTRIBUTION_CHANNEL (which resolves to `unknown` and re-enables
+  # self-update) and without the Azure SAS tokens.
+  $androidDefines = @("--dart-define=DISTRIBUTION_CHANNEL=apk")
+  if (Get-Command Get-AzureSasDartDefines -ErrorAction SilentlyContinue) {
+      $androidDefines += Get-AzureSasDartDefines
+  }
+  & $flutterExe build apk --release --target-platform android-arm64 @androidDefines
   if ($LASTEXITCODE -ne 0) {
     throw "flutter build apk failed with exit code $LASTEXITCODE"
   }

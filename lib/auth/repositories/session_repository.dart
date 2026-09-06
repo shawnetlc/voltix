@@ -59,6 +59,11 @@ class SessionRepository {
   StreamSubscription<ServerWebSocketMessage>? _remoteCommandSubscription;
   double _lastUnmutedVolume = 100;
   bool _remoteMuted = false;
+  // Tracks the device's own volume so VolumeUp/VolumeDown (which arrive as
+  // relative nudges, unlike SetVolume/mute which carry an absolute value)
+  // have something to step from.
+  double _currentVolume = 100;
+  static const _volumeStep = 5.0;
 
   final _stateController = StreamController<SessionState>.broadcast();
 
@@ -415,11 +420,13 @@ class SessionRepository {
   }
 
   Future<void> _setLocalVolume(PlaybackManager manager, double volume) async {
+    final clamped = volume.clamp(0, 100).toDouble();
+    _currentVolume = clamped;
     final backend = manager.backend;
     if (backend == null) {
       return;
     }
-    await backend.setVolume(volume.clamp(0, 100));
+    await backend.setVolume(clamped);
   }
 
   double _normalizeVolume(String raw) {
@@ -618,6 +625,23 @@ class SessionRepository {
             _remoteMuted = true;
           }
         }
+      // VolumeUp/VolumeDown are sent by the phone Remote Control's +/-
+      // buttons (Session.SendGeneralCommand with no Volume argument -- the
+      // step size is the sender's choice, not a value it carries). These
+      // two cases were missing entirely, so every tap silently did nothing
+      // even though the volume slider (SetVolume) worked fine.
+      case 'volumeup':
+        _remoteMuted = false;
+        _currentVolume = (_currentVolume + _volumeStep).clamp(0, 100);
+        _lastUnmutedVolume = _currentVolume;
+        await _setLocalVolume(manager, _currentVolume);
+      case 'volumedown':
+        _currentVolume = (_currentVolume - _volumeStep).clamp(0, 100);
+        _remoteMuted = _currentVolume <= 0;
+        if (!_remoteMuted) {
+          _lastUnmutedVolume = _currentVolume;
+        }
+        await _setLocalVolume(manager, _currentVolume);
       case 'mute':
         if (!_remoteMuted) {
           _remoteMuted = true;

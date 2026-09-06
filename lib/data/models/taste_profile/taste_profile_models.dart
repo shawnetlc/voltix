@@ -986,7 +986,7 @@ class SyncProgressState {
     this.progressPercent = 0.0,
     this.recordsProcessed = 0,
     this.totalRecords = 0,
-    this.statusMessage = 'Retrieving stream choices to personalize your viewing experience. This may take a minute - it will be with the wait.',
+    this.statusMessage = 'Retrieving stream choices to personalize your viewing experience. This may take a minute - it will be worth the wait.',
     this.failoverMessage,
     this.isCompleted = false,
     this.isCancelled = false,
@@ -1094,6 +1094,39 @@ class RecommendationItem {
         availableServerIds = availableServerIds ?? [item.serverId],
         metadataSourceServerId = metadataSourceServerId ?? item.serverId,
         groundedExplanation = groundedExplanation ?? reason;
+
+  /// Used to stamp cross-server availability onto an already-scored item.
+  ///
+  /// The scorer builds these before it knows which other servers also hold the
+  /// title, so the multi-server fields are filled in afterwards rather than
+  /// threaded through scoring, which has no business knowing about servers.
+  RecommendationItem copyWith({
+    AggregatedItem? item,
+    double? score,
+    String? reason,
+    String? badgeText,
+    Map<String, double>? breakdown,
+    String? crossServerKey,
+    String? selectedServerId,
+    String? jellyfinItemId,
+    List<String>? availableServerIds,
+    String? metadataSourceServerId,
+    String? groundedExplanation,
+  }) =>
+      RecommendationItem(
+        item: item ?? this.item,
+        score: score ?? this.score,
+        reason: reason ?? this.reason,
+        badgeText: badgeText ?? this.badgeText,
+        breakdown: breakdown ?? this.breakdown,
+        crossServerKey: crossServerKey ?? this.crossServerKey,
+        selectedServerId: selectedServerId ?? this.selectedServerId,
+        jellyfinItemId: jellyfinItemId ?? this.jellyfinItemId,
+        availableServerIds: availableServerIds ?? this.availableServerIds,
+        metadataSourceServerId:
+            metadataSourceServerId ?? this.metadataSourceServerId,
+        groundedExplanation: groundedExplanation ?? this.groundedExplanation,
+      );
 }
 
 /// Types of personalized and curated recommendation home rows.

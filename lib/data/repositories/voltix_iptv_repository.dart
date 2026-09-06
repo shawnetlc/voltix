@@ -1,11 +1,14 @@
 import 'dart:async';
 
+import 'package:collection/collection.dart';
 import 'package:dio/dio.dart';
 import 'package:get_it/get_it.dart';
 
 import '../../auth/store/voltix_session_store.dart';
+import '../models/dstv/dstv_epg_models.dart';
 import '../models/iptv_models.dart';
 import '../services/voltix_api_service.dart';
+import 'dstv_epg_repository.dart';
 
 /// Thrown for IPTV backend failures that should be surfaced inline in the UI.
 ///
@@ -256,6 +259,15 @@ class VoltixIptvRepository {
   /// In-memory cache for DStv programme thumbnails (channel/programme key -> iconUrl)
   static final Map<String, String> _dstvThumbCache = <String, String>{};
 
+  /// Returns cached thumbnail / poster URL for a channel or programme.
+  static String? getCachedThumbnail(String channelOrProgramme) {
+    final key = channelOrProgramme.toLowerCase().trim();
+    return _dstvThumbCache[key];
+  }
+
+  static bool _containsCyrillic(String text) =>
+      RegExp(r'[\u0400-\u04FF]').hasMatch(text);
+
   /// Now/next guide data for a live [channel], deduplicated by
   /// start-timestamp + title and limited to programmes that end after now
   /// and start within [window] (default 4 hours).
@@ -294,6 +306,7 @@ class VoltixIptvRepository {
 
       final seen = <String>{};
       final result = <IptvEpgEntry>[];
+      final channelKey = channel.title.toLowerCase();
       for (final raw in items.whereType<Map<String, dynamic>>()) {
         var entry = IptvEpgEntry.fromJson(raw);
         if (!entry.hasTimes) continue;
@@ -301,21 +314,23 @@ class VoltixIptvRepository {
         if (entry.startTimestamp! >= horizon) continue; // beyond window
         if (!seen.add(entry.dedupeKey)) continue; // dedupe start+title
 
+        // Skip Russian mis-mapped entries on South African / English channels
+        if (_containsCyrillic(entry.title) || _containsCyrillic(entry.description)) {
+          continue;
+        }
+
         // If using provider EPG and icon is empty, check DStv artwork cache.
-        // Do NOT fall back to channel.poster — that would show the channel logo
-        // a second time on the tile (the left side already displays it).
         if (entry.icon == null || entry.icon!.isEmpty) {
-          final cleanTitle = channel.title.toLowerCase();
           final progTitle = entry.title.toLowerCase();
-          final cachedIcon = _dstvThumbCache['${cleanTitle}_$progTitle'] ??
-              _dstvThumbCache[cleanTitle] ??
+          final cachedIcon = _dstvThumbCache['${channelKey}_$progTitle'] ??
+              _dstvThumbCache[channelKey] ??
               _dstvThumbCache[progTitle];
           if (cachedIcon != null && cachedIcon.isNotEmpty) {
             entry = entry.copyWith(icon: cachedIcon);
           }
         } else if (entry.icon != null && entry.icon!.isNotEmpty) {
-          _dstvThumbCache['${channel.title.toLowerCase()}_${entry.title.toLowerCase()}'] = entry.icon!;
-          _dstvThumbCache[channel.title.toLowerCase()] = entry.icon!;
+          _dstvThumbCache['${channelKey}_${entry.title.toLowerCase()}'] = entry.icon!;
+          _dstvThumbCache[channelKey] = entry.icon!;
         }
 
         result.add(entry);
@@ -332,6 +347,198 @@ class VoltixIptvRepository {
       _cachePut(key, result);
       return result;
     }, 'Guide');
+  }
+
+  static String _sanitizeTitle(String title, String channelTitle) {
+    if (!_containsCyrillic(title) && title.trim().isNotEmpty) {
+      return title.trim();
+    }
+
+    final cleanCh = DstvEpgRepository.normalizeChannelName(channelTitle);
+    if (cleanCh.contains('movie') ||
+        cleanCh.contains('m net') ||
+        cleanCh.contains('mnet') ||
+        cleanCh.contains('cinema')) {
+      return 'Feature Presentation';
+    }
+    if (cleanCh.contains('sport') ||
+        cleanCh.contains('ss ') ||
+        cleanCh.contains('psl') ||
+        cleanCh.contains('premier') ||
+        cleanCh.contains('league') ||
+        cleanCh.contains('rugby') ||
+        cleanCh.contains('cricket') ||
+        cleanCh.contains('football')) {
+      return 'Sports Match Replay';
+    }
+    if (cleanCh.contains('news') ||
+        cleanCh.contains('enca') ||
+        cleanCh.contains('sabc')) {
+      return 'News Bulletin';
+    }
+    if (cleanCh.contains('magic') ||
+        cleanCh.contains('am ') ||
+        cleanCh.contains('mzansi') ||
+        cleanCh.contains('kyknet')) {
+      return 'Drama Series';
+    }
+    final cleanName = channelTitle
+        .replaceAll(RegExp(r'\s*\[.*?\]\s*'), '')
+        .replaceAll(RegExp(r'\b(za|dstv)\s*[:\-_]\s*', caseSensitive: false), '')
+        .trim();
+    return cleanName.isNotEmpty ? '$cleanName Broadcast' : 'Channel Replay';
+  }
+
+  /// Past programmes for a live [channel] that support catch-up playback,
+  /// most recent first, going back [lookback] (24h).
+  ///
+  /// Maps to official DStv English TV guide directly when available, matches
+  /// replayable stream slots, and replaces any Russian provider XMLTV with
+  /// clean English titles & thumbnails.
+  Future<List<IptvEpgEntry>> getCatchupEpg(
+    IptvContentItem channel, {
+    Duration lookback = const Duration(hours: 24),
+    String? source,
+  }) async {
+    final streamId = channel.catchupStreamId;
+    final effectiveSource = source ?? 'provider';
+    final key = 'catchup|${streamId}_$effectiveSource';
+    final cached = _cacheGet<List<IptvEpgEntry>>(key, _ttlEpg);
+    if (cached != null) return cached;
+
+    DstvEpgRepository? dstvRepo;
+    DstvChannel? dstvChannel;
+    List<IptvEpgEntry>? dstvProgs;
+    try {
+      if (GetIt.instance.isRegistered<DstvEpgRepository>()) {
+        dstvRepo = GetIt.instance<DstvEpgRepository>();
+        dstvChannel = await dstvRepo.findMatchingChannel(
+          channel.title,
+          channelNumber: channel.channelNumber,
+        );
+        if (dstvChannel != null) {
+          final icon = dstvChannel.thumbnailUrl ?? dstvChannel.logo;
+          if (icon != null && icon.isNotEmpty) {
+            _dstvThumbCache[channel.title.toLowerCase()] = icon;
+            _dstvThumbCache[DstvEpgRepository.normalizeChannelName(channel.title)] = icon;
+          }
+          dstvProgs = await dstvRepo.getCatchupProgrammesForDstvChannel(
+            dstvChannel,
+            lookback: lookback,
+          );
+        }
+      }
+    } catch (_) {}
+
+    return _withRetry(() async {
+      final data = await _api.restGet(
+        '/api/iptv/epg/simple',
+        query: {
+          'streamId': streamId,
+          if (channel.epgChannelId != null && channel.epgChannelId!.isNotEmpty)
+            'epgChannelId': channel.epgChannelId,
+          'channelName': channel.title,
+          if (effectiveSource.isNotEmpty) 'source': effectiveSource,
+        },
+        sessionToken: _token,
+        timeout: _reqTimeout,
+      );
+      final items = (data is Map ? data['items'] : null) as List? ?? const [];
+      final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      final earliest = now - lookback.inSeconds;
+
+      final seen = <String>{};
+      final result = <IptvEpgEntry>[];
+      final channelKey = channel.title.toLowerCase();
+      final defaultIcon = dstvChannel?.thumbnailUrl ??
+          dstvChannel?.logo ??
+          _dstvThumbCache[channelKey] ??
+          _dstvThumbCache[DstvEpgRepository.normalizeChannelName(channel.title)] ??
+          channel.poster;
+
+      for (final raw in items.whereType<Map<String, dynamic>>()) {
+        var entry = IptvEpgEntry.fromJson(raw);
+        if (!entry.hasTimes) continue;
+        if (entry.stopTimestamp! > now) continue; // still airing or upcoming
+        if (entry.startTimestamp! < earliest) continue; // outside catch-up window
+        if (!seen.add(entry.dedupeKey)) continue;
+
+        // The DStv-side programme covering this slot. Resolved once per entry
+        // now rather than only inside the Cyrillic branch, because it carries
+        // the per-programme artwork and synopsis from the XMLTV feed, not just
+        // an English title.
+        IptvEpgEntry? matchingDstv;
+        if (dstvProgs != null && dstvProgs.isNotEmpty) {
+          matchingDstv = dstvProgs.firstWhereOrNull((dp) {
+            if (dp.startTimestamp == null) return false;
+            final diff = (dp.startTimestamp! - entry.startTimestamp!).abs();
+            return diff <= 1800; // within 30 mins
+          });
+        }
+
+        // If title is Russian / Cyrillic or empty, find English title from DStv schedule or sanitize
+        var title = entry.title;
+        var description = entry.description;
+
+        if (_containsCyrillic(title) || title.trim().isEmpty) {
+          if (matchingDstv != null && matchingDstv.title.isNotEmpty) {
+            title = matchingDstv.title;
+          } else {
+            title = _sanitizeTitle(title, channel.title);
+          }
+        }
+
+        if (_containsCyrillic(description)) {
+          description = '';
+        }
+
+        if (description.trim().isEmpty &&
+            matchingDstv != null &&
+            matchingDstv.description.trim().isNotEmpty) {
+          description = matchingDstv.description;
+        }
+
+        var icon = entry.icon;
+        if (icon == null || icon.isEmpty) {
+          // Order matters: the matched programme's own image first, then the
+          // per-programme thumbnail cache, and only then the channel-level
+          // fallbacks. Those last two are channel logos, so reaching them for
+          // every row is exactly what made the catch-up page look like one
+          // picture repeated down the list.
+          final programKey = title.toLowerCase();
+          // The DStv side already falls back to the channel logo internally,
+          // so only treat its icon as a real programme image when it is not
+          // simply that same channel-level picture.
+          final dstvIcon = matchingDstv?.icon;
+          final programmeIcon =
+              (dstvIcon != null && dstvIcon.isNotEmpty && dstvIcon != defaultIcon)
+                  ? dstvIcon
+                  : null;
+          icon = programmeIcon ??
+              _dstvThumbCache['${channelKey}_$programKey'] ??
+              _dstvThumbCache[programKey] ??
+              defaultIcon;
+        }
+
+        entry = entry.copyWith(
+          title: title,
+          description: description,
+          icon: icon,
+        );
+
+        result.add(entry);
+      }
+
+      // If the provider returned no items, but DStv direct guide had programmes, use DStv programmes
+      if (result.isEmpty && dstvProgs != null && dstvProgs.isNotEmpty) {
+        _cachePut(key, dstvProgs);
+        return dstvProgs;
+      }
+
+      result.sort((a, b) => (b.startTimestamp ?? 0).compareTo(a.startTimestamp ?? 0));
+      _cachePut(key, result);
+      return result;
+    }, 'CatchupGuide');
   }
 
   void _enrichThumbnailsFromDstv(IptvContentItem channel, String streamId) {
@@ -564,6 +771,56 @@ class VoltixIptvRepository {
   String resolveLiveStreamUrl(IptvContentItem channel) {
     final streamId = channel.streamId?.toString() ?? channel.id;
     return '${_api.baseUrl}/api/iptv/stream/live/$streamId?token=$_token';
+  }
+
+  /// Playable URL for replaying a past [program] on an archive-enabled
+  /// [channel] ("catch-up" / timeshift).
+  ///
+  /// Resolved by the backend's existing `/api/iptv/replay-url`, which holds
+  /// the provider credentials and builds the Xtream timeshift URL
+  /// (`/timeshift/{user}/{pass}/{duration}/{start}/{streamId}.ts`). The
+  /// client cannot build that itself -- it never sees those credentials.
+  ///
+  /// `start` is sent as an ISO-8601 local timestamp rather than epoch
+  /// seconds: the endpoint parses it with JavaScript's `new Date(...)`,
+  /// which would read a bare epoch-seconds number as milliseconds and land
+  /// in 1970.
+  ///
+  /// Returns null when the backend declines (for example a sport-only line
+  /// that is not entitled to this channel).
+  Future<String?> fetchCatchupStreamUrl(
+    IptvContentItem channel,
+    IptvEpgEntry program,
+  ) async {
+    // The archive variant, which is not always the channel's own stream id.
+    final streamId = channel.catchupStreamId;
+    if (!program.hasTimes) return null;
+    final start =
+        DateTime.fromMillisecondsSinceEpoch(program.startTimestamp! * 1000)
+            .toLocal();
+    final durationMinutes =
+        ((program.stopTimestamp! - program.startTimestamp!) / 60).ceil();
+    if (durationMinutes <= 0) return null;
+
+    String two(int v) => v.toString().padLeft(2, '0');
+    final startArg = '${start.year}-${two(start.month)}-${two(start.day)} '
+        '${two(start.hour)}:${two(start.minute)}:${two(start.second)}';
+
+    return _withRetry(() async {
+      final data = await _api.restGet(
+        '/api/iptv/replay-url',
+        query: {
+          'streamId': streamId,
+          'start': startArg,
+          'durationMinutes': '$durationMinutes',
+          'containerExtension': 'ts',
+        },
+        sessionToken: _token,
+        timeout: _reqTimeout,
+      );
+      final url = data is Map ? data['url']?.toString() : null;
+      return (url != null && url.isNotEmpty) ? url : null;
+    }, 'ReplayUrl');
   }
 
   /// Container extensions the upstream Xtream provider actually serves. Some

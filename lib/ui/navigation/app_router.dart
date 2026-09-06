@@ -41,11 +41,12 @@ import '../screens/seerr/seerr_discover_screen.dart';
 
 import '../screens/seerr/seerr_person_screen.dart';
 import '../screens/seerr/seerr_requests_screen.dart';
+import '../screens/livetv/dstv/dstv_guide_screen.dart';
+import '../screens/livetv/dstv/dstv_schedule_screen.dart';
 import '../screens/livetv/live_tv_guide_screen.dart';
 import '../screens/livetv/live_tv_player_screen.dart';
 import '../../data/viewmodels/live_tv_guide_view_model.dart';
 import '../screens/livetv/live_tv_recordings_screen.dart';
-import '../screens/livetv/live_tv_schedule_screen.dart';
 import '../screens/livetv/live_tv_screen.dart';
 import '../screens/livetv/live_tv_series_recordings_screen.dart';
 import '../screens/livetv/voltix_live_tv_screen.dart';
@@ -101,7 +102,6 @@ import '../screens/downloads/saved_season_screen.dart';
 import '../screens/downloads/saved_series_screen.dart';
 import '../screens/downloads/storage_management_screen.dart';
 import '../../data/services/retro_artwork/retro_artwork_activity_gate.dart';
-import '../../preference/preference_constants.dart';
 import '../../util/game_cores.dart';
 import '../../data/models/tmdb_item_ref.dart';
 import '../screens/browse/book_browse_screen.dart';
@@ -141,6 +141,15 @@ bool _isOfflineAllowed(String path) {
       path == Destinations.audioPlayer) {
     return true;
   }
+  // Live TV (both the Voltix IPTV screen and the Jellyfin/Emby EPG guide) is
+  // exempted for the same reason the player routes are: a stream buffering
+  // or a token refresh can make the connectivity check blink offline for a
+  // moment mid-session. Without this, popping back out of a channel while
+  // that blink is in flight got rewritten by this redirect to Downloads --
+  // a screen with nothing beneath it on the stack, whose own back button
+  // then has nowhere to go but Home. That is what "exiting a channel dumps
+  // me on the home page instead of the channel list" turned out to be.
+  if (path.startsWith('/live-tv')) return true;
   return false;
 }
 
@@ -563,15 +572,22 @@ final appRouter = GoRouter(
             final extraMap = extra is Map<String, dynamic>
                 ? extra
                 : const <String, dynamic>{};
-            return LiveTvGuideScreen(
-              miniPlayerMode: extraMap['miniPlayerMode'] == true,
-              currentChannel: extraMap['currentChannel'] as GuideChannel?,
-            );
+            // Embedded mode is the in-player "switch channel" overlay, which
+            // has to stay on the server's own actually-playable Live TV
+            // channels -- only the standalone Guide tile (no extra) becomes
+            // the DStv guide.
+            if (extraMap['miniPlayerMode'] == true) {
+              return LiveTvGuideScreen(
+                miniPlayerMode: true,
+                currentChannel: extraMap['currentChannel'] as GuideChannel?,
+              );
+            }
+            return const DstvGuideScreen();
           },
         ),
         GoRoute(
           path: 'schedule',
-          builder: (context, state) => const LiveTvScheduleScreen(),
+          builder: (context, state) => const DstvScheduleScreen(),
         ),
         GoRoute(
           path: 'recordings',
@@ -877,13 +893,16 @@ final appRouter = GoRouter(
       path: Destinations.seerrPersonDetail,
       builder: (context, state) {
         final personId = state.pathParameters['personId']!;
-        final prefs = GetIt.instance<UserPreferences>();
-        if (prefs.get(UserPreferences.detailScreenStyle) == DetailScreenStyle.modern) {
-          return ItemDetailScreen(
-            key: ValueKey('tmdb:$personId'),
-            itemId: 'tmdb:$personId',
-          );
-        }
+        // Always SeerrPersonScreen here, regardless of the Modern/Classic
+        // detail screen preference. Routing this through ItemDetailScreen
+        // with itemId 'tmdb:$personId' used to fall through to
+        // ItemDetailViewModel's _client.itemsApi.getItem(itemId, ...) --
+        // the JELLYFIN item-by-id lookup -- with a non-GUID 'tmdb:...'
+        // string, which the media server correctly rejects with HTTP 400.
+        // (See the comment in ItemDetailViewModel.load: this fork's
+        // server_core has no itemsApi.getPersons, so there is no working
+        // "modern" path for a Seerr-only person -- SeerrPersonScreen, which
+        // calls Seerr's own /person/{id} API, is the only one that works.)
         return SeerrPersonScreen(personId: personId);
       },
     ),

@@ -2,6 +2,18 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Build-time secrets (Azure SAS tokens, Grok credentials), shared with the
+# other build scripts.
+if [ -f "$REPO_ROOT/build-secrets.sh" ]; then
+  # shellcheck source=build-secrets.sh
+  . "$REPO_ROOT/build-secrets.sh"
+  write_secret_status
+else
+  build_secret_dart_defines() { return 0; }
+fi
+SECRET_DEFINES=()
+while IFS= read -r line; do SECRET_DEFINES+=("$line"); done < <(build_secret_dart_defines)
 APP_NAME="Moonfin"
 APK_SOURCE="$REPO_ROOT/build/app/outputs/flutter-apk/app-mobile-release.apk"
 BUNDLE_SOURCE="$REPO_ROOT/build/app/outputs/bundle/mobileRelease/app-mobile-release.aab"
@@ -77,7 +89,7 @@ echo "Building Android release APK (arm64-v8a, armeabi-v7a, x86_64)..."
   --flavor mobile \
   --build-name "$APP_VERSION" \
   --build-number "$APP_BUILD_NUMBER" \
-  --dart-define=DISTRIBUTION_CHANNEL=apk
+  --dart-define=DISTRIBUTION_CHANNEL=apk "${SECRET_DEFINES[@]}"
 
 if [ ! -f "$APK_SOURCE" ]; then
   echo "Error: APK not found at $APK_SOURCE" >&2
@@ -99,7 +111,7 @@ if ! "$FLUTTER" build appbundle --release \
   --flavor mobile \
   --build-name "$APP_VERSION" \
   --build-number "$APP_BUILD_NUMBER" \
-  --dart-define=DISTRIBUTION_CHANNEL=aab; then
+  --dart-define=DISTRIBUTION_CHANNEL=aab "${SECRET_DEFINES[@]}"; then
   echo "Flutter appbundle build failed. Retrying with Gradle bundleRelease fallback..."
   (
     cd "$REPO_ROOT/android"
@@ -128,7 +140,7 @@ echo "Building Android TV release APK..."
   --build-name "$TV_VERSION" \
   --build-number "$TV_BUILD_NUMBER" \
   --dart-define=MOONFIN_FORCE_TV=true \
-  --dart-define=DISTRIBUTION_CHANNEL=android_tv_apk
+  --dart-define=DISTRIBUTION_CHANNEL=android_tv_apk "${SECRET_DEFINES[@]}"
 
 if [ ! -f "$TV_APK_SOURCE" ]; then
   echo "Error: TV APK not found at $TV_APK_SOURCE" >&2
@@ -151,7 +163,7 @@ if ! "$FLUTTER" build appbundle --release \
   --build-name "$TV_VERSION" \
   --build-number "$TV_BUILD_NUMBER" \
   --dart-define=MOONFIN_FORCE_TV=true \
-  --dart-define=DISTRIBUTION_CHANNEL=android_tv_aab; then
+  --dart-define=DISTRIBUTION_CHANNEL=android_tv_aab "${SECRET_DEFINES[@]}"; then
   echo "Flutter appbundle build failed. Retrying with Gradle bundleAndroidTvRelease fallback..."
   (
     cd "$REPO_ROOT/android"

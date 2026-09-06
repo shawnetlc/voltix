@@ -175,9 +175,18 @@ class _SeerrDiscoverScreenState extends State<SeerrDiscoverScreen> {
 
   void _onItemTap(SeerrDiscoverItem item) {
     final mediaType = item.mediaType ?? 'movie';
+    // mediaType has to travel in the URL (mediaType: below), not via extra:.
+    // The seerrMediaDetail route builder only reads
+    // state.uri.queryParameters['mediaType'] -- extra: is a GoRouter
+    // side-channel it never looks at -- so this always fell back to its
+    // 'movie' default. Every tap on a Series card (Popular Series, Upcoming
+    // Series, ...) then fetched TMDB's MOVIE with that same numeric id
+    // instead of the TV show, which is a wholly unrelated title (movie and
+    // TV ids are separate TMDB namespaces). Movies happened to still work,
+    // since the wrong default matched their real type by coincidence --
+    // which is why only the Series rows looked broken.
     context.push(
-      Destinations.seerrMedia(item.id.toString()),
-      extra: {'mediaType': mediaType},
+      Destinations.seerrMedia(item.id.toString(), mediaType: mediaType),
     );
   }
 

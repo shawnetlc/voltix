@@ -21,6 +21,18 @@ function Resolve-FlutterBin {
     throw "Flutter not found. Put it on PATH, or install to one of:`n  $($candidates -join "`n  ")"
 }
 
+# Build-time secrets (Azure SAS tokens, Grok credentials), shared by every
+# Android build script so there is one place to rotate them.
+$sasConfig = Join-Path $PSScriptRoot 'build-secrets.ps1'
+if (Test-Path $sasConfig) {
+    . $sasConfig
+} else {
+    Write-Host "build-secrets.ps1 not found - builds will use the sync proxy" -ForegroundColor Yellow
+    $AzureBlobSasToken = ''
+    $AzureBlobSettingsSasToken = ''
+}
+if (Get-Command Write-AzureSasStatus -ErrorAction SilentlyContinue) { Write-AzureSasStatus }
+
 $flutterBin = Resolve-FlutterBin
 # Resolved from this script's own location so the checkout can live anywhere.
 # Previously hardcoded to C:\VoltixNew-2.2.0-upgrade\merge, which broke as soon
@@ -32,9 +44,9 @@ $outputsRoots = @(
 )
 
 # -- Versions for this build ------------------------------------------------
-$sharedVersionName = "1.6.24"
-$mobileVersionCode = "40000187"
-$tvVersionCode     = "40000188"
+$sharedVersionName = "2.0.1"
+$mobileVersionCode = "40000191"
+$tvVersionCode     = "40000192"
 
 function Assert-VersionsMatchPubspec {
     $pubspec = Get-Content "$repoRoot\pubspec.yaml" -Raw
@@ -183,7 +195,13 @@ Restore it one of these ways, then re-run this script:
 }
 
 function Invoke-Gradle([string]$task, [string]$channel) {
-    $dd = Encode-DartDefines @("DISTRIBUTION_CHANNEL=$channel")
+    # Encode-DartDefines base64s each entry separately, so the SAS's '&'
+    # characters pass through untouched - no quoting or escaping needed.
+    $defines = @("DISTRIBUTION_CHANNEL=$channel")
+    if (Get-Command Get-BuildSecretDefinePairs -ErrorAction SilentlyContinue) {
+        $defines += Get-BuildSecretDefinePairs
+    }
+    $dd = Encode-DartDefines $defines
     Push-Location "$repoRoot\android"
     try {
         & ".\gradlew.bat" ":app:$task" "-Pdart-defines=$dd" "-Ptarget-platform=android-arm64,android-arm,android-x64" --stacktrace

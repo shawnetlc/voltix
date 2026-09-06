@@ -79,6 +79,9 @@ plugins {
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+    // Must come after the Android plugin. Generates the Firebase string
+    // resources from google-services.json -- see settings.gradle.kts.
+    id("com.google.gms.google-services")
 }
 
 val keystoreProperties = Properties().apply {
@@ -156,7 +159,7 @@ android {
     productFlavors {
         val baseAppId = "cc.voltix.streaming"
         val baseAppName = "Voltix"
-        val mobileAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        val mobileAbis = listOf("arm64-v8a")
         val tvAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         create("mobile") {
             dimension = "device"

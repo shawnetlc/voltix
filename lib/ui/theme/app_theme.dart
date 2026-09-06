@@ -1,5 +1,8 @@
+import 'package:flutter/cupertino.dart' show CupertinoPageTransitionsBuilder;
 import 'package:flutter/material.dart';
 import 'package:voltix_design/voltix_design.dart';
+
+import '../../util/idiom/app_ui_idiom.dart';
 
 class AppTheme {
   const AppTheme._();
@@ -58,6 +61,21 @@ class AppTheme {
     final c = spec.colors;
     return ThemeData(
       useMaterial3: true,
+      // Interface Style: Apple was previously only a handful of narrow,
+      // scattered icon/label checks -- it never touched the actual app
+      // theme, so switching it barely changed anything visible. This is
+      // what Moonfin's app_theme.dart actually did with it: on iOS/macOS it
+      // swaps Flutter's platform adaptation (bouncing scroll physics,
+      // edge-swipe-to-go-back, platform-correct text selection handles) and,
+      // on iOS specifically, the page transition curve -- which is where
+      // most of the "this looks like an Apple app" feeling actually comes
+      // from, far more than any single icon.
+      platform: switch (AppUiIdiomResolver.current) {
+        AppUiIdiom.iosMobile => TargetPlatform.iOS,
+        AppUiIdiom.macDesktop => TargetPlatform.macOS,
+        AppUiIdiom.material => TargetPlatform.android,
+        AppUiIdiom.tvosLeanback => null,
+      },
       brightness: Brightness.dark,
       fontFamily: spec.fontFamily,
       colorScheme: ColorScheme.dark(
@@ -79,16 +97,22 @@ class AppTheme {
         backgroundColor: c.background,
         elevation: 0,
       ),
-      pageTransitionsTheme: const PageTransitionsTheme(
-        builders: {
-          TargetPlatform.android: _FadeScalePageTransitionsBuilder(),
-          TargetPlatform.fuchsia: _FadeScalePageTransitionsBuilder(),
-          TargetPlatform.linux: _FadeScalePageTransitionsBuilder(),
-          TargetPlatform.macOS: _FadeScalePageTransitionsBuilder(),
-          TargetPlatform.windows: _FadeScalePageTransitionsBuilder(),
-          TargetPlatform.iOS: _FadeScalePageTransitionsBuilder(),
-        },
-      ),
+      pageTransitionsTheme: AppUiIdiomResolver.current == AppUiIdiom.iosMobile
+          ? const PageTransitionsTheme(
+              builders: {
+                TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+              },
+            )
+          : const PageTransitionsTheme(
+              builders: {
+                TargetPlatform.android: _FadeScalePageTransitionsBuilder(),
+                TargetPlatform.fuchsia: _FadeScalePageTransitionsBuilder(),
+                TargetPlatform.linux: _FadeScalePageTransitionsBuilder(),
+                TargetPlatform.macOS: _FadeScalePageTransitionsBuilder(),
+                TargetPlatform.windows: _FadeScalePageTransitionsBuilder(),
+                TargetPlatform.iOS: _FadeScalePageTransitionsBuilder(),
+              },
+            ),
       bottomNavigationBarTheme: BottomNavigationBarThemeData(
         backgroundColor: c.surface,
         selectedItemColor: c.accent,

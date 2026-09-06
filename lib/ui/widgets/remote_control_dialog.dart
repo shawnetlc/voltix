@@ -559,10 +559,18 @@ class _RemoteControlSheetState extends State<_RemoteControlSheet> {
     final volumeLevel = (playState?['VolumeLevel'] as num?)?.toDouble();
     final supportsSetVolume = _supportsCommand(session, 'SetVolume');
 
+    final showDpad = _showDpadEnabled && _supportsAnyNavigation(session);
+
+    // Nothing playing doesn't mean nothing to control: MoveUp/Down/Left/
+    // Right/Select/Back and volume are general session commands the target
+    // answers whether or not it has media loaded, the same way pressing an
+    // arrow key on a real remote navigates an idle home screen. This used to
+    // return early with just a placeholder and hide the d-pad along with it,
+    // which is what made "nothing playing" read as "nothing controllable".
     if (nowPlaying == null) {
       return [
         Padding(
-          padding: const EdgeInsets.symmetric(vertical: 28),
+          padding: const EdgeInsets.symmetric(vertical: 20),
           child: Center(
             child: Column(
               children: [
@@ -576,10 +584,16 @@ class _RemoteControlSheetState extends State<_RemoteControlSheet> {
             ),
           ),
         ),
+        if (supportsSetVolume || isMuted || volumeLevel != null) ...[
+          const SizedBox(height: 4),
+          _buildVolumeRow(theme, l10n, isMuted, volumeLevel, supportsSetVolume),
+        ],
+        if (showDpad) ...[
+          const SizedBox(height: 18),
+          _buildDpad(theme, session),
+        ],
       ];
     }
-
-    final showDpad = _showDpadEnabled && _supportsAnyNavigation(session);
 
     return [
       _buildNowPlayingCard(theme, nowPlaying, positionTicks, runtimeTicks),

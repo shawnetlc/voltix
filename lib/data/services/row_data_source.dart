@@ -21,6 +21,7 @@ import '../utils/next_up_enrichment.dart';
 import '../utils/playlist_utils.dart';
 import '../models/taste_profile/taste_profile_models.dart';
 import 'custom_external_lists_service.dart';
+import 'taste_profile/taste_row_builder.dart';
 
 class RowDataSource {
   final MediaServerClient _client;
@@ -1272,7 +1273,10 @@ class RowDataSource {
       case HomeRowType.iptvFavoriteSeries:
       case HomeRowType.iptvContinueSeries:
       case HomeRowType.iptvContinueMovies:
+      case HomeRowType.personalization:
         // Not server-paged: these rows carry their full contents already.
+        // A taste row is scored client-side from a fixed candidate pool, so
+        // there is no next page to ask the server for.
         return (row.items, row.totalCount);
     }
 
@@ -2173,21 +2177,44 @@ class RowDataSource {
     );
   }
 
-  /// Loads and pre-caches a single Taste Profile personalized row.
+  /// Loads a single Taste Profile personalized row, building it if needed.
+  ///
+  /// This used to read `_scoredRecommendationsCache` and return an empty list
+  /// on a miss -- and it always missed, because the only writer to that cache
+  /// keys on `sinceYouWatched{n}` while this reads `taste_profile_{server}_
+  /// {row}`. Nothing ever computed a taste row, so every one of them resolved
+  /// empty and no personalization row could render. [TasteRowBuilder] is the
+  /// producer that was missing; it owns the key, so reader and writer can no
+  /// longer disagree.
   Future<List<AggregatedItem>> loadTasteProfileSingleRow(
     String serverId,
     TasteProfile profile,
-    PersonalizationRowType rowType,
-  ) async {
-    final rowId = 'taste_profile_${serverId}_${rowType.key}';
+    PersonalizationRowType rowType, {
+    bool forceRefresh = false,
+  }) async {
+    final rowId = TasteRowBuilder.cacheKey(serverId, rowType);
     try {
-      if (_scoredRecommendationsCache.containsKey(rowId)) {
-        return _scoredRecommendationsCache[rowId]!;
+      if (!GetIt.instance.isRegistered<TasteRowBuilder>()) {
+        return const <AggregatedItem>[];
       }
-      return const <AggregatedItem>[];
+      final recommendations =
+          await GetIt.instance<TasteRowBuilder>().buildRow(
+        profile: profile,
+        rowType: rowType,
+        serverId: serverId,
+        forceRefresh: forceRefresh,
+      );
+
+      final items =
+          recommendations.map((r) => r.item).toList(growable: false);
+
+      // Mirrored into the shared row cache so the rest of RowDataSource sees
+      // taste rows the same way it sees every other cached row.
+      _scoredRecommendationsCache[rowId] = items;
+      return items;
     } catch (e) {
       debugPrint('[RowDataSource] loadTasteProfileSingleRow error: $e');
-      return const <AggregatedItem>[];
+      return _scoredRecommendationsCache[rowId] ?? const <AggregatedItem>[];
     }
   }
 
@@ -2273,7 +2300,7 @@ class RowDataSource {
                 genres: genres,
                 recursive: true,
                 limit: 40,
-                fields: 'Genres,Tags,People,UserData,OfficialRating,ProductionYear,CommunityRating,Studios',
+                fields: 'Genres,Tags,People,UserData,OfficialRating,ProductionYear,CommunityRating,Studios,Overview',
               ),
             );
             final items = [
@@ -2309,7 +2336,7 @@ class RowDataSource {
                 tags: tags,
                 recursive: true,
                 limit: 40,
-                fields: 'Genres,Tags,People,UserData,OfficialRating,ProductionYear,CommunityRating,Studios',
+                fields: 'Genres,Tags,People,UserData,OfficialRating,ProductionYear,CommunityRating,Studios,Overview',
               ),
             );
             final items = [
@@ -2350,7 +2377,7 @@ class RowDataSource {
                 personIds: allPersonIds,
                 recursive: true,
                 limit: 40,
-                fields: 'Genres,Tags,People,UserData,OfficialRating,ProductionYear,CommunityRating,Studios',
+                fields: 'Genres,Tags,People,UserData,OfficialRating,ProductionYear,CommunityRating,Studios,Overview',
               ),
             );
             final items = [
@@ -2418,7 +2445,7 @@ class RowDataSource {
               limit: 30,
               sortBy: 'ProductionYear,SortName',
               sortOrder: 'Descending',
-              fields: 'Genres,Tags,People,UserData,OfficialRating,ProductionYear,CommunityRating,Studios',
+              fields: 'Genres,Tags,People,UserData,OfficialRating,ProductionYear,CommunityRating,Studios,Overview',
             );
             items = (res['Items'] as List? ?? [])
                 .map((e) => e is Map ? Map<String, dynamic>.from(e) : null)

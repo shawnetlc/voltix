@@ -18,6 +18,7 @@ import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.content.res.Configuration
 import android.graphics.drawable.Icon
+import android.hardware.input.InputManager
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
@@ -31,6 +32,8 @@ import android.os.Process
 import android.os.PowerManager
 import android.util.Rational
 import android.view.Display
+import android.view.KeyEvent
+import android.view.MotionEvent
 import androidx.mediarouter.media.MediaRouteSelector
 import androidx.mediarouter.media.MediaRouter
 import androidx.core.content.FileProvider
@@ -54,9 +57,10 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
+import org.flame_engine.gamepads_android.GamepadsCompatibleActivity
 
 
-class MainActivity : AudioServiceActivity() {
+class MainActivity : AudioServiceActivity(), GamepadsCompatibleActivity {
 
     private var methodChannel: MethodChannel? = null
     private var castChannel: MethodChannel? = null
@@ -186,6 +190,54 @@ class MainActivity : AudioServiceActivity() {
         }
     }
 
+    // ---- gamepads plugin bridge -------------------------------------------
+    //
+    // gamepads_android casts the host Activity to GamepadsCompatibleActivity in
+    // onAttachedToActivity. Without this interface the cast threw
+    // ClassCastException while Flutter attached its plugins, MainActivity.onCreate
+    // failed, and the process died before Dart ever ran -- which is why the
+    // launcher simply did nothing when the icon was tapped.
+    //
+    // Events are handed to the plugin but never consumed here. On Android and
+    // Android TV, Voltix drives navigation from the real key events (see
+    // GamepadNavigationScope.isSupported, which deliberately excludes TV and
+    // Android because "pad buttons already arrive there as real key events").
+    // Letting the plugin swallow them would break D-pad and remote navigation,
+    // so both dispatchers always fall through to super.
+
+    private val gamepadKeyEventHandlers = mutableListOf<(KeyEvent) -> Boolean>()
+    private val gamepadMotionEventHandlers = mutableListOf<(MotionEvent) -> Boolean>()
+
+    override fun registerInputDeviceListener(
+        listener: InputManager.InputDeviceListener,
+        handler: Handler?,
+    ) {
+        val inputManager = getSystemService(Context.INPUT_SERVICE) as? InputManager
+        inputManager?.registerInputDeviceListener(listener, handler)
+    }
+
+    override fun registerKeyEventHandler(handler: (KeyEvent) -> Boolean) {
+        gamepadKeyEventHandlers.add(handler)
+    }
+
+    override fun registerMotionEventHandler(handler: (MotionEvent) -> Boolean) {
+        gamepadMotionEventHandlers.add(handler)
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        for (handler in gamepadKeyEventHandlers) {
+            runCatching { handler(event) }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        for (handler in gamepadMotionEventHandlers) {
+            runCatching { handler(event) }
+        }
+        return super.dispatchGenericMotionEvent(event)
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
@@ -222,9 +274,6 @@ class MainActivity : AudioServiceActivity() {
                 }
                 "audioCapabilities" -> {
                     result.success(AudioCapabilities.query(this))
-                }
-                "buildFingerprint" -> {
-                    result.success(Build.FINGERPRINT)
                 }
                 "exitApp" -> {
                     result.success(true)

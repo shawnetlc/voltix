@@ -37,6 +37,19 @@ class _PluginCategoryScreen extends StatelessWidget {
                 onTap: () =>
                     context.pushSettingsScreen(const _SeasonalEffectsScreen()),
               ),
+              _TvSettingsListTile(
+                leading: const Icon(Icons.recommend_rounded),
+                // Voltix-only AI recommendation system; no app_en.arb
+                // strings exist for it yet (see note elsewhere in this
+                // file about hand-editing locale files).
+                title: const Text('Taste Profile & Recommendations'),
+                subtitle: const Text(
+                  'Personalize suggestions from your watch history',
+                ),
+                onTap: () => context.pushSettingsScreen(
+                  const TasteProfileSettingsScreen(),
+                ),
+              ),
                         ],
             ),
 ],

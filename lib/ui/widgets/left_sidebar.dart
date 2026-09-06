@@ -832,6 +832,26 @@ class _LeftSidebarState extends State<LeftSidebar> {
                       context.navigateTopLevel(Destinations.voltixLiveTv);
                     },
                   ),
+                // The server's own Jellyfin/Emby Live TV (guide, schedule,
+                // recordings) is a separate feature from Voltix's own IPTV
+                // screen above, so it gets its own entry rather than folding
+                // into it. Labelled "TV Guide & Catch Up" and
+                // gated on the same condition as Search, since both need a
+                // real media server connection rather than the Voltix IPTV
+                // integration specifically.
+                if (jellyfinEnabled)
+                  _SidebarItem(
+                    key: const ValueKey('sidebar-lt'),
+                    icon: Icons.settings_input_antenna_rounded,
+                    label: 'TV Guide & Catch Up',
+                    baseColor: nextMainSidebarColor(),
+                    showLabel: _showLabels,
+                    onPressed: () {
+                      _onNavigate();
+                      _markNavigationAwayFromSidebar();
+                      context.navigateTopLevel(Destinations.liveTv);
+                    },
+                  ),
                 if (jellyfinEnabled)
                   _SidebarItem(
                     key: const ValueKey('sidebar-search'),

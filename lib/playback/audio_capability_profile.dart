@@ -1,4 +1,4 @@
-enum AudioRouteType { hdmi, arc, earc, bluetooth, speaker, other }
+enum AudioRouteType { hdmi, arc, earc, bluetooth, speaker, headphones, other }
 
 class AudioCapabilityProfile {
   const AudioCapabilityProfile({
@@ -265,6 +265,8 @@ class AudioCapabilityProfile {
         return AudioRouteType.bluetooth;
       case 'speaker':
         return AudioRouteType.speaker;
+      case 'headphones':
+        return AudioRouteType.headphones;
       default:
         return AudioRouteType.other;
     }

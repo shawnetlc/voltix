@@ -1115,6 +1115,7 @@ class _HomeSectionsScreenState extends State<HomeSectionsScreen> {
   String _labelForType(HomeSectionType type, AppLocalizations l10n) => switch (type) {
     HomeSectionType.mediaBar => l10n.mediaBar,
     HomeSectionType.studios => l10n.studios,
+    HomeSectionType.personalization => 'Taste Profile Rows',
     HomeSectionType.imdbTop250Movies => 'IMDb Top 250 Movies',
     HomeSectionType.imdbTop250TvShows => 'IMDb Top 250 TV Shows',
     HomeSectionType.imdbMostPopularMovies => 'IMDb Most Popular Movies',

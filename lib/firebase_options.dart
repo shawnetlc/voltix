@@ -24,10 +24,7 @@ class DefaultFirebaseOptions {
     }
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for android - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
+        return android;
       case TargetPlatform.iOS:
         return ios;
       case TargetPlatform.macOS:
@@ -48,6 +45,16 @@ class DefaultFirebaseOptions {
         );
     }
   }
+
+  // Values taken verbatim from android/app/google-services.json
+  // (project voltix-54e22, package cc.voltix.streaming).
+  static const FirebaseOptions android = FirebaseOptions(
+    apiKey: 'AIzaSyDQvTY1LVd38pmxaWPMcOXlLp11UWD-xcU',
+    appId: '1:292540273471:android:cc83292aa127b02194398a',
+    messagingSenderId: '292540273471',
+    projectId: 'voltix-54e22',
+    storageBucket: 'voltix-54e22.firebasestorage.app',
+  );
 
   static const FirebaseOptions ios = FirebaseOptions(
     apiKey: 'AIzaSyA0bdm2kH6URX402ocSBahUsyvEVmyI5PA',

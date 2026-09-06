@@ -18,6 +18,7 @@ object AudioCapabilities {
     private const val ROUTE_EARC = "earc"
     private const val ROUTE_BLUETOOTH = "bluetooth"
     private const val ROUTE_SPEAKER = "speaker"
+    private const val ROUTE_HEADPHONES = "headphones"
     private const val ROUTE_OTHER = "other"
 
     private val directAudioAttributes = AudioAttributes.Builder()
@@ -422,6 +423,9 @@ object AudioCapabilities {
         if (types.any(::isBluetoothType)) {
             return ROUTE_BLUETOOTH
         }
+        if (types.any(::isHeadphonesType)) {
+            return ROUTE_HEADPHONES
+        }
         if (types.any(::isSpeakerLikeType)) {
             return ROUTE_SPEAKER
         }
@@ -450,13 +454,20 @@ object AudioCapabilities {
         }
     }
 
+    private fun isHeadphonesType(type: Int): Boolean {
+        return when (type) {
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+            AudioDeviceInfo.TYPE_WIRED_HEADSET,
+            AudioDeviceInfo.TYPE_USB_HEADSET,
+            -> true
+            else -> false
+        }
+    }
+
     private fun isSpeakerLikeType(type: Int): Boolean {
         return when (type) {
             AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
             AudioDeviceInfo.TYPE_BUILTIN_EARPIECE,
-            AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
-            AudioDeviceInfo.TYPE_WIRED_HEADSET,
-            AudioDeviceInfo.TYPE_USB_HEADSET,
             -> true
             else -> false
         }

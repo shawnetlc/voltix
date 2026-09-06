@@ -48,6 +48,11 @@ class GuideProgram {
   final bool isKids;
   final bool isPremiere;
   final bool hasTimer;
+  /// Programme artwork tag, when the guide response carried one. Only the
+  /// focused programme's image is ever requested (see the hero preview), so
+  /// this costs one image load per settled selection rather than one per row.
+  final String? imageTag;
+  final String? imageItemId;
   final Map<String, dynamic> rawData;
 
   const GuideProgram({
@@ -65,6 +70,8 @@ class GuideProgram {
     this.isKids = false,
     this.isPremiere = false,
     this.hasTimer = false,
+    this.imageTag,
+    this.imageItemId,
     required this.rawData,
   });
 
@@ -502,7 +509,10 @@ class LiveTvGuideViewModel extends ChangeNotifier {
       channelIds: ids,
       fields: _fields,
       enableTotalRecordCount: false,
-      enableImages: false,
+      // On so the hero preview has real programme artwork to show. Only tags
+      // come back here (a few bytes per programme); the actual image is
+      // fetched once, for whichever programme focus settles on.
+      enableImages: true,
       enableUserData: false,
       userId: _client.userId,
     );
@@ -532,6 +542,13 @@ class LiveTvGuideViewModel extends ChangeNotifier {
         isKids: raw['IsKids'] == true,
         isPremiere: raw['IsPremiere'] == true,
         hasTimer: raw['TimerId'] != null,
+        imageTag: (raw['ImageTags'] as Map?)?['Primary']?.toString() ??
+            (raw['ImageTags'] as Map?)?['Thumb']?.toString() ??
+            raw['ParentThumbImageTag']?.toString(),
+        imageItemId: (raw['ImageTags'] as Map?)?['Primary'] != null ||
+                (raw['ImageTags'] as Map?)?['Thumb'] != null
+            ? raw['Id']?.toString()
+            : raw['ParentThumbItemId']?.toString(),
         rawData: raw,
       );
 

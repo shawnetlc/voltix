@@ -11,7 +11,10 @@ import '../../../preference/user_preferences.dart';
 /// [navbar] leads because it is the frame everything after it sits in.
 /// [tour] is never suppressed, since it asks nothing that could already have
 /// been answered.
-enum SetupStep { navbar, mediaBar, homeRows, detailStyle, tour }
+/// [cloudSync] is never returned by [remainingSteps]: whether it applies
+/// depends on a network probe, and the router calls into this class on every
+/// navigation. The wizard appends it itself once the probe comes back.
+enum SetupStep { navbar, mediaBar, homeRows, detailStyle, tour, cloudSync, taste }
 
 /// Decides whether the wizard runs, and for which steps.
 ///
@@ -78,27 +81,30 @@ class SetupWizardGate {
 
   /// The steps still worth asking, in order.
   ///
-  /// Anything already chosen drops out, which on a second device usually
-  /// empties the list entirely and finishes the wizard without drawing a
-  /// frame. A deliberate re-run asks everything, because going looking for it
-  /// says more than the stored values do.
+  /// Always the full four defaults (plus the tour) the first time a server
+  /// hasn't been set up on this device, even when a plugin-synced profile
+  /// from another device already filled preferences in behind the scenes --
+  /// each step's card still opens pre-selected to whatever value is already
+  /// there (see e.g. _buildNavbarStep reading _prefs as its fallback), so a
+  /// synced choice is offered rather than applied for the user. It only
+  /// counts once the user has actually pressed Next on it here. A deliberate
+  /// re-run asks everything for the same reason: going looking for it says
+  /// more than the stored values do.
   List<SetupStep> remainingSteps() {
-    if (_rerunning) return SetupStep.values;
+    if (_rerunning) {
+      return SetupStep.values
+          .where((step) =>
+              step != SetupStep.cloudSync && step != SetupStep.taste)
+          .toList();
+    }
 
-    final steps = <SetupStep>[
-      if (!_prefs.containsPreference(UserPreferences.navbarPosition))
-        SetupStep.navbar,
-      if (!_prefs.containsPreference(UserPreferences.mediaBarMode))
-        SetupStep.mediaBar,
-      if (!_prefs.containsPreference(UserPreferences.homeRowsStyle))
-        SetupStep.homeRows,
-      if (!_prefs.containsPreference(UserPreferences.detailScreenStyle))
-        SetupStep.detailStyle,
+    return const [
+      SetupStep.navbar,
+      SetupStep.mediaBar,
+      SetupStep.homeRows,
+      SetupStep.detailStyle,
+      SetupStep.tour,
     ];
-    // The tour only pays for itself alongside something else. On its own it is
-    // a splash screen between the user and the app they came to open.
-    if (steps.isEmpty) return const [];
-    return [...steps, SetupStep.tour];
   }
 
   /// Waits for the server to hand over this user's settings.

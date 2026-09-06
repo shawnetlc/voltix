@@ -14,6 +14,7 @@ import '../../../data/services/device_id_service.dart';
 import '../../../data/services/voltix_api_service.dart';
 import '../../../data/services/voltix_session_service.dart';
 import '../../../preference/user_preferences.dart';
+import '../../../util/focus/dpad_keys.dart';
 import '../../../util/platform_detection.dart';
 import '../../navigation/destinations.dart';
 import '../../widgets/login_scaffold.dart';
@@ -166,9 +167,17 @@ const List<VoltixSubscriptionPackage> kVoltixPackages = [
 class VoltixRegisterScreen extends StatefulWidget {
   final VoidCallback? onBackToLogin;
 
+  /// Called when the user backs out of registration entirely (pressing Back
+  /// on the first step, or the app-bar back arrow there). Distinct from
+  /// [onBackToLogin], which is what the post-signup "Continue to Login"
+  /// button uses -- exiting mid-signup should return to the Welcome step,
+  /// not skip straight to the login/register choice as if they'd finished.
+  final VoidCallback? onExitToWelcome;
+
   const VoltixRegisterScreen({
     super.key,
     this.onBackToLogin,
+    this.onExitToWelcome,
   });
 
   @override
@@ -265,7 +274,9 @@ class _VoltixRegisterScreenState extends State<VoltixRegisterScreen> {
       });
       return;
     }
-    if (widget.onBackToLogin != null) {
+    if (widget.onExitToWelcome != null) {
+      widget.onExitToWelcome!();
+    } else if (widget.onBackToLogin != null) {
       widget.onBackToLogin!();
     } else {
       context.popOrHome();
@@ -683,6 +694,29 @@ class _VoltixRegisterScreenState extends State<VoltixRegisterScreen> {
   }) {
     return Focus(
       focusNode: focusNode,
+      // Focus alone only makes the card reachable by keyboard/remote --
+      // GestureDetector.onTap fires on pointer taps only, so without this
+      // there was no way to actually pick "Paid Subscription" without a
+      // mouse/touch: the trial card looked selectable because it starts
+      // pre-selected, not because activating it ever worked either.
+      onKeyEvent: (node, event) {
+        if (!isActivateKey(event)) return KeyEventResult.ignored;
+        onTap();
+        return KeyEventResult.handled;
+      },
+      onFocusChange: (focused) {
+        if (!focused) return;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          final ctx = focusNode.context;
+          if (ctx == null) return;
+          Scrollable.ensureVisible(
+            ctx,
+            alignment: 0.5,
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOut,
+          );
+        });
+      },
       child: ListenableBuilder(
         listenable: focusNode,
         builder: (context, _) {

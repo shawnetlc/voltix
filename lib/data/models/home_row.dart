@@ -27,6 +27,11 @@ enum HomeRowType {
   iptvContinueMovies,
   recentlyReleased,
   studios,
+
+  /// Taste profile personalization rows (Recommended for You, Hidden Gems,
+  /// Genre Deep Cuts and the rest). One row type covers all of them: they are
+  /// distinguished by row id and title, and they render identically.
+  personalization,
 }
 
 class HomeRow {

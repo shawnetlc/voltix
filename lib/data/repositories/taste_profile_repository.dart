@@ -14,8 +14,13 @@ import '../services/taste_profile/azure_taste_sync_service.dart';
 import '../services/taste_profile/grok_taste_ai_service.dart';
 import '../services/taste_profile/taste_genre_service.dart';
 import '../services/taste_profile/taste_history_analyzer.dart';
+import '../services/taste_profile/taste_candidate_service.dart';
+import '../services/taste_profile/taste_cold_start_service.dart';
 import '../services/taste_profile/taste_local_store.dart';
 import '../services/taste_profile/taste_refresh_service.dart';
+import '../services/taste_profile/taste_row_builder.dart';
+import '../services/taste_profile/taste_awards_index.dart';
+import '../services/taste_profile/taste_seed_registry.dart';
 import '../services/taste_profile/taste_server_context.dart';
 import '../services/taste_profile/taste_sync_manager.dart';
 
@@ -32,6 +37,21 @@ class TasteProfileRepository extends ChangeNotifier {
   late final TasteHistoryAnalyzer _analyzer;
   late final TasteSyncManager _syncManager;
 
+  // Built here rather than registered separately in DI: both need the server
+  // context, this object already owns the only one, and two registrations
+  // would be two places for it to go out of sync on a session switch.
+  late final TasteColdStartService _coldStart = TasteColdStartService();
+  late final TasteCandidateService _candidateService =
+      TasteCandidateService(_serverContext, coldStart: _coldStart);
+  late final TasteSeedRegistry _seedRegistry = TasteSeedRegistry();
+  late final TasteAwardsIndex _awardsIndex = TasteAwardsIndex(_prefs);
+  late final TasteRowBuilder _rowBuilder = TasteRowBuilder(
+    _candidateService,
+    _seedRegistry,
+    _serverContext,
+    _awardsIndex,
+  );
+
   TasteProfile? _currentProfile;
   TasteProfile? get currentProfile => _currentProfile;
 
@@ -43,6 +63,11 @@ class TasteProfileRepository extends ChangeNotifier {
   GrokTasteAiService get grokAi => _grokAi;
   GrokTasteAiService get aiService => _grokAi;
   TasteSyncManager get syncManager => _syncManager;
+  TasteCandidateService get candidateService => _candidateService;
+  TasteRowBuilder get rowBuilder => _rowBuilder;
+  TasteSeedRegistry get seedRegistry => _seedRegistry;
+  TasteAwardsIndex get awardsIndex => _awardsIndex;
+  TasteColdStartService get coldStart => _coldStart;
 
   final PreferenceStore _prefs;
 

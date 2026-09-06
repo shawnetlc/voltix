@@ -776,22 +776,6 @@ class UserPreferences extends ChangeNotifier {
     }
   }
 
-  /// Writes the detected capability into each toggle that has no stored value.
-  /// Idempotent: existing values are never touched, so it is safe to run again
-  /// after a late hardware probe.
-  Future<void> seedAbsentPassthroughToggles() async {
-    final profile = detectedAudioCapabilities;
-    Future<void> seed(Preference<bool> pref, bool value) async {
-      if (!containsPreference(pref)) await set(pref, value);
-    }
-
-    await seed(ac3PassthroughEnabled, profile.canPassthroughAc3);
-    await seed(eac3PassthroughEnabled, profile.canPassthroughEac3);
-    await seed(dtsCorePassthroughEnabled, profile.canPassthroughDts);
-    await seed(dtsHdPassthroughEnabled, profile.canPassthroughDtsHd);
-    await seed(trueHdPassthroughEnabled, profile.canPassthroughTrueHd);
-  }
-
   /// Clears every per-codec passthrough override so each resolves back to
   /// "Auto" (follow the detected capability).
   Future<void> clearPassthroughOverrides() async {
@@ -893,7 +877,7 @@ class UserPreferences extends ChangeNotifier {
   /// progress. The two per-server switches below apply when this is on.
   static final hideSharedServerContinueWatching = Preference(
     key: 'pref_hide_shared_server_continue_watching',
-    defaultValue: false,
+    defaultValue: true,
   );
 
   static final hideContinueWatchingExtraServer = Preference(
@@ -911,11 +895,6 @@ class UserPreferences extends ChangeNotifier {
   static final enableMultiServerSearch = Preference(
     key: 'enable_multi_server_search',
     defaultValue: true,
-  );
-
-  static final desktopScrollSensitivity = Preference(
-    key: 'pref_desktop_scroll_sensitivity',
-    defaultValue: 100,
   );
 
   static final desktopUiScale = EnumPreference(
@@ -977,6 +956,16 @@ class UserPreferences extends ChangeNotifier {
 
   static final displaySeerrRows = Preference(
     key: 'pref_display_seerr_rows',
+    defaultValue: false,
+  );
+
+  /// Whether the per-library "Latest in <library>" rows show on the home
+  /// screen. Off by default on this version -- the server-side
+  /// latestItemsExcludes config (per-library, synced from Jellyfin/Emby)
+  /// still applies underneath this, this is just a client-side master
+  /// switch layered on top of it.
+  static final displayLatestMediaRows = Preference(
+    key: 'pref_display_latest_media_rows',
     defaultValue: false,
   );
 
@@ -1057,7 +1046,7 @@ class UserPreferences extends ChangeNotifier {
   /// Apply parental rating ceiling to Moonfin Recommends suggestions.
   static final recommendationsApplyParentalRatingCap = Preference(
     key: 'pref_recommendations_apply_parental_rating_cap',
-    defaultValue: true,
+    defaultValue: false,
   );
 
   static final favoritesRowSortBy = EnumPreference(
@@ -1880,6 +1869,15 @@ class UserPreferences extends ChangeNotifier {
 
   static final tmdbApiKey = Preference(key: 'tmdbApiKey', defaultValue: '');
 
+  /// OMDb key for the awards index behind the Oscar / award-season rows.
+  ///
+  /// Only used when the Voltix backend has no awards endpoint to answer
+  /// instead. OMDb's free tier is counted against the key rather than the
+  /// user, so a key shipped with the app is shared by every install --
+  /// TasteAwardsIndex caches hard and caps lookups per session for exactly
+  /// that reason.
+  static final omdbApiKey = Preference(key: 'omdbApiKey', defaultValue: '');
+
   static final tmdbPopularMoviesEnabled = Preference(
     key: 'tmdb_popular_movies_enabled',
     defaultValue: false,
@@ -2273,6 +2271,15 @@ class UserPreferences extends ChangeNotifier {
     defaultValue: 'https://api.x.ai/v1',
   );
 
+  /// Optional runtime override for the taste-profile blob credentials.
+  ///
+  /// Only the SAS parts are honoured (`SharedAccessSignature=` / `SasToken=`,
+  /// or a full blob URL carrying one). An `AccountKey=` in this string is
+  /// discarded: nothing in the client signs with it, and holding an account
+  /// key on a device would grant whoever extracted it full read/write/delete
+  /// over every user's profile, settings and watch history. Normally left
+  /// empty so the build-time AZURE_BLOB_SAS_TOKEN, or the Voltix proxy,
+  /// answers instead.
   static final azureStorageConnectionString = Preference<String>(
     key: 'azure_storage_connection_string',
     defaultValue: '',
@@ -2280,7 +2287,7 @@ class UserPreferences extends ChangeNotifier {
 
   static final azureBlobContainer = Preference<String>(
     key: 'azure_blob_container',
-    defaultValue: 'taste-profiles',
+    defaultValue: 'voltix-taste-profiles',
   );
 
   static final confirmExit = Preference(
@@ -2453,11 +2460,6 @@ class UserPreferences extends ChangeNotifier {
 
   static final windowY = Preference(key: 'window_y', defaultValue: 0.0);
 
-  static final windowMaximized = Preference(
-    key: 'window_maximized',
-    defaultValue: false,
-  );
-
   static final syncPlayAdvancedCorrectionEnabled = Preference(
     key: 'syncplay_advanced_correction_enabled',
     defaultValue: true,
@@ -2576,6 +2578,14 @@ class UserPreferences extends ChangeNotifier {
     defaultValue: false,
   );
 
+  /// New in 2.5.0. Whether a "Recently released" row groups by the whole
+  /// series, by season, or shows each new episode individually.
+  static final recentlyReleasedSeriesType = EnumPreference(
+    key: 'pref_recently_released_series_type',
+    values: RecentlyReleasedSeriesType.values,
+    defaultValue: RecentlyReleasedSeriesType.series,
+  );
+
   static final nextUpMaxDays = Preference(
     key: 'pref_next_up_max_days',
     defaultValue: 365,
@@ -2621,12 +2631,7 @@ class UserPreferences extends ChangeNotifier {
     defaultValue: false,
   );
 
-  static final interfaceLayout = EnumPreference(
-    key: 'pref_interface_layout',
-    defaultValue: InterfaceLayout.automatic,
-    values: InterfaceLayout.values,
-  );
-
+  // --- Appearance: glass and OLED ---
   static final glassQuality = EnumPreference(
     key: 'pref_glass_quality',
     defaultValue: GlassQualityMode.auto,
@@ -3103,5 +3108,13 @@ class UserPreferences extends ChangeNotifier {
   static final detailTrailersExternal = Preference(
     key: 'pref_detail_trailers_external',
     defaultValue: false,
+  );
+
+  /// New in 2.5.0. How a personal (user-entered, not critic) rating is
+  /// displayed and collected on the details screen.
+  static final personalRatingStyle = EnumPreference(
+    key: 'pref_personal_rating_style',
+    values: PersonalRatingStyle.values,
+    defaultValue: PersonalRatingStyle.thumbs,
   );
 }

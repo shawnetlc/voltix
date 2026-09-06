@@ -831,6 +831,24 @@ class _TopToolbarState extends State<TopToolbar> {
                     ),
                   ),
                 ],
+                // Server-native Jellyfin/Emby Live TV (guide/schedule/
+                // recordings), separate from the Voltix IPTV entry above --
+                // same gating as Search since both need a real media server.
+                if (jellyfinEnabled) ...[
+                  _gap(),
+                  _orderButton(
+                    order: (order++).toDouble(),
+                    child: ExpandableIconButton(
+                      key: const ValueKey('toolbar_lt'),
+                      icon: Icons.settings_input_antenna_rounded,
+                      label: 'TV Guide & Catch Up',
+                      baseColor: nextNavColor(),
+                      onPressed: () {
+                        context.navigateTopLevel(Destinations.liveTv);
+                      },
+                    ),
+                  ),
+                ],
                 if (jellyfinEnabled) ...[
                   _gap(),
                   _orderButton(

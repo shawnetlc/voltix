@@ -37,9 +37,11 @@ import '../../widgets/seerr/seerr_manage_requests_sheet.dart';
 import '../../../data/viewmodels/seerr_media_detail_view_model.dart';
 import '../../../preference/preference_constants.dart';
 import '../../../preference/user_preferences.dart';
+import '../../widgets/personal_rating_dialog.dart';
 import '../../../ui/mixins/focus_state_mixin.dart';
 import '../../../auth/repositories/user_repository.dart';
 import '../../../util/focus/key_event_utils.dart';
+import '../../../util/focus/focus_scroll.dart';
 import '../../navigation/destinations.dart';
 import '../../widgets/add_to_playlist_dialog.dart';
 import '../../widgets/logo_view.dart';
@@ -134,6 +136,24 @@ Future<bool> _showDeleteConfirmationDialog(
 
   return confirmed == true;
 }
+
+/// Types a personal rating can attach to. The servers store user data per
+/// item, so a series, season and episode each carry their own rating with no
+/// propagation between them. People, photos and playlists stay out.
+const _ratableItemTypes = {
+  'Movie',
+  'Series',
+  'Season',
+  'Episode',
+  'Video',
+  'MusicVideo',
+  'MusicAlbum',
+  'MusicArtist',
+  'Audio',
+  'AudioBook',
+  'Book',
+  'BoxSet',
+};
 
 class ItemDetailScreen extends StatefulWidget {
   final String itemId;
@@ -1827,31 +1847,69 @@ class _DetailContentState extends State<_DetailContent> {
 
   List<Widget> _buildSeasonContent(BuildContext context, AggregatedItem item) {
     final l10n = AppLocalizations.of(context);
+    final episodes = viewModel.episodes;
+    final actionButtonsFocusNode = _sectionFocusNode('detailActionButtons');
+    // One persistent FocusNode per episode (cached in _sectionFocusNodes by
+    // index, same as every other section) so Up/Down can chain card-to-card
+    // and the Play button above can hand focus down into the list -- without
+    // this a remote user had no way to reach the episode list at all.
+    final episodeFocusNodes = [
+      for (var i = 0; i < episodes.length; i++)
+        _sectionFocusNode('detailSeasonEpisode_$i'),
+    ];
     return [
       DetailActionButtons(
         viewModel: viewModel,
         itemId: viewModel.item?.id,
         selectedMediaSourceId: selectedMediaSourceId,
         onSelectedMediaSourceChanged: onSelectedMediaSourceChanged,
-        tvPlayFocusNode: _sectionFocusNode('detailActionButtons'),
+        tvPlayFocusNode: actionButtonsFocusNode,
         upTarget: _headerOverviewFocusNode(item),
+        downTarget: episodeFocusNodes.isNotEmpty ? episodeFocusNodes.first : null,
         onRequestFocus: _requestSectionFocus,
         autoPlay: widget.autoPlay,
       ),
-      if (viewModel.episodes.isNotEmpty) ...[
+      if (episodes.isNotEmpty) ...[
         const SizedBox(height: 32),
         _SectionHeader(title: l10n.episodes),
         const SizedBox(height: 12),
-        ...viewModel.episodes.map(
-          (ep) => Padding(
+        for (var i = 0; i < episodes.length; i++)
+          Padding(
             padding: const EdgeInsets.only(bottom: 8),
             child: DetailEpisodeCard(
-              episode: ep,
+              episode: episodes[i],
               imageApi: viewModel.imageApi,
               onChanged: () => viewModel.load(),
+              focusNode: episodeFocusNodes[i],
+              onKeyEvent: (node, event) {
+                if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+                  return KeyEventResult.ignored;
+                }
+                if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+                  if (event is KeyDownEvent) {
+                    _tryFocusSidebar();
+                    return KeyEventResult.handled;
+                  }
+                  return KeyEventResult.ignored;
+                }
+                if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+                  return KeyEventResult.handled;
+                }
+                if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+                  return _requestSectionFocus(
+                    i > 0 ? episodeFocusNodes[i - 1] : actionButtonsFocusNode,
+                  );
+                }
+                if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+                  if (i < episodeFocusNodes.length - 1) {
+                    return _requestSectionFocus(episodeFocusNodes[i + 1]);
+                  }
+                  return KeyEventResult.ignored;
+                }
+                return KeyEventResult.ignored;
+              },
             ),
           ),
-        ),
       ],
       const SizedBox(height: 48),
     ];
@@ -2143,13 +2201,129 @@ class _DetailContentState extends State<_DetailContent> {
 
   List<Widget> _buildPersonContent(BuildContext context, AggregatedItem item) {
     final l10n = AppLocalizations.of(context);
-    final movies = viewModel.filmographyMovies;
-    final series = viewModel.filmographySeries;
-    final musicVideos = viewModel.filmographyMusicVideos;
+    final sortOpt = prefs.get(UserPreferences.personPageSortOption);
+    final groupOpt = prefs.get(UserPreferences.personPageGroupItems);
+
+    List<AggregatedItem> sortJellyfinItems(List<AggregatedItem> list) {
+      final sorted = List<AggregatedItem>.from(list);
+      if (sortOpt == 'alphabetical') {
+        sorted.sort(
+          (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+        );
+      } else {
+        final asc = sortOpt == 'releaseDateAsc';
+        sorted.sort((a, b) {
+          final dateA =
+              a.premiereDate ??
+              (a.productionYear != null ? DateTime(a.productionYear!) : null);
+          final dateB =
+              b.premiereDate ??
+              (b.productionYear != null ? DateTime(b.productionYear!) : null);
+          if (dateA == null && dateB == null) {
+            return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+          }
+          if (dateA == null) return 1;
+          if (dateB == null) return -1;
+          final comp = dateA.compareTo(dateB);
+          return asc ? comp : -comp;
+        });
+      }
+      return sorted;
+    }
+
+    List<SeerrDiscoverItem> groupSeerrItems(List<SeerrDiscoverItem> list) {
+      if (!groupOpt) return list;
+      final grouped = <int, List<SeerrDiscoverItem>>{};
+      for (final item in list) {
+        grouped.putIfAbsent(item.id, () => []).add(item);
+      }
+
+      final result = <SeerrDiscoverItem>[];
+      for (final entries in grouped.values) {
+        final first = entries.first;
+        if (entries.length == 1) {
+          result.add(first);
+          continue;
+        }
+        final characters = entries
+            .map((e) => e.character)
+            .where((c) => c != null && c.isNotEmpty)
+            .map((c) => c!)
+            .toSet();
+        final combinedCharacters = characters.join(', ');
+        result.add(
+          SeerrDiscoverItem(
+            id: first.id,
+            mediaType: first.mediaType,
+            title: first.title,
+            name: first.name,
+            originalTitle: first.originalTitle,
+            originalName: first.originalName,
+            posterPath: first.posterPath,
+            backdropPath: first.backdropPath,
+            overview: first.overview,
+            releaseDate: first.releaseDate,
+            firstAirDate: first.firstAirDate,
+            originalLanguage: first.originalLanguage,
+            genreIds: first.genreIds,
+            voteAverage: first.voteAverage,
+            voteCount: first.voteCount,
+            popularity: first.popularity,
+            adult: first.adult,
+            mediaInfo: first.mediaInfo,
+            character: combinedCharacters.isNotEmpty
+                ? combinedCharacters
+                : null,
+            job: first.job,
+            department: first.department,
+          ),
+        );
+      }
+      return result;
+    }
+
+    List<SeerrDiscoverItem> sortSeerrItems(List<SeerrDiscoverItem> list) {
+      final sorted = List<SeerrDiscoverItem>.from(list);
+      if (sortOpt == 'alphabetical') {
+        sorted.sort(
+          (a, b) => a.displayTitle.toLowerCase().compareTo(
+            b.displayTitle.toLowerCase(),
+          ),
+        );
+      } else {
+        final asc = sortOpt == 'releaseDateAsc';
+        sorted.sort((a, b) {
+          final dateStrA = a.releaseDate ?? a.firstAirDate;
+          final dateStrB = b.releaseDate ?? b.firstAirDate;
+          if (dateStrA == null && dateStrB == null) {
+            return a.displayTitle.toLowerCase().compareTo(
+              b.displayTitle.toLowerCase(),
+            );
+          }
+          if (dateStrA == null) return 1;
+          if (dateStrB == null) return -1;
+          final dateA = DateTime.tryParse(dateStrA);
+          final dateB = DateTime.tryParse(dateStrB);
+          if (dateA == null && dateB == null) {
+            return dateStrA.compareTo(dateStrB);
+          }
+          if (dateA == null) return 1;
+          if (dateB == null) return -1;
+          final comp = dateA.compareTo(dateB);
+          return asc ? comp : -comp;
+        });
+      }
+      return sorted;
+    }
+
+    final movies = sortJellyfinItems(viewModel.filmographyMovies);
+    final series = sortJellyfinItems(viewModel.filmographySeries);
+    final musicVideos = sortJellyfinItems(viewModel.filmographyMusicVideos);
     final useSplit = _useDesktopDetailLayout(context);
 
     final favoriteFocusNode =
         initialFocusNode ?? _sectionFocusNode('detailPersonFavorite');
+    final displayFocusNode = _sectionFocusNode('detailPersonDisplayButton');
     final bioFocusNode = _sectionFocusNode('detailPersonBio');
     final firstFocus = bioFocusNode;
     final hasBio = item.overview != null && item.overview!.isNotEmpty;
@@ -2168,12 +2342,14 @@ class _DetailContentState extends State<_DetailContent> {
     final seriesFocusNode = series.isNotEmpty
         ? _sectionFocusNode('detailPersonSeries')
         : null;
-    final guestAppearances = viewModel.filmographyEpisodes.where((episode) {
-      final sId = episode.seriesId;
-      if (sId == null || sId.isEmpty) return true;
-      final isMainCastOfSeries = series.any((s) => s.id == sId);
-      return !isMainCastOfSeries;
-    }).toList();
+    final guestAppearances = sortJellyfinItems(
+      viewModel.filmographyEpisodes.where((episode) {
+        final sId = episode.seriesId;
+        if (sId == null || sId.isEmpty) return true;
+        final isMainCastOfSeries = series.any((s) => s.id == sId);
+        return !isMainCastOfSeries;
+      }).toList(),
+    );
     final guestAppearancesFocusNode = guestAppearances.isNotEmpty
         ? _sectionFocusNode('detailPersonGuestAppearances')
         : null;
@@ -2181,7 +2357,10 @@ class _DetailContentState extends State<_DetailContent> {
         ? _sectionFocusNode('detailPersonMusicVideos')
         : null;
 
-    final seerrAppearances = _seerrAppearances;
+    final rawSeerrAppearances = _seerrAppearances;
+    final seerrAppearances = rawSeerrAppearances != null
+        ? sortSeerrItems(groupSeerrItems(rawSeerrAppearances))
+        : null;
     final hasSeerrAppearances =
         seerrAppearances != null && seerrAppearances.isNotEmpty;
     final seerrAppearancesFocusNode = hasSeerrAppearances
@@ -2239,14 +2418,44 @@ class _DetailContentState extends State<_DetailContent> {
                       seerrAppearancesFocusNode,
                 );
               },
+              onArrowRight: () {
+                _requestSectionFocus(displayFocusNode);
+              },
+              onArrowLeft: () {
+                _tryFocusSidebar();
+              },
+            ),
+            const SizedBox(width: 16),
+            _DetailActionButton(
+              label: l10n.display,
+              icon: Icons.tune,
+              onPressed: () => _showDisplaySettingsDialog(context),
+              isActive: false,
+              focusNode: displayFocusNode,
+              suppressAutoScrollToTop: true,
+              onArrowUp: () {
+                if (hasBio && firstFocus.canRequestFocus) {
+                  _requestSectionFocus(firstFocus);
+                } else {
+                  _tryFocusNavbar();
+                }
+              },
+              onArrowDown: () {
+                _requestSectionFocus(
+                  moviesFocusNode ??
+                      seriesFocusNode ??
+                      musicVideosFocusNode ??
+                      seerrAppearancesFocusNode,
+                );
+              },
+              onArrowLeft: () {
+                _requestSectionFocus(favoriteFocusNode);
+              },
               onArrowRight: hasSeerrButton
                   ? () {
                       _requestSectionFocus(seerrFocusNode);
                     }
                   : () {},
-              onArrowLeft: () {
-                _tryFocusSidebar();
-              },
             ),
             if (hasSeerrButton) ...[
               const SizedBox(width: 16),
@@ -2275,7 +2484,7 @@ class _DetailContentState extends State<_DetailContent> {
                   );
                 },
                 onArrowLeft: () {
-                  _requestSectionFocus(favoriteFocusNode);
+                  _requestSectionFocus(displayFocusNode);
                 },
                 onArrowRight: () {},
               ),
@@ -2415,6 +2624,14 @@ class _DetailContentState extends State<_DetailContent> {
       ],
       const SizedBox(height: 48),
     ];
+  }
+
+  void _showDisplaySettingsDialog(BuildContext context) {
+    showFocusRestoringDialog(
+      context: context,
+      useRootNavigator: false,
+      builder: (_) => _PersonDisplaySettingsDialog(prefs: prefs),
+    );
   }
 
   List<Widget> _buildArtistContent(BuildContext context, AggregatedItem item) {
@@ -4582,6 +4799,62 @@ class DetailActionButtonsState extends State<DetailActionButtons> {
   set _selectedSubtitleIndex(int? value) =>
       viewModel.selectedSubtitleIndex = value;
 
+  PersonalRatingStyle _personalRatingStyle() {
+    final style = GetIt.instance<UserPreferences>().get(
+      UserPreferences.personalRatingStyle,
+    );
+    return viewModel.supportsNumericUserRatings
+        ? style
+        : PersonalRatingStyle.thumbs;
+  }
+
+  bool? _displayRatingLikes(AggregatedItem item) =>
+      item.personalRatingLikes ??
+      (item.personalRating == null
+          ? null
+          : item.personalRating! >= AggregatedItem.likedRatingThreshold);
+
+  String _personalRatingActionLabel(
+    AppLocalizations l10n,
+    AggregatedItem item,
+  ) {
+    final rating = item.personalRating;
+    switch (_personalRatingStyle()) {
+      case PersonalRatingStyle.thumbs:
+        // A thumb rating only stores Likes on the server, so the numeric
+        // rating alone can't say whether this item was rated.
+        final likes = _displayRatingLikes(item);
+        if (likes == null) return l10n.rate;
+        return likes ? l10n.like : l10n.dislike;
+      case PersonalRatingStyle.stars:
+        if (rating == null) return l10n.rate;
+        final stars = rating / 2;
+        if (stars == 0) return l10n.personalRatingOutOfFive('0');
+        final fullStars = stars.floor();
+        final hasHalfStar = stars - fullStars >= 0.25;
+        return '${'★' * fullStars}${hasHalfStar ? '½' : ''}';
+      case PersonalRatingStyle.numeric:
+        // Not yet in app_en.arb -- ported from upstream 2.5.0 as a literal
+        // to avoid hand-editing every locale's .arb file without flutter
+        // gen-l10n available in this environment.
+        return rating == null ? l10n.rate : 'Rated';
+    }
+  }
+
+  Future<void> _showPersonalRatingDialog(BuildContext context) {
+    final item = viewModel.item;
+    if (item == null) return Future.value();
+    return PersonalRatingDialog.show(
+      context,
+      style: _personalRatingStyle(),
+      rating: item.personalRating,
+      likes: _displayRatingLikes(item),
+      onSetThumbRating: viewModel.setThumbRating,
+      onSetNumericRating: viewModel.setNumericRating,
+      onClearRating: viewModel.clearRating,
+    );
+  }
+
   bool _expanded = false;
   bool _playLaunchInFlight = false;
   bool _autoPlayTriggered = false;
@@ -5215,6 +5488,32 @@ class DetailActionButtonsState extends State<DetailActionButtons> {
           onPressed: viewModel.toggleFavorite,
           isActive: item.isFavorite,
           activeColor: const Color(0xFFFF4757),
+        ),
+      if (_ratableItemTypes.contains(item.type) &&
+          showsDetailButton(DetailButton.personalRating))
+        DetailButton.personalRating: _DetailActionButton(
+          label: _personalRatingActionLabel(l10n, item),
+          icon: switch (_personalRatingStyle()) {
+            PersonalRatingStyle.thumbs => _displayRatingLikes(item) == true
+                ? Icons.thumb_up
+                : _displayRatingLikes(item) == false
+                ? Icons.thumb_down
+                : Icons.thumb_up_outlined,
+            PersonalRatingStyle.stars => Icons.star_outline,
+            PersonalRatingStyle.numeric => Icons.numbers,
+          },
+          iconBuilder: (size, color) => _PersonalRatingActionIcon(
+            style: _personalRatingStyle(),
+            rating: item.personalRating,
+            likes: _displayRatingLikes(item),
+            size: size,
+            color: color,
+          ),
+          onPressed: viewModel.isRatingMutationInProgress
+              ? () {}
+              : () => _showPersonalRatingDialog(context),
+          isActive: _displayRatingLikes(item) != null,
+          activeColor: Colors.amber,
         ),
       if (!isBook && showsDetailButton(DetailButton.playlist))
         DetailButton.playlist: _DetailActionButton(
@@ -6001,19 +6300,29 @@ class DetailActionButtonsState extends State<DetailActionButtons> {
     return clientFactory.getClientIfExists(item.serverId) ?? defaultClient;
   }
 
-  Future<List<AggregatedItem>> _moviePrerollsForStart(
+  /// Prerolls (server-configured intros/trailers) to play ahead of [item].
+  ///
+  /// Movies only need Cinema Mode on; a Series/Season/Episode start also
+  /// needs the separate "Cinema Mode for Episodes" preference, since a lot of
+  /// people want the intro before a movie but not before every single episode
+  /// of a binge.
+  Future<List<AggregatedItem>> _prerollsForStart(
     AggregatedItem item,
     Duration startPosition,
   ) async {
-    if (item.type != 'Movie') {
+    final isMovie = item.type == 'Movie';
+    final isEpisode = item.type == 'Episode';
+    if (!isMovie && !isEpisode) {
       return const [];
     }
     if (startPosition > Duration.zero) {
       return const [];
     }
-    if (!GetIt.instance<UserPreferences>().get(
-      UserPreferences.cinemaModeEnabled,
-    )) {
+    final prefs = GetIt.instance<UserPreferences>();
+    if (!prefs.get(UserPreferences.cinemaModeEnabled)) {
+      return const [];
+    }
+    if (isEpisode && !prefs.get(UserPreferences.cinemaModeEpisodesEnabled)) {
       return const [];
     }
 
@@ -6356,18 +6665,49 @@ class DetailActionButtonsState extends State<DetailActionButtons> {
               [selectedEpisode],
             );
             final directAllowed = !dvForceTranscode && !forceTranscode;
-            await manager.playItems(
-              seriesQueue,
+            final seriesPrerolls = useExternalPlayer
+                ? const <AggregatedItem>[]
+                : await _prerollsForStart(selectedEpisode, startPosition);
+            if (!context.mounted) return;
+            final applySeriesStreamOverrides = seriesPrerolls.isEmpty;
+            final seriesQueueWithPrerolls = seriesPrerolls.isEmpty
+                ? seriesQueue
+                : <AggregatedItem>[
+                    ...seriesQueue.take(idx),
+                    ...seriesPrerolls,
+                    ...seriesQueue.skip(idx),
+                  ];
+            final seriesPlayItemsFuture = manager.playItems(
+              seriesQueueWithPrerolls,
               startIndex: idx,
               startPosition: startPosition,
-              audioStreamIndex: audioStreamIndex,
-              subtitleStreamIndex: subtitleStreamIndex,
-              audioSelectionExplicit: viewModel.selectedAudioIndex != null,
+              audioStreamIndex: applySeriesStreamOverrides
+                  ? audioStreamIndex
+                  : null,
+              subtitleStreamIndex: applySeriesStreamOverrides
+                  ? subtitleStreamIndex
+                  : null,
+              audioSelectionExplicit:
+                  applySeriesStreamOverrides &&
+                  viewModel.selectedAudioIndex != null,
               subtitleSelectionExplicit:
+                  applySeriesStreamOverrides &&
                   viewModel.selectedSubtitleIndex != null,
               enableDirectPlay: directAllowed,
               enableDirectStream: directAllowed,
             );
+            if (!applySeriesStreamOverrides &&
+                (audioStreamIndex != null || subtitleStreamIndex != null)) {
+              manager.setPendingItemOverrides(
+                itemId: selectedEpisode.id,
+                audioStreamIndex: audioStreamIndex,
+                subtitleStreamIndex: subtitleStreamIndex,
+                audioSelectionExplicit: viewModel.selectedAudioIndex != null,
+                subtitleSelectionExplicit:
+                    viewModel.selectedSubtitleIndex != null,
+              );
+            }
+            await seriesPlayItemsFuture;
 
           case 'Season':
             final episodes = viewModel.episodes
@@ -6393,18 +6733,50 @@ class DetailActionButtonsState extends State<DetailActionButtons> {
               [selectedEpisode],
             );
             final directAllowed = !dvForceTranscode && !forceTranscode;
-            await manager.playItems(
-              seasonQueue,
+            if (!context.mounted) return;
+            final seasonPrerolls = useExternalPlayer
+                ? const <AggregatedItem>[]
+                : await _prerollsForStart(selectedEpisode, startPosition);
+            if (!context.mounted) return;
+            final applySeasonStreamOverrides = seasonPrerolls.isEmpty;
+            final seasonQueueWithPrerolls = seasonPrerolls.isEmpty
+                ? seasonQueue
+                : <AggregatedItem>[
+                    ...seasonQueue.take(idx),
+                    ...seasonPrerolls,
+                    ...seasonQueue.skip(idx),
+                  ];
+            final seasonPlayItemsFuture = manager.playItems(
+              seasonQueueWithPrerolls,
               startIndex: idx,
               startPosition: startPosition,
-              audioStreamIndex: audioStreamIndex,
-              subtitleStreamIndex: subtitleStreamIndex,
-              audioSelectionExplicit: viewModel.selectedAudioIndex != null,
+              audioStreamIndex: applySeasonStreamOverrides
+                  ? audioStreamIndex
+                  : null,
+              subtitleStreamIndex: applySeasonStreamOverrides
+                  ? subtitleStreamIndex
+                  : null,
+              audioSelectionExplicit:
+                  applySeasonStreamOverrides &&
+                  viewModel.selectedAudioIndex != null,
               subtitleSelectionExplicit:
+                  applySeasonStreamOverrides &&
                   viewModel.selectedSubtitleIndex != null,
               enableDirectPlay: directAllowed,
               enableDirectStream: directAllowed,
             );
+            if (!applySeasonStreamOverrides &&
+                (audioStreamIndex != null || subtitleStreamIndex != null)) {
+              manager.setPendingItemOverrides(
+                itemId: selectedEpisode.id,
+                audioStreamIndex: audioStreamIndex,
+                subtitleStreamIndex: subtitleStreamIndex,
+                audioSelectionExplicit: viewModel.selectedAudioIndex != null,
+                subtitleSelectionExplicit:
+                    viewModel.selectedSubtitleIndex != null,
+              );
+            }
+            await seasonPlayItemsFuture;
 
           case 'Episode':
             var episodes = viewModel.episodes;
@@ -6459,19 +6831,61 @@ class DetailActionButtonsState extends State<DetailActionButtons> {
                     selectedEpisode,
                   ], mediaSourceId: widget.selectedMediaSourceId);
               final directAllowed = !dvForceTranscode && !forceTranscode;
-              await manager.playItems(
-                episodeQueue,
+              if (!context.mounted) return;
+              final episodeSelectedMediaSourceId =
+                  widget.selectedMediaSourceId;
+              final episodePrerolls = useExternalPlayer
+                  ? const <AggregatedItem>[]
+                  : await _prerollsForStart(selectedEpisode, startPosition);
+              if (!context.mounted) return;
+              final applyEpisodeStreamOverrides = episodePrerolls.isEmpty;
+              final episodeQueueWithPrerolls = episodePrerolls.isEmpty
+                  ? episodeQueue
+                  : <AggregatedItem>[
+                      ...episodeQueue.take(idx),
+                      ...episodePrerolls,
+                      ...episodeQueue.skip(idx),
+                    ];
+              final episodeHasStreamOverrides =
+                  audioStreamIndex != null ||
+                  subtitleStreamIndex != null ||
+                  (episodeSelectedMediaSourceId != null &&
+                      episodeSelectedMediaSourceId.isNotEmpty);
+              final episodePlayItemsFuture = manager.playItems(
+                episodeQueueWithPrerolls,
                 startIndex: idx,
                 startPosition: startPosition,
-                audioStreamIndex: audioStreamIndex,
-                subtitleStreamIndex: subtitleStreamIndex,
-                audioSelectionExplicit: viewModel.selectedAudioIndex != null,
+                audioStreamIndex: applyEpisodeStreamOverrides
+                    ? audioStreamIndex
+                    : null,
+                subtitleStreamIndex: applyEpisodeStreamOverrides
+                    ? subtitleStreamIndex
+                    : null,
+                audioSelectionExplicit:
+                    applyEpisodeStreamOverrides &&
+                    viewModel.selectedAudioIndex != null,
                 subtitleSelectionExplicit:
+                    applyEpisodeStreamOverrides &&
                     viewModel.selectedSubtitleIndex != null,
-                mediaSourceId: widget.selectedMediaSourceId,
+                mediaSourceId: applyEpisodeStreamOverrides
+                    ? episodeSelectedMediaSourceId
+                    : null,
                 enableDirectPlay: directAllowed,
                 enableDirectStream: directAllowed,
               );
+              if (!applyEpisodeStreamOverrides &&
+                  episodeHasStreamOverrides) {
+                manager.setPendingItemOverrides(
+                  itemId: selectedEpisode.id,
+                  audioStreamIndex: audioStreamIndex,
+                  subtitleStreamIndex: subtitleStreamIndex,
+                  mediaSourceId: episodeSelectedMediaSourceId,
+                  audioSelectionExplicit: viewModel.selectedAudioIndex != null,
+                  subtitleSelectionExplicit:
+                      viewModel.selectedSubtitleIndex != null,
+                );
+              }
+              await episodePlayItemsFuture;
               break;
             }
             continue defaultCase;
@@ -6645,7 +7059,7 @@ class DetailActionButtonsState extends State<DetailActionButtons> {
                 : Duration.zero;
             final prerolls = useExternalPlayer
                 ? const <AggregatedItem>[]
-                : await _moviePrerollsForStart(item, startPosition);
+                : await _prerollsForStart(item, startPosition);
             if (!context.mounted) return;
             final applyMainItemStreamOverrides = prerolls.isEmpty;
             final selectedMediaSourceId = widget.selectedMediaSourceId;
@@ -8354,6 +8768,409 @@ class _DeleteDownloadButtonState extends State<_DeleteDownloadButton> {
         }
       }
     }
+  }
+}
+
+class _PersonalRatingActionIcon extends StatelessWidget {
+  final PersonalRatingStyle style;
+  final double? rating;
+  final bool? likes;
+  final double size;
+  final Color color;
+
+  const _PersonalRatingActionIcon({
+    required this.style,
+    required this.rating,
+    required this.likes,
+    required this.size,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return switch (style) {
+      PersonalRatingStyle.thumbs => likes == null
+          ? Center(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.thumb_up_outlined, color: color, size: size * 0.5),
+                  SizedBox(width: size * 0.08),
+                  Icon(
+                    Icons.thumb_down_outlined,
+                    color: color,
+                    size: size * 0.5,
+                  ),
+                ],
+              ),
+            )
+          : Icon(
+              likes! ? Icons.thumb_up : Icons.thumb_down,
+              color: color,
+              size: size * 0.72,
+            ),
+      PersonalRatingStyle.stars => _StarFillIcon(
+        fill: ((rating ?? 0).clamp(0, 10) / 10).toDouble(),
+        size: size * 0.82,
+        color: color,
+      ),
+      PersonalRatingStyle.numeric => Row(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.baseline,
+        textBaseline: TextBaseline.alphabetic,
+        children: [
+          Text(
+            rating == null
+                ? '–'
+                : rating == rating!.roundToDouble()
+                ? rating!.toInt().toString()
+                : rating!.toString(),
+            style: TextStyle(
+              color: color,
+              fontWeight: FontWeight.w800,
+              fontSize: size * 0.58,
+              height: 1,
+            ),
+          ),
+          Text(
+            ' / 10',
+            style: TextStyle(
+              color: color.withValues(alpha: 0.82),
+              fontWeight: FontWeight.w700,
+              fontSize: size * 0.28,
+              height: 1,
+            ),
+          ),
+        ],
+      ),
+    };
+  }
+}
+
+class _StarFillIcon extends StatelessWidget {
+  final double fill;
+  final double size;
+  final Color color;
+
+  const _StarFillIcon({
+    required this.fill,
+    required this.size,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // A linear fill is imperceptible at this button size: 1/5 looks empty and
+    // 4/5 looks full because the missing portion falls into a star point.
+    // Keep exact empty/full endpoints, but pull intermediate values toward the
+    // middle so every saved rating remains visually distinguishable.
+    final visualFill = fill == 0
+        ? 0.0
+        : fill == 1
+        ? 1.0
+        : 0.5 + (fill - 0.5) * 0.3;
+    if (visualFill == 0) {
+      return Icon(Icons.star_border, color: color, size: size);
+    }
+    if (visualFill == 1) {
+      return Icon(Icons.star, color: color, size: size);
+    }
+    return SizedBox(
+      width: size,
+      height: size,
+      child: Stack(
+        children: [
+          Icon(Icons.star_border, color: color, size: size),
+          ShaderMask(
+            blendMode: BlendMode.srcIn,
+            shaderCallback: (bounds) => LinearGradient(
+              colors: [
+                color,
+                color,
+                color.withValues(alpha: 0),
+                color.withValues(alpha: 0),
+              ],
+              stops: [0, visualFill, visualFill, 1],
+            ).createShader(bounds),
+            child: Icon(Icons.star, color: Colors.white, size: size),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PersonDisplaySettingsDialog extends StatefulWidget {
+  final UserPreferences prefs;
+
+  const _PersonDisplaySettingsDialog({required this.prefs});
+
+  @override
+  State<_PersonDisplaySettingsDialog> createState() =>
+      _PersonDisplaySettingsDialogState();
+}
+
+class _PersonDisplaySettingsDialogState
+    extends State<_PersonDisplaySettingsDialog> {
+  late String _sortOption;
+  late bool _groupItems;
+  DateTime? _lastTapTime;
+
+  @override
+  void initState() {
+    super.initState();
+    _sortOption = widget.prefs.get(UserPreferences.personPageSortOption);
+    _groupItems = widget.prefs.get(UserPreferences.personPageGroupItems);
+  }
+
+  @override
+  void didUpdateWidget(covariant _PersonDisplaySettingsDialog oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _sortOption = widget.prefs.get(UserPreferences.personPageSortOption);
+    _groupItems = widget.prefs.get(UserPreferences.personPageGroupItems);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    final onSurface = AppColorScheme.onSurface;
+    final accent = AppColorScheme.accent;
+    final dividerColor = onSurface.withValues(alpha: 0.12);
+    final sectionColor = onSurface.withValues(alpha: 0.72);
+    final dialogWidth = (MediaQuery.sizeOf(context).width - 32).clamp(
+      280.0,
+      380.0,
+    );
+
+    return Dialog(
+      backgroundColor: AppColorScheme.surface.withValues(alpha: 0.92),
+      shape: RoundedRectangleBorder(
+        borderRadius: AppRadius.circular(20),
+        side: ThemeRegistry.active.borders.chipBorder.copyWith(
+          color: onSurface.withValues(alpha: 0.18),
+        ),
+      ),
+      child: SizedBox(
+        width: dialogWidth,
+        child: ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.symmetric(vertical: 20),
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+              child: Text(
+                // Not in app_localizations.dart yet.
+                'Display Options',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w600,
+                  color: onSurface,
+                ),
+              ),
+            ),
+            Divider(color: dividerColor),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 12, 24, 4),
+              child: Text(
+                l10n.sortBy,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  color: sectionColor,
+                ),
+              ),
+            ),
+            _radioTile(
+              label: l10n.settingsAlphabetical,
+              selected: _sortOption == 'alphabetical',
+              onTap: () => _updateSort('alphabetical'),
+              accent: accent,
+              onSurface: onSurface,
+            ),
+            _radioTile(
+              // Not in app_localizations.dart yet.
+              label: 'Release date (oldest first)',
+              selected: _sortOption == 'releaseDateAsc',
+              onTap: () => _updateSort('releaseDateAsc'),
+              accent: accent,
+              onSurface: onSurface,
+            ),
+            _radioTile(
+              // Not in app_localizations.dart yet.
+              label: 'Release date (newest first)',
+              selected: _sortOption == 'releaseDateDesc',
+              onTap: () => _updateSort('releaseDateDesc'),
+              accent: accent,
+              onSurface: onSurface,
+            ),
+            Divider(color: dividerColor),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 12, 24, 4),
+              child: Text(
+                // Not in app_localizations.dart yet.
+                'Group contributions',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  color: sectionColor,
+                ),
+              ),
+            ),
+            _checkboxTile(
+              // Not in app_localizations.dart yet.
+              label: 'Combine multiple roles for the same title',
+              checked: _groupItems,
+              onTap: () => _updateGroup(!_groupItems),
+              accent: accent,
+              onSurface: onSurface,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  bool _shouldThrottleTap() {
+    final now = DateTime.now();
+    if (_lastTapTime != null &&
+        now.difference(_lastTapTime!) < const Duration(milliseconds: 300)) {
+      return true;
+    }
+    _lastTapTime = now;
+    return false;
+  }
+
+  void _updateSort(String option) {
+    if (_shouldThrottleTap()) return;
+    setState(() {
+      _sortOption = option;
+    });
+    widget.prefs.set(UserPreferences.personPageSortOption, option);
+  }
+
+  void _updateGroup(bool value) {
+    if (_shouldThrottleTap()) return;
+    setState(() {
+      _groupItems = value;
+    });
+    widget.prefs.set(UserPreferences.personPageGroupItems, value);
+  }
+
+  Widget _radioTile({
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+    Color? accent,
+    required Color onSurface,
+  }) {
+    final effectiveAccent = accent ?? AppColorScheme.accent;
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+        child: Row(
+          children: [
+            Container(
+              width: 18,
+              height: 18,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.fromBorderSide(
+                  ThemeRegistry.active.borders.chipBorder.copyWith(
+                    color: selected
+                        ? effectiveAccent
+                        : onSurface.withValues(alpha: 0.5),
+                    width: 2,
+                  ),
+                ),
+                color: selected ? effectiveAccent : Colors.transparent,
+              ),
+              child: selected
+                  ? Center(
+                      child: Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: onSurface,
+                        ),
+                      ),
+                    )
+                  : null,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: 15,
+                  color: selected
+                      ? onSurface
+                      : onSurface.withValues(alpha: 0.72),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _checkboxTile({
+    required String label,
+    required bool checked,
+    required VoidCallback onTap,
+    required Color accent,
+    required Color onSurface,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+        child: Row(
+          children: [
+            Container(
+              width: 18,
+              height: 18,
+              decoration: BoxDecoration(
+                borderRadius: AppRadius.circular(4),
+                border: Border.fromBorderSide(
+                  ThemeRegistry.active.borders.chipBorder.copyWith(
+                    color: checked ? accent : onSurface.withValues(alpha: 0.5),
+                    width: 2,
+                  ),
+                ),
+                color: checked ? accent : Colors.transparent,
+              ),
+              child: checked
+                  ? Center(
+                      child: Text(
+                        '\u2713',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: onSurface,
+                        ),
+                      ),
+                    )
+                  : null,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: 15,
+                  color: checked
+                      ? onSurface
+                      : onSurface.withValues(alpha: 0.72),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -10807,8 +11624,26 @@ class DetailEpisodeCardState extends State<DetailEpisodeCard> with FocusStateMix
       onEnter: (_) => setHovered(true),
       onExit: (_) => setHovered(false),
       child: Focus(
-        onFocusChange: (focused) => setFocused(focused),
-        onKeyEvent: (_, event) {
+        // focusNode/onKeyEvent were accepted here but never wired to the
+        // Focus widget below -- the season page's vertical episode list had
+        // no way to receive D-Pad focus at all (nothing chained it to the
+        // Play button above, and nothing chained one episode to the next),
+        // so a remote user could never reach or select an episode. Wiring
+        // both, plus scrolling the focused card into view, is the fix.
+        focusNode: widget.focusNode,
+        onFocusChange: (focused) {
+          setFocused(focused);
+          if (focused) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              // Shared helper, not a local ensureVisible with its own
+              // alignment: the modern detail screen also reveals whatever
+              // takes focus, and two reveals of the same card with different
+              // alignments animate to different offsets and fight.
+              if (context.mounted) scrollFocusIntoView(context);
+            });
+          }
+        },
+        onKeyEvent: (node, event) {
           final handlerResult = _selectKeyHandler.handleKeyEvent(
             event,
             onTap: () => context.push(
@@ -10818,6 +11653,10 @@ class DetailEpisodeCardState extends State<DetailEpisodeCard> with FocusStateMix
           );
           if (handlerResult != KeyEventResult.ignored) {
             return handlerResult;
+          }
+          final customResult = widget.onKeyEvent?.call(node, event);
+          if (customResult != null && customResult != KeyEventResult.ignored) {
+            return customResult;
           }
           return KeyEventResult.ignored;
         },
@@ -11605,9 +12444,18 @@ class SeerrAppearancesRow extends StatelessWidget {
                 : (_, event) => onItemKeyEvent!(index, event),
             onTap: () {
               final mediaType = item.mediaType ?? 'movie';
+              // mediaType must travel in the URL (mediaType: below), not via
+              // extra: -- the route builder only reads
+              // state.uri.queryParameters['mediaType'], so anything passed
+              // via extra was silently dropped and every TV item defaulted
+              // to being looked up as a movie by the same TMDB id (a
+              // different, unrelated title, since movie/tv ids are separate
+              // namespaces).
               context.push(
-                Destinations.seerrMedia(item.id.toString()),
-                extra: {'mediaType': mediaType},
+                Destinations.seerrMedia(
+                  item.id.toString(),
+                  mediaType: mediaType,
+                ),
               );
             },
           );

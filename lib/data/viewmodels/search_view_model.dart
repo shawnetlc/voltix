@@ -224,13 +224,28 @@ class SearchViewModel extends ChangeNotifier {
   /// account is connected to more than one server, the search fans out across
   /// every connected server and merges the results (each tagged with its
   /// origin server + quality). With a single server the behaviour is unchanged.
-  Future<List<AggregatedItem>> _fetchGlobalItems(String query) async {
+  ///
+  /// [includeItemTypes] MUST be passed to the server. Person entries are not
+  /// part of the recursive media-library tree the way Movies/Series are --
+  /// Jellyfin/Emby only look in the separate People index when a query
+  /// explicitly asks for the 'Person' type. Leaving includeItemTypes null
+  /// (as this used to) made the server quietly drop actors from every
+  /// global/home search, even though the client already had a ready-to-show
+  /// "People" result group waiting for them.
+  Future<List<AggregatedItem>> _fetchGlobalItems(
+    String query,
+    List<String> includeItemTypes,
+  ) async {
     final repo = _multiServerRepo;
     if (repo != null && _multiServerSearchEnabled) {
       try {
         final sessions = await repo.getLoggedInServers();
         if (sessions.length > 1) {
-          return repo.searchAllServers(query, limit: _globalFetchLimit);
+          return repo.searchAllServers(
+            query,
+            includeItemTypes: includeItemTypes,
+            limit: _globalFetchLimit,
+          );
         }
       } catch (_) {
         // Fall through to single-server search on any resolution error.
@@ -238,6 +253,7 @@ class SearchViewModel extends ChangeNotifier {
     }
     return _searchRepository.search(
       query,
+      includeItemTypes: includeItemTypes,
       parentId: _scopedParentId,
       limit: _globalFetchLimit,
     );
@@ -247,7 +263,10 @@ class SearchViewModel extends ChangeNotifier {
     String query,
     List<SearchResultGroup> activeGroups,
   ) async {
-    final allItems = await _fetchGlobalItems(query);
+    final allItems = await _fetchGlobalItems(
+      query,
+      activeGroups.expand((g) => g.itemTypes).toSet().toList(),
+    );
 
     final grouped = <SearchResultGroup>[];
     for (final group in activeGroups) {

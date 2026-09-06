@@ -4424,7 +4424,7 @@
   "@ratingSourcesDescription": {
     "description": "Description for rating sources"
   },
-  "pluginLabel": "Moonbase Plugin",
+  "pluginLabel": "Vx Plugin",
   "@pluginLabel": {
     "description": "Settings title for plugin"
   },

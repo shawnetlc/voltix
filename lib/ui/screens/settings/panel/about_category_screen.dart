@@ -25,32 +25,61 @@ class _AboutCategoryScreen extends StatelessWidget {
           const SizedBox(height: 16),
           const Divider(),
           _SectionHeader(l10n.settingsAppInfo),
-          _TvSettingsListTile(
-            autofocus: true,
-            leading: const Icon(Icons.info_outline),
-            title: Text(l10n.version),
-            subtitle: Text(appVersion),
-            trailing: const SizedBox.shrink(),
-            onTap: () {},
-          ),
-          if (AppDistribution.supportsInAppUpdates)
-            const _CheckForUpdatesTile(),
-          _TvSettingsListTile(
-            leading: const Icon(Icons.troubleshoot),
-            title: const Text('Diagnostics & Logging'),
-            subtitle: const Text(
-              'Capture media, login and network logs and send them to the '
-              'server as a report',
-            ),
-            onTap: () =>
-                context.pushSettingsScreen(const DiagnosticsSettingsScreen()),
+          adaptiveListSection(
+            children: [
+              _TvSettingsListTile(
+                autofocus: true,
+                leading: const Icon(Icons.info_outline),
+                title: Text(l10n.version),
+                subtitle: Text(appVersion),
+                trailing: const SizedBox.shrink(),
+                onTap: () {},
+              ),
+              if (AppDistribution.supportsInAppUpdates)
+                const _CheckForUpdatesTile(),
+              _TvSettingsListTile(
+                leading: const Icon(Icons.troubleshoot),
+                title: const Text('Diagnostics & Logging'),
+                subtitle: const Text(
+                  'Capture media, login and network logs and send them to '
+                  'the server as a report',
+                ),
+                onTap: () => context.pushSettingsScreen(
+                  const DiagnosticsSettingsScreen(),
+                ),
+              ),
+              _TvSettingsListTile(
+                leading: const Icon(Icons.auto_awesome),
+                // Not yet in app_en.arb -- ported from upstream 2.5.0 as a
+                // literal to avoid hand-editing every locale's .arb file
+                // without flutter gen-l10n available in this environment.
+                title: const Text('Run setup again'),
+                // Asking again on purpose says more than the stored answers
+                // do, so a deliberate re-run offers every question back.
+                onTap: () {
+                  GetIt.instance<SetupWizardGate>().beginRerun();
+                  context.navigateTopLevel(Destinations.setup);
+                },
+              ),
+            ],
           ),
           _SectionHeader(l10n.settingsLegal),
-          _TvSettingsListTile(
-            leading: const Icon(Icons.description),
-            title: Text(l10n.settingsLicenses),
-            subtitle: Text(l10n.settingsOpenSourceLicenseNotices),
-            onTap: () => context.pushSettingsScreen(const _LicensesScreen()),
+          adaptiveListSection(
+            children: [
+              _TvSettingsListTile(
+                leading: const Icon(Icons.description),
+                title: Text(l10n.settingsLicenses),
+                subtitle: Text(l10n.settingsOpenSourceLicenseNotices),
+                onTap: () =>
+                    context.pushSettingsScreen(const _LicensesScreen()),
+              ),
+              // Source Code / Report an Issue / Join Discord / Support /
+              // Privacy Policy tiles exist upstream but point at
+              // Moonfin-Client's own GitHub org, Discord invite and
+              // moonfin.io privacy policy. Deliberately left out here --
+              // wiring them to Voltix's own URLs is a product decision
+              // for Shawne/Dotslash, not something to guess at.
+            ],
           ),
         ],
       ),

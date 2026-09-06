@@ -3222,7 +3222,7 @@ class AppLocalizationsEn extends AppLocalizations {
       'Enable and reorder the rating sources shown throughout the app';
 
   @override
-  String get pluginLabel => 'Moonbase Plugin';
+  String get pluginLabel => 'Vx Plugin';
 
   @override
   String get pluginDetected => 'Plugin Detected';

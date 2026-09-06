@@ -10,7 +10,9 @@ import '../../auth/store/authentication_store.dart';
 import '../../auth/store/voltix_session_store.dart';
 import '../../preference/user_preferences.dart';
 import '../../ui/widgets/overlay_sheet.dart';
+import '../../ui/screens/setup/setup_wizard_gate.dart';
 import 'azure_blob_storage_service.dart';
+import 'media_server_client_factory.dart';
 import 'voltix_api_service.dart';
 import 'voltix_watch_registry_service.dart';
 
@@ -202,6 +204,79 @@ class UserSettingsSyncService {
   /// newly logged-in or fresh install user.
   /// If remote data exists and local hasn't been linked yet, prompts the user
   /// to import, delete, or skip.
+  /// True when the setup wizard is going to run, in which case it owns the
+  /// cloud-data prompt and shows it as its final step. Prompting here as well
+  /// would ask twice -- and because the login/startup path fires this dialog
+  /// unawaited on the root navigator and then immediately navigates, the
+  /// dialog would race the router's redirect into the wizard.
+  bool _setupWizardOwnsPrompt() {
+    try {
+      if (!GetIt.instance.isRegistered<SetupWizardGate>()) return false;
+      if (!GetIt.instance.isRegistered<MediaServerClientFactory>()) return false;
+      final client =
+          GetIt.instance<MediaServerClientFactory>().getActiveClient();
+      return GetIt.instance<SetupWizardGate>().shouldRun(client);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Probe for the setup wizard: is there cloud data worth asking about?
+  ///
+  /// Mirrors the no-UI half of [checkAndPromptForRemoteSettings], including the
+  /// once-off initial backup when nothing is stored yet, so routing the prompt
+  /// through the wizard doesn't skip that baseline.
+  Future<bool> hasPendingCloudPrompt(String username) async {
+    try {
+      final token = GetIt.instance<VoltixSessionStore>().sessionToken;
+      if (token == null || token.isEmpty) return false;
+
+      final prefStore = GetIt.instance<PreferenceStore>();
+      if (prefStore.getString(_hasSyncedKey(username)) == 'true') return false;
+
+      final remoteSettings = await _checkForRemoteSettings(
+        AzureBlobStorageService(),
+        username,
+        token,
+      ).timeout(const Duration(seconds: 12), onTimeout: () => null);
+
+      if (remoteSettings == null || remoteSettings.isEmpty) {
+        await backupSettingsToServer(targetUsername: username);
+        return false;
+      }
+      return true;
+    } catch (e) {
+      _logger.w('[UserSettingsSync] Cloud prompt probe failed: $e');
+      return false;
+    }
+  }
+
+  /// Carries out the user's choice. No UI, so the wizard owns the chrome.
+  Future<void> applyCloudChoice(
+    CloudDataAction action,
+    String username,
+  ) async {
+    final prefStore = GetIt.instance<PreferenceStore>();
+    switch (action) {
+      case CloudDataAction.importAll:
+        await restoreSettingsFromServer(targetUsername: username)
+            .timeout(const Duration(seconds: 20), onTimeout: () => false);
+        await prefStore.setString(_hasSyncedKey(username), 'true');
+      case CloudDataAction.delete:
+        // Marked first: the local reset is what the user waits on. The blob
+        // delete can burn ~35s falling back from the proxy to Azure, so it
+        // runs detached with its own timeouts.
+        await prefStore.setString(_hasSyncedKey(username), 'true');
+        unawaited(
+          deleteAllCloudData(targetUsername: username).catchError((Object e) {
+            _logger.w('[UserSettingsSync] Background cloud delete failed: $e');
+          }),
+        );
+      case CloudDataAction.skip:
+        await prefStore.setString(_hasSyncedKey(username), 'true');
+    }
+  }
+
   Future<void> checkAndPromptForRemoteSettings(
     BuildContext context,
     String username,
@@ -222,6 +297,14 @@ class UserSettingsSyncService {
       } catch (e) {
         _logger.w('[UserSettingsSync] Could not restore latest data on startup: $e');
       }
+      return;
+    }
+
+    if (_setupWizardOwnsPrompt()) {
+      _logger.i(
+        '[UserSettingsSync] Setup wizard is running -- it asks about cloud '
+        'data as its final step.',
+      );
       return;
     }
 
@@ -261,7 +344,7 @@ class UserSettingsSyncService {
       final foundItems = <String>[];
       if (hasSettings) foundItems.add('Application settings');
 
-      final action = await showFocusRestoringDialog<_CloudDataAction>(
+      final action = await showFocusRestoringDialog<CloudDataAction>(
         context: context,
         barrierDismissible: false,
         builder: (ctx) => AlertDialog(
@@ -319,7 +402,7 @@ class UserSettingsSyncService {
           actionsAlignment: MainAxisAlignment.spaceBetween,
           actions: [
             TextButton(
-              onPressed: () => Navigator.of(ctx).pop(_CloudDataAction.delete),
+              onPressed: () => Navigator.of(ctx).pop(CloudDataAction.delete),
               child: const Text(
                 'Delete Cloud Data',
                 style: TextStyle(color: Color(0xFFEF4444), fontSize: 13),
@@ -329,7 +412,7 @@ class UserSettingsSyncService {
               mainAxisSize: MainAxisSize.min,
               children: [
                 TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(_CloudDataAction.skip),
+                  onPressed: () => Navigator.of(ctx).pop(CloudDataAction.skip),
                   child: const Text('Skip', style: TextStyle(color: Colors.white54)),
                 ),
                 const SizedBox(width: 8),
@@ -341,7 +424,7 @@ class UserSettingsSyncService {
                       borderRadius: BorderRadius.circular(8),
                     ),
                   ),
-                  onPressed: () => Navigator.of(ctx).pop(_CloudDataAction.importAll),
+                  onPressed: () => Navigator.of(ctx).pop(CloudDataAction.importAll),
                   child: const Text('Import All'),
                 ),
               ],
@@ -351,7 +434,7 @@ class UserSettingsSyncService {
       );
 
       switch (action) {
-        case _CloudDataAction.importAll:
+        case CloudDataAction.importAll:
           // Bounded for the same reason as the check above: the caller cannot
           // navigate until this returns.
           if (hasSettings) {
@@ -367,7 +450,7 @@ class UserSettingsSyncService {
               ),
             );
           }
-        case _CloudDataAction.delete:
+        case CloudDataAction.delete:
           // The local reset is what the user is waiting on — it is instant.
           //
           // The cloud delete is not: the blob deletion falls back from the
@@ -391,7 +474,7 @@ class UserSettingsSyncService {
               ),
             );
           }
-        case _CloudDataAction.skip:
+        case CloudDataAction.skip:
         case null:
           // Mark as synced so we don't prompt again
           await prefStore.setString(_hasSyncedKey(username), 'true');
@@ -434,4 +517,4 @@ class UserSettingsSyncService {
   }
 }
 
-enum _CloudDataAction { importAll, delete, skip }
+enum CloudDataAction { importAll, delete, skip }

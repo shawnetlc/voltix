@@ -5923,7 +5923,7 @@ abstract class AppLocalizations {
   /// Settings title for plugin
   ///
   /// In en, this message translates to:
-  /// **'Moonbase Plugin'**
+  /// **'Vx Plugin'**
   String get pluginLabel;
 
   /// Status when plugin is detected

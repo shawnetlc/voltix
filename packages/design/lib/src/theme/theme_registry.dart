@@ -2,6 +2,7 @@ import 'theme_spec.dart';
 import 'themes/voltix_theme_spec.dart';
 import 'themes/neon_pulse_theme_spec.dart';
 import 'themes/eightbit_hero_theme_spec.dart';
+import 'themes/glass_theme_spec.dart';
 
 class ThemeRegistry {
   const ThemeRegistry._();
@@ -14,35 +15,21 @@ class ThemeRegistry {
   /// IDs that are bundled with the app and cannot be removed.
   static const Set<String> builtInIds = {voltixId, neonPulseId, glassId, eightbitHeroId};
 
-  // `glass` is deliberately ABSENT here, so resolveById('glass') falls through
-  // to the Voltix fallback below and Glass does not appear in Appearance.
-  //
-  // It was registered briefly and had to be withdrawn. Registering it was the
-  // first time the glass rendering path had ever actually run, and it is far
-  // too expensive to ship as-is:
-  //
-  //   - app.dart renders GlassBackdrop in the app shell whenever isGlass is
-  //     true. That widget drives an AnimationController on repeat(reverse:true)
-  //     with a 16s period, so the backdrop is invalidated every single frame
-  //     and never settles.
-  //   - GlassSurface applies ImageFilter.blur(sigma 14) per surface - the
-  //     sidebar plus every card. Each BackdropFilter forces a saveLayer of the
-  //     region behind it, so a list of cards stacks many of them.
-  //
-  // Together those pinned the GPU on Android TV and mid-range phones: the app
-  // appeared to freeze on the splash and content screens never painted.
-  //
-  // Leaving it unregistered also self-heals installs that already persisted
-  // visualTheme=glass - resolveById returns the Voltix spec, isGlass goes
-  // false, and the app recovers on next launch with no data clearing.
-  //
-  // BEFORE RE-ENABLING: profile it. GlassBackdrop needs to stop animating (or
-  // animate far more cheaply), GlassSurface needs a much smaller sigma or a
-  // non-BackdropFilter approach, and glass should probably be refused on TV
-  // outright. glass_theme_spec.dart is kept for that work.
+  // `glass` was pulled once, briefly, when the very first version of the
+  // glass rendering path pinned the GPU on Android TV and mid-range phones
+  // (an unthrottled 16s backdrop animation plus a flat sigma-14 blur on
+  // every surface). That work is what GlassCapability/GlassSettings in
+  // lib/util/idiom/glass_capability.dart now exist to do properly: the
+  // backdrop no longer animates, TV and web default to a zero-blur "sheen"
+  // tier instead of a real BackdropFilter, real blur is capped and further
+  // throttled by an adaptive GPU-pressure scope, and Glass Quality (Settings
+  // > Appearance) lets a user drop to the cheap tier by hand. Re-registering
+  // it here is what actually turns it back into a selectable theme again --
+  // see glass_theme_spec.dart for the spec itself.
   static const Map<String, ThemeSpec> _builtIns = {
     voltixId: voltixThemeSpec,
     neonPulseId: neonPulseThemeSpec,
+    glassId: glassThemeSpec,
     eightbitHeroId: eightbitHeroThemeSpec,
   };
 

@@ -4,6 +4,8 @@
 /// Voltix web portal backend.
 library;
 
+import 'dart:convert';
+
 /// Content section of the IPTV catalogue.
 enum IptvSection { live, movies, series }
 
@@ -36,6 +38,52 @@ class IptvCategory {
       );
 }
 
+/// Decodes an EPG text field.
+///
+/// Xtream Codes returns programme `title` and `description` Base64-encoded
+/// (`get_simple_data_table` / `get_short_epg`), so a value that arrives
+/// straight from the provider reads as gibberish like
+/// "UEw6IFRoZSBTYXR1cmRheSBXcmFw" instead of "PL: The Saturday Wrap". The
+/// Voltix backend decodes it on the paths it normalises, so this only steps
+/// in when a raw provider value comes through -- and it is deliberately
+/// conservative, leaving anything that is not unambiguously Base64-encoded
+/// text exactly as it found it.
+String decodeEpgText(Object? raw) {
+  final value = raw?.toString() ?? '';
+  if (value.length < 8 || value.length % 4 != 0) return value;
+  if (!RegExp(r'^[A-Za-z0-9+/]+={0,2}$').hasMatch(value)) return value;
+  // A real title almost always contains a space; a Base64 blob never does.
+  if (value.contains(' ')) return value;
+  try {
+    final decoded = utf8.decode(base64.decode(value), allowMalformed: false);
+    if (decoded.isEmpty) return value;
+    // Reject binary noise -- only accept a decode that looks like text.
+    final printable =
+        decoded.runes.where((r) => r == 9 || r == 10 || r == 13 || r >= 32).length;
+    if (printable != decoded.runes.length) return value;
+    return decoded;
+  } catch (_) {
+    return value;
+  }
+}
+
+/// Parses an EPG timestamp to epoch seconds.
+///
+/// Accepts the backend's normalised epoch number as well as the provider's
+/// own `"YYYY-MM-DD HH:MM:SS"` string form, so entries are not silently
+/// dropped for having no usable times when a raw shape comes through.
+int? _parseEpgTime(Object? raw) {
+  if (raw == null) return null;
+  if (raw is num) return raw.toInt();
+  final text = raw.toString().trim();
+  if (text.isEmpty) return null;
+  final asNumber = int.tryParse(text);
+  if (asNumber != null) return asNumber;
+  final parsed = DateTime.tryParse(text.replaceFirst(' ', 'T'));
+  if (parsed == null) return null;
+  return parsed.millisecondsSinceEpoch ~/ 1000;
+}
+
 /// A single EPG programme entry from `GET /api/iptv/epg/simple`
 /// (also embedded as `currentProgram` on live content items).
 class IptvEpgEntry {
@@ -54,12 +102,14 @@ class IptvEpgEntry {
   });
 
   factory IptvEpgEntry.fromJson(Map<String, dynamic> json) => IptvEpgEntry(
-        title: json['title']?.toString() ?? '',
-        description: json['description']?.toString() ?? '',
+        title: decodeEpgText(json['title']),
+        description: decodeEpgText(json['description']),
         startTimestamp:
-            json['startTimestamp'] is num ? (json['startTimestamp'] as num).toInt() : null,
-        stopTimestamp:
-            json['stopTimestamp'] is num ? (json['stopTimestamp'] as num).toInt() : null,
+            _parseEpgTime(json['startTimestamp'] ?? json['start_timestamp'] ?? json['start']),
+        stopTimestamp: _parseEpgTime(json['stopTimestamp'] ??
+            json['stop_timestamp'] ??
+            json['end'] ??
+            json['stop']),
         icon: json['icon']?.toString(),
       );
 
@@ -94,6 +144,51 @@ class IptvEpgEntry {
   String get dedupeKey => '${startTimestamp ?? 0}|$title';
 }
 
+/// Whether a live channel supports catch-up ("TV archive").
+///
+/// Deliberately tolerant about the shape. Upstream this is Xtream Codes'
+/// `tv_archive` from `player_api.php?action=get_live_streams`, which is a
+/// 0/1 int (sometimes a string). Depending on how far the Voltix backend
+/// normalises a given response it can arrive as the mapped `hasArchive`
+/// boolean or straight through under the provider's own key -- checking only
+/// for `hasArchive == true` silently dropped every channel that came through
+/// in the raw shape, which is how the catch-up list ended up far shorter
+/// than the provider's real archive-enabled channel count.
+bool _parseHasArchive(Map<String, dynamic> json) {
+  for (final key in const [
+    'hasArchive',
+    'tv_archive',
+    'tvArchive',
+    'archive',
+  ]) {
+    final value = json[key];
+    if (value == null) continue;
+    if (value is bool) {
+      if (value) return true;
+      continue;
+    }
+    if (value is num) {
+      if (value > 0) return true;
+      continue;
+    }
+    final text = value.toString().trim().toLowerCase();
+    if (text == 'true' || text == '1' || text == 'yes') return true;
+  }
+  // Some providers only signal it via the retention window.
+  for (final key in const [
+    'tv_archive_duration',
+    'tvArchiveDuration',
+    'archiveDuration',
+  ]) {
+    final value = json[key];
+    if (value == null) continue;
+    final duration =
+        value is num ? value.toDouble() : double.tryParse(value.toString());
+    if (duration != null && duration > 0) return true;
+  }
+  return false;
+}
+
 /// A live channel, movie or series returned by `GET /api/iptv/content`.
 class IptvContentItem {
   final String id;
@@ -105,6 +200,14 @@ class IptvContentItem {
   final String? year;
   final String? epgChannelId;
   final bool hasArchive;
+
+  /// Stream id to use for catch-up, which is not always [streamId].
+  ///
+  /// The backend collapses a channel's duplicate quality variants down to the
+  /// sharpest feed, but the provider often only carries the TV archive on a
+  /// lower-quality variant — so the channel you see in Live TV and the one
+  /// that can actually be replayed can be two different stream ids.
+  final String? archiveStreamId;
   final String? rating;
   final String? duration;
   final String? containerExtension;
@@ -123,6 +226,7 @@ class IptvContentItem {
     this.year,
     this.epgChannelId,
     this.hasArchive = false,
+    this.archiveStreamId,
     this.rating,
     this.duration,
     this.containerExtension,
@@ -141,7 +245,8 @@ class IptvContentItem {
         genre: json['genre']?.toString(),
         year: json['year']?.toString(),
         epgChannelId: json['epgChannelId']?.toString(),
-        hasArchive: json['hasArchive'] == true,
+        hasArchive: _parseHasArchive(json),
+        archiveStreamId: json['archiveStreamId']?.toString(),
         rating: json['rating']?.toString(),
         duration: json['duration']?.toString(),
         containerExtension: json['containerExtension']?.toString(),
@@ -152,6 +257,14 @@ class IptvContentItem {
             ? IptvEpgEntry.fromJson(json['currentProgram'] as Map<String, dynamic>)
             : null,
       );
+
+  /// The stream id catch-up should address for this channel: the archive
+  /// variant when the backend flagged one, otherwise this channel's own.
+  String get catchupStreamId {
+    final archive = archiveStreamId;
+    if (archive != null && archive.isNotEmpty) return archive;
+    return streamId?.toString() ?? id;
+  }
 
   /// Rating formatted to one decimal, or null when absent/unparseable.
   String? get displayRating {

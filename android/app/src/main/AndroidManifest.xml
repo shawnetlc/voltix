@@ -32,7 +32,7 @@
     <uses-feature android:name="android.software.leanback" android:required="false"/>
     <application
         android:label="${appName}"
-        android:name="${applicationName}"
+        android:name="com.voltix.app.VoltixApplication"
         android:icon="@mipmap/ic_launcher"
         android:banner="@drawable/voltix_tv_banner"
         android:enableOnBackInvokedCallback="true"
@@ -59,6 +59,13 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
             </intent-filter>
         </activity>
+        <activity
+            android:name=".VoltixCrashActivity"
+            android:exported="false"
+            android:process=":crash"
+            android:launchMode="singleInstance"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Black.NoTitleBar" />
         <activity
             android:name=".ExternalPlayerProxyActivity"
             android:exported="false"

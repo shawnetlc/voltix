@@ -1244,17 +1244,21 @@ class _SearchScreenState extends State<SearchScreen> {
         final yearStr = (year != null && year.length >= 4)
             ? year.substring(0, 4)
             : null;
+        final isPerson = item.mediaType == 'person';
+        final cardImagePath = isPerson ? item.profilePath : item.posterPath;
         return MediaCard(
           title: item.displayTitle,
-          subtitle: yearStr,
-          imageUrl: item.posterPath != null
-              ? '$_tmdbPosterBase${item.posterPath}'
+          subtitle: isPerson ? null : yearStr,
+          imageUrl: cardImagePath != null
+              ? '$_tmdbPosterBase$cardImagePath'
               : null,
           width: width,
           aspectRatio: ar,
           focusColor: focusColor,
           cardFocusExpansion: cardFocusExpansion,
-          itemType: item.mediaType == 'tv' ? 'Series' : 'Movie',
+          itemType: isPerson
+              ? 'Person'
+              : (item.mediaType == 'tv' ? 'Series' : 'Movie'),
           focusNode: PlatformDetection.isTV
               ? _resultFocusNode(rowIndex, itemIndex)
               : null,
@@ -1284,8 +1288,12 @@ class _SearchScreenState extends State<SearchScreen> {
             }
           },
           onTap: () => context.push(
-            Destinations.seerrMedia(item.id.toString()),
-            extra: {'mediaType': item.mediaType ?? 'movie'},
+            isPerson
+                ? Destinations.seerrPerson(item.id.toString())
+                : Destinations.seerrMedia(
+                    item.id.toString(),
+                    mediaType: item.mediaType ?? 'movie',
+                  ),
           ),
         );
       }).toList(),

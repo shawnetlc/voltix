@@ -11,6 +11,18 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="Voltix"
 TARGET="${1:-all}"
 
+# Build-time secrets (Azure SAS tokens, Grok credentials), shared with the
+# other build scripts. Without these the Apple builds shipped with no
+# credentials at all.
+if [ -f "$REPO_ROOT/build-secrets.sh" ]; then
+  # shellcheck source=build-secrets.sh
+  . "$REPO_ROOT/build-secrets.sh"
+else
+  echo "build-secrets.sh not found - builds will use the sync proxy and offline AI"
+  build_secret_dart_defines() { return 0; }
+  write_secret_status() { :; }
+fi
+
 if [ "$(uname -s)" != "Darwin" ]; then
   echo "Error: Apple builds require macOS." >&2
   exit 1
@@ -47,6 +59,8 @@ echo "============================================================"
 echo " Voltix Apple Builder (v${APP_VERSION})"
 echo " Target: ${TARGET}"
 echo "============================================================"
+write_secret_status
+echo "============================================================"
 
 build_ios() {
   echo ""
@@ -58,7 +72,11 @@ build_ios() {
   cd "$REPO_ROOT"
 
   rm -rf "$REPO_ROOT/build/ios"
-  "$FLUTTER" build ipa --release --no-codesign --dart-define=DISTRIBUTION_CHANNEL=ios_unsigned
+  local -a secret_defines=()
+  while IFS= read -r line; do secret_defines+=("$line"); done < <(build_secret_dart_defines)
+  "$FLUTTER" build ipa --release --no-codesign \
+    --dart-define=DISTRIBUTION_CHANNEL=ios_unsigned \
+    "${secret_defines[@]}"
 
   local archive_dir="$REPO_ROOT/build/ios/archive"
   local app_path="$(find "$archive_dir" -type d -path '*/Products/Applications/*.app' | head -n 1)"
@@ -88,7 +106,16 @@ build_tvos() {
 
   echo "Bundling assets for tvOS..."
   mkdir -p "$REPO_ROOT/tvos/Flutter/flutter_assets"
-  "$FLUTTER" build bundle --release --target-platform=ios --asset-dir="$REPO_ROOT/tvos/Flutter/flutter_assets"
+  # This step compiles the Dart code for tvOS, so the dart-defines belong here.
+  # It previously passed none at all: tvOS builds shipped with no Azure SAS, no
+  # Grok key, and no DISTRIBUTION_CHANNEL - and an absent channel resolves to
+  # `unknown`, which re-enables self-update.
+  local -a secret_defines=()
+  while IFS= read -r line; do secret_defines+=("$line"); done < <(build_secret_dart_defines)
+  "$FLUTTER" build bundle --release --target-platform=ios \
+    --asset-dir="$REPO_ROOT/tvos/Flutter/flutter_assets" \
+    --dart-define=DISTRIBUTION_CHANNEL=tvos_unsigned \
+    "${secret_defines[@]}"
 
   cd "$REPO_ROOT/tvos"
   pod install

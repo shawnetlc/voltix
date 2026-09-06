@@ -3,22 +3,73 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
-/// Lightweight direct Azure Blob Storage client for managing JSON taste profiles.
+/// Lightweight direct Azure Blob Storage client for managing JSON taste
+/// profiles.
+///
+/// Authenticates with a SAS token only. Shared Key signing is deliberately not
+/// implemented: it would require the storage account key on the device, and
+/// that key grants full read/write/delete over every container in the account
+/// -- which for Voltix means every user's taste profile, settings and watch
+/// history. A SAS can be scoped to one container, given only the permissions
+/// it needs, expired on a date, and revoked server-side without shipping a new
+/// build. An account key can do none of those things.
+///
+/// The token is supplied at build time:
+///
+///   --dart-define=AZURE_BLOB_SAS_TOKEN=sv=2024-...&sp=racw&sr=c&sig=...
+///   --dart-define=AZURE_BLOB_ACCOUNT_NAME=voltixstorage   (optional)
+///
+/// Generate it against the `voltix-taste-profiles` container with Read / Add /
+/// Create / Write, an expiry you are willing to re-issue on, and nothing else.
+/// No Delete, no List, and no account-level scope.
+///
+/// Without a token this client reports itself unconfigured and the sync
+/// services fall through to the Voltix proxy, which is the preferred path
+/// anyway because there the credential never leaves the server.
 class AzureStorageClient {
   final Dio _dio;
   String _connectionString = '';
-  String _containerName = 'taste-profiles';
+  String _containerName = 'voltix-taste-profiles';
   String? _accountName;
-  String? _accountKey;
   String? _sasToken;
   String? _customEndpoint;
+
+  /// Build-time SAS, used unless a runtime one is supplied.
+  static const _envSasToken = String.fromEnvironment('AZURE_BLOB_SAS_TOKEN');
+  static const _envAccountName =
+      String.fromEnvironment('AZURE_BLOB_ACCOUNT_NAME');
+  static const _defaultAccountName = 'voltixstorage';
 
   AzureStorageClient({Dio? dio}) : _dio = dio ?? Dio();
 
   String get containerName => _containerName;
 
+  /// The runtime token if one was supplied, otherwise the build-time one.
+  String? get _effectiveSasToken {
+    if (_sasToken != null && _sasToken!.isNotEmpty) return _sasToken;
+    if (_envSasToken.isNotEmpty) {
+      return _envSasToken.startsWith('?')
+          ? _envSasToken.substring(1)
+          : _envSasToken;
+    }
+    return null;
+  }
+
+  String? get _effectiveAccountName {
+    if (_accountName != null && _accountName!.isNotEmpty) return _accountName;
+    if (_envAccountName.isNotEmpty) return _envAccountName;
+    return _defaultAccountName;
+  }
+
+  /// Configured means "can actually authenticate a request".
+  ///
+  /// This used to count a parsed AccountKey as configuration, which made the
+  /// client claim it was ready and then send unsigned requests that Azure
+  /// answered with 403 -- there is no code here that signs with an account
+  /// key. A SAS token, or a custom endpoint that carries its own, is the only
+  /// thing that works.
   bool get isConfigured =>
-      (_accountName != null && (_accountKey != null || _sasToken != null)) ||
+      (_effectiveAccountName != null && _effectiveSasToken != null) ||
       _customEndpoint != null;
 
   void setContainerName(String name) {
@@ -35,7 +86,6 @@ class AzureStorageClient {
   void _parseConnectionString(String conn) {
     if (conn.isEmpty) {
       _accountName = null;
-      _accountKey = null;
       _sasToken = null;
       _customEndpoint = null;
       return;
@@ -61,7 +111,12 @@ class AzureStorageClient {
         if (key == 'accountname') {
           _accountName = value;
         } else if (key == 'accountkey') {
-          _accountKey = value;
+          // Deliberately discarded. Nothing here can sign with it, and keeping
+          // it on the device is the exposure this client is written to avoid.
+          debugPrint(
+            '[AzureStorageClient] AccountKey in connection string ignored; '
+            'supply a scoped SAS token instead.',
+          );
         } else if (key == 'sharedaccesssignature' || key == 'sastoken') {
           _sasToken = value.startsWith('?') ? value.substring(1) : value;
         } else if (key == 'blobendpoint') {
@@ -72,12 +127,17 @@ class AzureStorageClient {
   }
 
   String _buildBlobUrl(String blobPath) {
-    final cleanPath = blobPath.startsWith('/') ? blobPath.substring(1) : blobPath;
+    final cleanPath =
+        blobPath.startsWith('/') ? blobPath.substring(1) : blobPath;
+    final account = _effectiveAccountName;
     final base = _customEndpoint ??
-        (_accountName != null ? 'https://$_accountName.blob.core.windows.net' : 'https://api.voltix.media/blob');
+        (account != null
+            ? 'https://$account.blob.core.windows.net'
+            : 'https://api.voltix.media/blob');
     final url = '$base/$_containerName/$cleanPath';
-    if (_sasToken != null && _sasToken!.isNotEmpty) {
-      return '$url?$_sasToken';
+    final sas = _effectiveSasToken;
+    if (sas != null && sas.isNotEmpty) {
+      return '$url?$sas';
     }
     return url;
   }
