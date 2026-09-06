@@ -289,11 +289,36 @@ class UserSettingsSyncService {
     final hasSyncedLocally = prefStore.getString(_hasSyncedKey(username)) == 'true';
 
     if (hasSyncedLocally) {
-      // User has previously synced: automatically restore latest cloud data on app restart
+      // User has previously synced: automatically restore latest cloud data on
+      // app restart.
+      //
+      // Bounded for the same reason the first-time branch below is, and it
+      // matters more here: this is the branch EVERY returning user takes, and
+      // it was the only one without a ceiling. Both calls reach Azure Blob
+      // directly rather than the Voltix API, so a blob endpoint that accepts
+      // the connection and stalls is invisible in the server logs -- the
+      // device simply goes quiet after a successful login and sits on the
+      // logo and spinner with nothing to show for it.
+      //
+      // Restored settings are a convenience, not a precondition for using the
+      // app, so timing out and carrying on is the right trade every time.
       try {
-        await restoreSettingsFromServer(targetUsername: username);
-        await restoreWatchRegistryFromServer(targetUsername: username);
-        _logger.i('[UserSettingsSync] Restored latest synced cloud settings + watch registry on startup for @$username');
+        final restoredSettings = await restoreSettingsFromServer(
+          targetUsername: username,
+        ).timeout(const Duration(seconds: 12), onTimeout: () {
+          _logger.w('[UserSettingsSync] Settings restore timed out for @$username');
+          return false;
+        });
+        final restoredRegistry = await restoreWatchRegistryFromServer(
+          targetUsername: username,
+        ).timeout(const Duration(seconds: 12), onTimeout: () {
+          _logger.w('[UserSettingsSync] Watch registry restore timed out for @$username');
+          return false;
+        });
+        _logger.i(
+          '[UserSettingsSync] Startup restore for @$username — '
+          'settings: $restoredSettings, watch registry: $restoredRegistry',
+        );
       } catch (e) {
         _logger.w('[UserSettingsSync] Could not restore latest data on startup: $e');
       }
@@ -350,21 +375,47 @@ class UserSettingsSyncService {
         builder: (ctx) => AlertDialog(
           backgroundColor: const Color(0xFF0F141C),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(20),
             side: const BorderSide(color: Color(0xFF1E293B)),
           ),
-          title: const Row(
+          contentPadding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
+          title: Row(
             children: [
-              Icon(Icons.cloud_download_rounded, color: Color(0xFF3B82F6)),
-              SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  'Cloud Data Found',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: const Color(0xFF3B82F6).withValues(alpha: 0.15),
+                  border: Border.all(
+                    color: const Color(0xFF3B82F6).withValues(alpha: 0.35),
                   ),
+                ),
+                child: const Icon(Icons.cloud_done_rounded,
+                    color: Color(0xFF38BDF8), size: 22),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Cloud Data Found',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    SizedBox(height: 2),
+                    Text(
+                      'Voltix Cloud Sync Backup',
+                      style: TextStyle(
+                        color: Colors.white54,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -373,39 +424,92 @@ class UserSettingsSyncService {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Saved cloud data for Voltix user "@$username" was found on the server:\n',
-                style: const TextStyle(color: Colors.white70, fontSize: 14, height: 1.4),
-              ),
-              ...foundItems.map((item) => Padding(
-                padding: const EdgeInsets.only(left: 8, bottom: 4),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E293B).withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFF334155)),
+                ),
                 child: Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.check_circle_outline, color: Color(0xFF10B981), size: 16),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        item,
-                        style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500),
+                    const Icon(Icons.account_circle_outlined,
+                        size: 16, color: Color(0xFF38BDF8)),
+                    const SizedBox(width: 6),
+                    Text(
+                      '@$username',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                   ],
                 ),
-              )),
-              const SizedBox(height: 12),
+              ),
+              const SizedBox(height: 14),
               const Text(
-                'Would you like to import this data, or start fresh?',
-                style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+                'A saved cloud backup for this account was found on the server:',
+                style: TextStyle(
+                    color: Colors.white70, fontSize: 13, height: 1.4),
+              ),
+              const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF161D2B),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: const Color(0xFF1E293B),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: foundItems
+                      .map((item) => Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 2),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.check_circle_rounded,
+                                    color: Color(0xFF10B981), size: 16),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    item,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ))
+                      .toList(),
+                ),
+              ),
+              const SizedBox(height: 14),
+              const Text(
+                'Would you like to restore your cloud backup or start fresh on this device?',
+                style: TextStyle(
+                    color: Colors.white60, fontSize: 12, height: 1.4),
               ),
             ],
           ),
           actionsAlignment: MainAxisAlignment.spaceBetween,
+          actionsPadding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(CloudDataAction.delete),
+              style: TextButton.styleFrom(
+                foregroundColor: const Color(0xFFEF4444),
+              ),
               child: const Text(
                 'Delete Cloud Data',
-                style: TextStyle(color: Color(0xFFEF4444), fontSize: 13),
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
               ),
             ),
             Row(
@@ -413,19 +517,27 @@ class UserSettingsSyncService {
               children: [
                 TextButton(
                   onPressed: () => Navigator.of(ctx).pop(CloudDataAction.skip),
-                  child: const Text('Skip', style: TextStyle(color: Colors.white54)),
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.white60,
+                  ),
+                  child: const Text('Start Fresh', style: TextStyle(fontSize: 13)),
                 ),
                 const SizedBox(width: 8),
-                ElevatedButton(
+                ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF3B82F6),
+                    backgroundColor: const Color(0xFF2563EB),
                     foregroundColor: Colors.white,
+                    elevation: 0,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(10),
                     ),
                   ),
-                  onPressed: () => Navigator.of(ctx).pop(CloudDataAction.importAll),
-                  child: const Text('Import All'),
+                  icon: const Icon(Icons.cloud_download_rounded, size: 16),
+                  label: const Text('Restore Backup',
+                      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                  onPressed: () =>
+                      Navigator.of(ctx).pop(CloudDataAction.importAll),
                 ),
               ],
             ),

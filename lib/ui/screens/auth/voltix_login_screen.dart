@@ -79,6 +79,19 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
 
   bool _isLoading = false;
   Timer? _postLoginWatchdog;
+
+  /// True while a sign-in is already running.
+  ///
+  /// Two sign-ins at once is not a theoretical race. A d-pad OK press on a TV
+  /// remote repeats readily, and the "Disconnect & Continue" button on the
+  /// device-limit dialog fires _doLogin straight from onPressed -- production
+  /// logs show two directLogin calls 210ms apart, each terminating the same
+  /// session and each running the whole post-login pipeline against the same
+  /// singletons.
+  ///
+  /// _isLoading cannot serve here: the device-limit path deliberately clears it
+  /// before showing the dialog, which is exactly when the second press lands.
+  bool _loginInFlight = false;
   String? _errorMessage;
   bool _tvKeyboardVisible = false;
   String _deviceMac = '...';
@@ -471,24 +484,34 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
     });
   }
 
+  /// Guarantees that signing in ends on a screen.
+  ///
+  /// Post-login does a lot of optional work -- adding and authenticating every
+  /// assigned server, the cloud-settings prompt, the taste-profile restore and
+  /// wizard. Each of those is individually bounded, but a bound that is missed
+  /// or a future that never settles leaves this screen spinning with no error
+  /// and no way forward, which is indistinguishable to the user from a frozen
+  /// app.
+  ///
+  /// Started by both entry points. It used to guard only the pairing path, so
+  /// signing in with a username and password had no backstop at all.
+  void _startPostLoginWatchdog() {
+    _postLoginWatchdog?.cancel();
+    _postLoginWatchdog = Timer(const Duration(seconds: 45), () {
+      if (!_isLoading) return;
+      _logger.w('[VoltixLogin] Post-login watchdog fired — forcing navigation');
+      final username = GetIt.instance<VoltixSessionStore>().username ?? '';
+      unawaited(_navigatePostLogin(username));
+    });
+  }
+
   Future<void> _onPairingApproved(String token, {bool forceReplace = false}) async {
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
 
-    // Pairing must always end on a screen. Post-login does a lot of optional
-    // work — multi-server auth, cloud-settings prompt, taste-profile sync —
-    // and any one of those stalling used to leave this screen spinning
-    // indefinitely. If nothing has navigated in 45s, force it.
-    _postLoginWatchdog?.cancel();
-    _postLoginWatchdog = Timer(const Duration(seconds: 45), () {
-      if (!_isLoading) return;
-      _logger.w('[VoltixLogin] Post-login watchdog fired — forcing navigation');
-      final username =
-          GetIt.instance<VoltixSessionStore>().username ?? '';
-      unawaited(_navigatePostLogin(username));
-    });
+    _startPostLoginWatchdog();
 
     try {
       final voltixApi = GetIt.instance<VoltixApiService>();
@@ -632,10 +655,17 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
       return;
     }
 
+    if (_loginInFlight) {
+      _logger.i('[VoltixLogin] Sign-in already in progress — ignoring repeat');
+      return;
+    }
+    _loginInFlight = true;
+
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
+    _startPostLoginWatchdog();
 
     try {
       final voltixApi = GetIt.instance<VoltixApiService>();
@@ -697,6 +727,11 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
       _logger.e('[VoltixLogin] Sign-in failed after the request returned: $e',
           error: e, stackTrace: stackTrace);
       _finishWithError('Sign-in failed: $e');
+    } finally {
+      // Cleared on every exit, including the device-limit path that returns
+      // early to show its dialog -- the retry from that dialog is a fresh
+      // sign-in and must be allowed through.
+      _loginInFlight = false;
     }
   }
 
@@ -812,7 +847,14 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
     final addFutures = result.servers.map((vServer) async {
       try {
         final serverUrl = vServer.absoluteProxyUrl(voltixApi.baseUrl);
-        final added = await serverRepo.addServer(serverUrl);
+        // Bounded per server, exactly as the startup screen's restore branch
+        // already does. addServer reaches the media server through the Voltix
+        // proxy, and one host that accepts the connection but never answers
+        // will otherwise hold this future open forever -- with nothing above
+        // it to time out, that is the whole login stuck on a spinner. The
+        // catch below swallows the timeout so the other servers still land.
+        final added =
+            await serverRepo.addServer(serverUrl).timeout(const Duration(seconds: 12));
         if (added != null) {
           addedServersMap[vServer.id] = added;
         }
@@ -824,7 +866,12 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
       }
     }).toList();
 
-    await Future.wait(addFutures);
+    // Backstop in case a future never settles despite the per-server bound.
+    try {
+      await Future.wait(addFutures).timeout(const Duration(seconds: 25));
+    } on TimeoutException {
+      logger.w('[VoltixLogin] Server setup timed out — continuing with whatever connected');
+    }
     final activeServer = server;
     if (activeServer == null) {
       logger.w('[VoltixLogin] Could not connect to streaming server proxy, falling back.');
@@ -853,15 +900,19 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
     try {
       Map<String, dynamic> authResult;
       try {
-        authResult = await client.authApi.authenticateByName(
-          result.user.username,
-          authPassword,
-        );
+        authResult = await client.authApi
+            .authenticateByName(
+              result.user.username,
+              authPassword,
+            )
+            .timeout(const Duration(seconds: 10));
       } catch (e) {
         // If authenticateByName failed (e.g. authPassword is a JWT session token from link code pairing),
         // validate authPassword directly as a proxy access token via getCurrentUser()!
         client.accessToken = authPassword;
-        final serverUser = await client.usersApi.getCurrentUser();
+        final serverUser = await client.usersApi
+            .getCurrentUser()
+            .timeout(const Duration(seconds: 10));
         authResult = {
           'AccessToken': authPassword,
           'User': {
@@ -1010,12 +1061,16 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
         );
       }
 
-      final switched = await sessionRepo.switchCurrentSession(
-        serverId: activeServer.id,
-        userId: userId,
-        username: result.user.username,
-        password: authPassword,
-      );
+      // Also bounded: switching sessions runs the plugin sync and Seerr
+      // configuration, both of which talk to the server.
+      final switched = await sessionRepo
+          .switchCurrentSession(
+            serverId: activeServer.id,
+            userId: userId,
+            username: result.user.username,
+            password: authPassword,
+          )
+          .timeout(const Duration(seconds: 20), onTimeout: () => true);
 
       if (switched) {
         // ── STATE: Jellyfin only or Both ────────────────────────────────
@@ -1053,6 +1108,10 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
 
 
   void _finishWithError(String message) {
+    // Login is over, so the watchdog has nothing left to rescue. It also
+    // self-disarms on _isLoading, but leaving a live timer around for another
+    // 45 seconds after the user is already reading an error is untidy.
+    _postLoginWatchdog?.cancel();
     setState(() {
       _isLoading = false;
       _errorMessage = message;

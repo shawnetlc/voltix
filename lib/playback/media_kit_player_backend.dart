@@ -405,8 +405,6 @@ class MediaKitPlayerBackend extends PlayerBackend {
       // Network resilience & demuxer threading
       _nativeSetProperty(platform, 'demuxer-lavf-o',
           'reconnect=1,reconnect_streamed=1,reconnect_delay_max=5');
-      _nativeSetProperty(platform, 'demuxer-lavf-probesize', '32M');
-      _nativeSetProperty(platform, 'demuxer-lavf-analyzeduration', '5000000');
       _nativeSetProperty(platform, 'demuxer-thread', 'yes');
       _nativeSetProperty(platform, 'cache', 'yes');
       _nativeSetProperty(platform, 'cache-pause-initial', 'yes');
@@ -593,8 +591,33 @@ class MediaKitPlayerBackend extends PlayerBackend {
     await _applyCustomMpvConfIfEnabled();
     await _applyAssOverrideMode();
 
+    final container = payload['container']?.toString().toLowerCase();
+    final lowerUrl = url.toLowerCase();
+    final isTsStream = container == 'ts' ||
+        lowerUrl.contains('.ts') ||
+        lowerUrl.contains('containerextension=ts') ||
+        lowerUrl.contains('output=ts') ||
+        lowerUrl.contains('timeshift') ||
+        lowerUrl.contains('/api/iptv/stream-proxy');
+
     if (_player.platform is NativePlayer) {
       final native = _player.platform as NativePlayer;
+      // Demuxer probe tuning: MPEG-TS catchup/IPTV streams need large probe/analyze
+      // windows to locate late PMT and audio tracks. Normal VOD (MKV, MP4, HLS, etc.)
+      // uses standard fast probe settings to avoid network buffering stalls.
+      //
+      // analyzeduration is in SECONDS. It was being given microsecond-style
+      // values -- 5000000 and 1000000, which are 58 days and 12 days -- because
+      // that is the unit libavformat's own option takes. mpv converts from
+      // seconds itself, so those asked the demuxer to analyze essentially
+      // without limit and left probesize as the only thing ending the probe.
+      if (isTsStream) {
+        await _nativeSetProperty(native, 'demuxer-lavf-probesize', '32M');
+        await _nativeSetProperty(native, 'demuxer-lavf-analyzeduration', '10');
+      } else {
+        await _nativeSetProperty(native, 'demuxer-lavf-probesize', '5M');
+        await _nativeSetProperty(native, 'demuxer-lavf-analyzeduration', '2');
+      }
       await _nativeSetProperty(native, 'aid', 'auto');
       await _nativeSetProperty(native, 'mute', 'no');
       await _nativeSetProperty(native, 'sid', 'auto');
@@ -606,7 +629,13 @@ class MediaKitPlayerBackend extends PlayerBackend {
     }
     await _player.setAudioTrack(AudioTrack.auto());
 
-    final media = Media(url);
+    final headers = payload['headers'] is Map
+        ? (payload['headers'] as Map).map(
+            (k, v) => MapEntry(k.toString(), v.toString()),
+          )
+        : null;
+
+    final media = Media(url, httpHeaders: headers);
     final openPaused = startPosition > Duration.zero;
     await _player.open(media, play: !openPaused);
     _updateStaleState();

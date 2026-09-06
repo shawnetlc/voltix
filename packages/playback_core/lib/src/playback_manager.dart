@@ -13,6 +13,15 @@ class PlaybackManager implements AudioOwnable {
   static const _defaultMediaReadyTimeout = Duration(seconds: 60);
   static const _onlineStartupReadyTimeout = Duration(seconds: 15);
 
+  /// Ceiling on handing the media to the player backend. Generous, because a
+  /// cold libmpv or ExoPlayer can take a moment on a low-end box, but finite
+  /// so a backend that never returns from open() cannot strand the bringup.
+  static const _backendOpenTimeout = Duration(seconds: 30);
+
+  /// Ceiling on taking the audio focus. Sub-second in practice; this only
+  /// exists so a producer that never releases cannot block playback outright.
+  static const _audioArbiterTimeout = Duration(seconds: 10);
+
   PlayerBackend? _backend;
   MediaStreamResolver? _resolver;
   PlayerService? _service;
@@ -1178,15 +1187,33 @@ class PlaybackManager implements AudioOwnable {
         normalizationGainDb: resolution.normalizationGainDb,
         hybridAudioUrl: resolution.hybridAudioUrl,
       );
-      await _arbiter?.acquire(AudioProducer.mainPlayback);
+      // Both awaits below are bounded.
+      //
+      // Neither is a network wait -- the backend's play() hands the media to
+      // the player and returns, and the real "is it streaming yet" wait is
+      // _waitForMediaReady further down, which has always had a timeout. But
+      // an unbounded await here has no ceiling at all: the audio arbiter can
+      // fail to hand over, or a backend can sit inside open() and never come
+      // back, and the bringup phase then stays where it is forever. The player
+      // route renders that as "Loading stream..." with no error and no way
+      // out, which is the shape of the freeze users report.
+      //
+      // A TimeoutException here is caught by this same try and becomes
+      // startupError, so it flows into the recovery and failure handling that
+      // already exists rather than needing a path of its own.
+      await _arbiter
+          ?.acquire(AudioProducer.mainPlayback)
+          .timeout(_audioArbiterTimeout);
       if (sessionToken != _playbackSessionToken) {
         _cleanupPreemptedSession(item, resolution);
         return;
       }
-      await _backend!.play(
-        backendMediaPayload,
-        startPosition: useNativeStart ? startPosition : Duration.zero,
-      );
+      await _backend!
+          .play(
+            backendMediaPayload,
+            startPosition: useNativeStart ? startPosition : Duration.zero,
+          )
+          .timeout(_backendOpenTimeout);
       if (sessionToken != _playbackSessionToken) {
         _cleanupPreemptedSession(item, resolution);
         return;

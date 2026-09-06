@@ -510,14 +510,77 @@ class VoltixIptvRepository {
         // now rather than only inside the Cyrillic branch, because it carries
         // the per-programme artwork and synopsis from the XMLTV feed, not just
         // an English title.
+        //
+        // The CLOSEST programme within the window, not the first one found.
+        // dstvProgs is sorted newest-first, so a first-match scan returned the
+        // latest programme starting within half an hour rather than the one
+        // actually covering this slot. On a channel with hourly listings only
+        // one candidate is ever in range and the two agree -- but sport runs
+        // short, irregular programmes back to back (the match, the post-match,
+        // the highlights), so several land inside the window and the label was
+        // being pulled backwards off a later programme. That is why a rugby
+        // match appeared to start over an hour into the previous one.
+        //
+        // A programme that genuinely overlaps the slot beats one that merely
+        // starts nearby, so an exact cover always wins over a neighbour.
         IptvEpgEntry? matchingDstv;
         if (dstvProgs != null && dstvProgs.isNotEmpty) {
-          matchingDstv = dstvProgs.firstWhereOrNull((dp) {
-            if (dp.startTimestamp == null) return false;
-            final diff = (dp.startTimestamp! - entry.startTimestamp!).abs();
-            return diff <= 1800; // within 30 mins
-          });
+          var bestScore = 1 << 30;
+          for (final dp in dstvProgs) {
+            final dpStart = dp.startTimestamp;
+            if (dpStart == null) continue;
+            final diff = (dpStart - entry.startTimestamp!).abs();
+            if (diff > 1800) continue; // within 30 mins
+            final dpStop = dp.stopTimestamp;
+            final overlaps = dpStop != null &&
+                dpStart < entry.stopTimestamp! &&
+                dpStop > entry.startTimestamp!;
+            // Overlap is worth more than any distance inside the window, so
+            // it is scored below every non-overlapping candidate.
+            final score = overlaps ? diff : diff + 3600;
+            if (score < bestScore) {
+              bestScore = score;
+              matchingDstv = dp;
+            }
+          }
         }
+
+        // The matched programme, but only when it is plainly the SAME
+        // programme as this slot -- not merely one that overlaps it.
+        //
+        // Overlap alone is too weak a test. Sport guides carry broad blocks
+        // ("Live Sport 14:00-18:00") that overlap four consecutive provider
+        // hours, and letting such a block rewrite each of their times made all
+        // four identical, which then collapsed into a single tile. The result
+        // was sport showing a fraction of the 72 hours every other category
+        // showed. So the overlap has to account for most of BOTH programmes
+        // before its times are trusted: a real per-match listing does, a block
+        // spanning the whole afternoon does not.
+        //
+        // A programme that fails this still lends its title, synopsis and
+        // artwork. Only the clock is left alone.
+        // Copied to a final local first: a variable the enclosing loop
+        // reassigns is not promotable inside a closure, so the null check
+        // below would not survive into the field reads.
+        final IptvEpgEntry? candidate = matchingDstv;
+        final coveringDstv = () {
+          if (candidate == null || !candidate.hasTimes) return null;
+          final dStart = candidate.startTimestamp!;
+          final dStop = candidate.stopTimestamp!;
+          final eStart = entry.startTimestamp!;
+          final eStop = entry.stopTimestamp!;
+          final overlap = (dStop < eStop ? dStop : eStop) -
+              (dStart > eStart ? dStart : eStart);
+          if (overlap <= 0) return null;
+          final dLen = dStop - dStart;
+          final eLen = eStop - eStart;
+          if (dLen <= 0 || eLen <= 0) return null;
+          const minShare = 0.6;
+          if (overlap < dLen * minShare || overlap < eLen * minShare) {
+            return null;
+          }
+          return candidate;
+        }();
 
         // If title is Russian / Cyrillic or empty, find English title from DStv schedule or sanitize
         var title = entry.title;
@@ -568,6 +631,27 @@ class VoltixIptvRepository {
           description: description,
           icon: icon,
         );
+
+        // Take the times from whichever source supplied the title.
+        //
+        // The card's label came from the DStv guide while its start and stop
+        // stayed the provider's, and the catch-up stream URL is built from
+        // that start. Where the two guides agree -- which is every channel
+        // with tidy hourly listings -- the difference is a minute or two and
+        // invisible. On sport it is not: DStv carries the real kickoff while
+        // the provider carries a rounded block, so the tile said one thing and
+        // played from somewhere else inside it.
+        //
+        // Only when the DStv programme genuinely covers this slot, so a
+        // near-miss can still lend its artwork without moving the clock. The
+        // provider's archive is addressed by time rather than by slot, so any
+        // start within the window is playable.
+        if (coveringDstv != null) {
+          entry = entry.copyWith(
+            startTimestamp: coveringDstv.startTimestamp,
+            stopTimestamp: coveringDstv.stopTimestamp,
+          );
+        }
 
         result.add(entry);
       }
