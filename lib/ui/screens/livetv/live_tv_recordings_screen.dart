@@ -12,6 +12,7 @@ import '../../../data/models/aggregated_item.dart';
 import '../../../data/models/iptv_models.dart';
 import '../../../data/repositories/voltix_iptv_repository.dart';
 import '../../../util/focus/key_event_utils.dart';
+import '../../../util/user_facing_error.dart';
 import '../../navigation/destinations.dart';
 import '../../widgets/focus/request_initial_focus.dart';
 import '../playback/playback_takeover.dart';
@@ -75,7 +76,7 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _categoriesError = '$e';
+        _categoriesError = userFacingError(e);
         _loadingCategories = false;
       });
     }
@@ -102,7 +103,7 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
     } catch (e) {
       if (!mounted || token != _loadToken) return;
       setState(() {
-        _channelsError = '$e';
+        _channelsError = userFacingError(e);
         _loadingChannels = false;
       });
     }
@@ -568,7 +569,7 @@ class _ChannelCatchupSectionState extends State<_ChannelCatchupSection> {
       final programs = await widget.repo.getCatchupEpg(widget.channel);
       if (mounted) setState(() => _programs = programs);
     } catch (e) {
-      if (mounted) setState(() => _error = '$e');
+      if (mounted) setState(() => _error = userFacingError(e));
     }
   }
 

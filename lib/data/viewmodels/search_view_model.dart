@@ -12,6 +12,7 @@ import '../repositories/multi_server_repository.dart';
 import '../repositories/search_repository.dart';
 import '../repositories/seerr_repository.dart';
 import '../services/seerr/seerr_api_models.dart';
+import '../../util/user_facing_error.dart';
 
 class SearchResultGroup {
   final String title;
@@ -205,7 +206,7 @@ class SearchViewModel extends ChangeNotifier {
       _state = SearchState.ready;
     } catch (e) {
       if (query != _query) return;
-      _errorMessage = e.toString();
+      _errorMessage = userFacingError(e);
       _state = SearchState.error;
     }
     notifyListeners();

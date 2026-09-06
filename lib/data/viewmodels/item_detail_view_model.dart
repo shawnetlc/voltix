@@ -18,6 +18,7 @@ import 'seerr_media_detail_view_model.dart';
 import '../../preference/preference_constants.dart';
 import '../../preference/user_preferences.dart';
 import '../../util/episode_playability.dart';
+import '../../util/user_facing_error.dart';
 
 enum ItemDetailState { loading, ready, error }
 
@@ -371,7 +372,7 @@ class ItemDetailViewModel extends ChangeNotifier {
 
       _loadSecondary();
     } catch (e) {
-      _errorMessage = e.toString();
+      _errorMessage = userFacingError(e);
       _state = ItemDetailState.error;
       notifyListeners();
     }

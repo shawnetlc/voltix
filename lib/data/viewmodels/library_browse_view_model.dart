@@ -7,6 +7,7 @@ import '../../preference/user_preferences.dart';
 import '../models/aggregated_item.dart';
 import '../repositories/mdblist_repository.dart';
 import '../utils/playlist_utils.dart';
+import '../../util/user_facing_error.dart';
 
 enum LibraryBrowseState { loading, ready, error }
 
@@ -246,7 +247,7 @@ class LibraryBrowseViewModel extends ChangeNotifier {
       await _fetchPage(0);
       _state = LibraryBrowseState.ready;
     } catch (e) {
-      _errorMessage = e.toString();
+      _errorMessage = userFacingError(e);
       _state = LibraryBrowseState.error;
     }
     notifyListeners();

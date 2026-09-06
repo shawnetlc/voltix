@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:server_core/server_core.dart';
 
 import '../../preference/preference_constants.dart';
+import '../../util/user_facing_error.dart';
 
 class GuideChannel {
   final String id;
@@ -358,7 +359,7 @@ class LiveTvGuideViewModel extends ChangeNotifier {
       await loadInitialPrograms();
       _state = GuideState.ready;
     } catch (e) {
-      _errorMessage = e.toString();
+      _errorMessage = userFacingError(e);
       _state = GuideState.error;
     }
     notifyListeners();
@@ -412,7 +413,7 @@ class LiveTvGuideViewModel extends ChangeNotifier {
       }
       _state = GuideState.ready;
     } catch (e) {
-      _errorMessage = e.toString();
+      _errorMessage = userFacingError(e);
       _state = GuideState.error;
     }
     notifyListeners();

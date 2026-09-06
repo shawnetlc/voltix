@@ -4,6 +4,7 @@ import 'package:server_core/server_core.dart';
 
 import '../models/aggregated_item.dart';
 import '../utils/playlist_utils.dart';
+import '../../util/user_facing_error.dart';
 
 class BreadcrumbEntry {
   final String id;
@@ -87,7 +88,7 @@ class FolderBrowseViewModel extends ChangeNotifier {
       _state = FolderBrowseState.ready;
     } catch (e) {
       if (_disposed) return;
-      _errorMessage = e.toString();
+      _errorMessage = userFacingError(e);
       _state = FolderBrowseState.error;
     }
     _notify();

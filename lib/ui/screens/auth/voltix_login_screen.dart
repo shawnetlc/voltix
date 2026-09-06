@@ -24,6 +24,7 @@ import '../../../data/services/voltix_api_service.dart';
 import '../../../data/services/voltix_session_service.dart';
 import '../../../preference/user_preferences.dart';
 import '../../../util/platform_detection.dart';
+import '../../../util/user_facing_error.dart';
 import '../../navigation/app_router.dart';
 import '../../navigation/destinations.dart';
 import '../../widgets/login_scaffold.dart';
@@ -726,7 +727,7 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
       // here sent people to debug a connection that was working fine.
       _logger.e('[VoltixLogin] Sign-in failed after the request returned: $e',
           error: e, stackTrace: stackTrace);
-      _finishWithError('Sign-in failed: $e');
+      _finishWithError(userFacingError(e));
     } finally {
       // Cleared on every exit, including the device-limit path that returns
       // early to show its dialog -- the retry from that dialog is a fresh
