@@ -35,6 +35,7 @@ import '../../../data/repositories/seerr_repository.dart';
 import '../../../data/services/plugin_sync_service.dart';
 import '../../../data/services/seerr/seerr_api_models.dart';
 import '../../../data/utils/bounded_concurrency.dart';
+import '../../../util/platform_detection.dart';
 import '../../../preference/seerr_preferences.dart';
 import '../../../data/viewmodels/seerr_discover_view_model.dart';
 
@@ -508,9 +509,11 @@ class HomeViewModel extends ChangeNotifier {
         }
       }
 
-      final completers = <Future<void>>[];
+      // Collected as callables, not started futures, so the runner below
+      // decides how many run at once.
+      final sectionLoads = <Future<void> Function()>[];
       for (final cfg in nonResumeEffectiveConfigs) {
-        completers.add(() async {
+        sectionLoads.add(() async {
           List<HomeRow> sectionRows;
           try {
             sectionRows = await _loadConfig(cfg);
@@ -571,10 +574,35 @@ class HomeViewModel extends ChangeNotifier {
             }
           }
           notifyListeners();
-        }());
+        });
       }
 
-      await Future.wait(completers);
+      // Bounded on TV, unbounded everywhere else.
+      //
+      // Every section is an independent request that returns a page of items
+      // and then pulls artwork for each. Starting them all together is fine on
+      // a desktop and punishing on a TV box: a populated home screen is twenty
+      // to thirty simultaneous HTTPS connections, several hundred items parsed
+      // in one go, then a wave of image decodes -- on a device with 1GB of RAM
+      // and a CPU to match. That burst is what leaves an entry-level panel on a
+      // blank home screen, or out of memory before it has drawn one.
+      //
+      // Passing the full length off TV reproduces the previous behaviour
+      // exactly, since mapBounded caps its worker count at the item count.
+      //
+      // Sections still complete in whatever order they complete in: each
+      // anchors its rows against the surrounding rows rather than an index,
+      // which is what made arbitrary ordering safe before and keeps it safe.
+      // The visible difference on a slow device is that rows arrive in waves
+      // instead of all at the end, so content shows sooner.
+      await mapBounded<Future<void> Function(), bool>(
+        sectionLoads,
+        PlatformDetection.isTV ? 4 : sectionLoads.length,
+        (task) async {
+          await task();
+          return true;
+        },
+      );
 
       unawaited(_cacheStore.write(_homeCacheKey(), _rows));
       _topShelf.update(_rows);
