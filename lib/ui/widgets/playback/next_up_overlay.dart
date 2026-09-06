@@ -110,6 +110,16 @@ class _NextUpOverlayState extends State<NextUpOverlay>
                 child: CachedNetworkImage(
                   imageUrl: widget.imageUrl!,
                   fit: BoxFit.cover,
+                  // Bounded by height, which is the dimension actually fixed
+                  // here -- the width comes from the parent card. This overlay
+                  // appears during playback, when the video decoder is holding
+                  // its own buffers, so decoding a full-size still into a
+                  // 120pt strip is the worst moment to overspend. Capped at 2x
+                  // because past that the extra detail is invisible at this
+                  // size and only costs memory.
+                  memCacheHeight:
+                      (120 * MediaQuery.devicePixelRatioOf(context).clamp(1.0, 2.0))
+                          .round(),
                   errorWidget: (_, _, _) =>
                       Container(color: AppColorScheme.surfaceVariant),
                 ),

@@ -1612,9 +1612,23 @@ class UserPreferences extends ChangeNotifier {
     values: PlaybackEnginePreference.values,
   );
 
+  /// What to do with Dolby Vision content the device cannot play natively.
+  ///
+  /// Only ever consulted for a device that has already been established as NOT
+  /// Dolby Vision capable but able to do some other HDR -- a true DV panel
+  /// plays natively and never reaches this, and a device with no HDR at all
+  /// transcodes regardless. So changing the TV default costs capable hardware
+  /// nothing.
+  ///
+  /// "Ask" resolves to attempting DV playback anyway, which on a TV that cannot
+  /// decode it is the black screen that never starts. Transcoding is the only
+  /// outcome that produces a picture on that hardware, so TV asks the server to
+  /// do it rather than trying and failing.
   static final dolbyVisionFallbackBehavior = EnumPreference(
     key: 'dolby_vision_fallback_behavior',
-    defaultValue: DolbyVisionFallbackBehavior.ask,
+    defaultValue: PlatformDetection.isTV
+        ? DolbyVisionFallbackBehavior.transcode
+        : DolbyVisionFallbackBehavior.ask,
     values: DolbyVisionFallbackBehavior.values,
   );
 
