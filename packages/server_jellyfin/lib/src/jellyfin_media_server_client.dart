@@ -129,7 +129,10 @@ class JellyfinMediaServerClient extends MediaServerClient {
 
     _reauthInProgress = true;
     try {
-      final String? token;
+      // Not final: a final local assigned inside a try leans on definite
+      // assignment analysis across the finally, which is a needless thing to
+      // depend on here.
+      String? token;
       try {
         token = await recover(_baseUrl);
       } finally {
