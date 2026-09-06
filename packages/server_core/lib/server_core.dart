@@ -51,5 +51,6 @@ export 'src/network/auth_header.dart';
 export 'src/network/redirect_interceptor.dart';
 export 'src/network/server_user_agent.dart';
 export 'src/network/server_probe.dart';
+export 'src/network/server_auth_recovery.dart';
 export 'src/api/games_api.dart';
 export 'src/models/games_models.dart';

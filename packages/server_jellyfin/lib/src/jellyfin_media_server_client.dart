@@ -71,16 +71,88 @@ class JellyfinMediaServerClient extends MediaServerClient {
         );
         handler.next(response);
       },
-      onError: (error, handler) {
+      onError: (error, handler) async {
         ServerLog.network(
           '✗ ${error.requestOptions.method} ${error.requestOptions.uri} '
           '(${error.response?.statusCode ?? error.type.name})',
           level: ServerLogLevel.error,
           error: error.message ?? error.toString(),
         );
+        if (error.response?.statusCode == 401) {
+          final retried = await _retryAfterReauth(error.requestOptions);
+          if (retried != null) {
+            handler.resolve(retried);
+            return;
+          }
+        }
         handler.next(error);
       },
     ));
+  }
+
+  /// Marks a request that has already been retried, so a token the server
+  /// keeps rejecting cannot start a loop.
+  static const _retriedKey = 'voltix_reauth_retried';
+
+  /// True while a recovery is running.
+  ///
+  /// Deliberately a plain flag rather than a shared future that other 401s
+  /// await. The recovery re-authenticates through this same client, so its own
+  /// request can 401 too -- and a waiter would then be awaiting the future it
+  /// is itself inside, which deadlocks. A flag makes that case return null and
+  /// surface the 401 honestly.
+  ///
+  /// The cost is that 401s arriving during a recovery are not replayed: on a
+  /// home screen failing a dozen requests at once, the first recovers and the
+  /// rest report their error. They succeed on the next load, against a token
+  /// that is now valid. That is a far better failure than today's, where
+  /// nothing recovers until the app is restarted.
+  bool _reauthInProgress = false;
+
+  /// Re-mints the access token and replays [options] once, or null when
+  /// recovery is unavailable or did not help.
+  ///
+  /// A media-server token can be invalidated while the app is running -- the
+  /// server restarts, an admin revokes the device, or a second sign-in
+  /// terminates the session row the token belonged to. Before this, that was
+  /// only handled during login: SessionRepository re-mints from the stored
+  /// Voltix JWT when getCurrentUser 401s, and nothing did so afterwards. A
+  /// token that died mid-session therefore left every later request failing
+  /// until the app was restarted, with each screen showing its own error and
+  /// no way back.
+  Future<Response<dynamic>?> _retryAfterReauth(RequestOptions options) async {
+    final recover = ServerAuthRecovery.handler;
+    if (recover == null) return null;
+    if (options.extra[_retriedKey] == true) return null;
+
+    if (_reauthInProgress) return null;
+
+    _reauthInProgress = true;
+    try {
+      final String? token;
+      try {
+        token = await recover(_baseUrl);
+      } finally {
+        _reauthInProgress = false;
+      }
+      if (token == null || token.isEmpty || token == _accessToken) return null;
+
+      _accessToken = token;
+      ServerLog.network('↻ re-authenticated after 401, replaying '
+          '${options.method} ${options.path}');
+
+      // The request interceptor rebuilds the Authorization header from the
+      // token just set, so the replay carries the new one.
+      return await _dio.fetch<dynamic>(
+        options..extra = {...options.extra, _retriedKey: true},
+      );
+    } catch (e) {
+      ServerLog.network(
+        '✗ re-authentication after 401 failed: $e',
+        level: ServerLogLevel.error,
+      );
+      return null;
+    }
   }
 
   @override

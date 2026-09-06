@@ -485,6 +485,78 @@ Future<void> configureDependencies() async {
       getIt<DeviceInfo>(),
     ),
   );
+
+  _installServerAuthRecovery();
+}
+
+/// Lets the media-server clients recover from a 401 instead of failing until
+/// the app is restarted.
+///
+/// A media-server token can stop being accepted while the app is running: the
+/// server restarts, an admin revokes the device, or a second sign-in
+/// terminates the session row the token belonged to. SessionRepository already
+/// re-mints from the stored Voltix JWT when that happens during login, but
+/// nothing did afterwards -- so a token that died on the home screen left every
+/// request to that server failing, every row empty, and no way back short of
+/// restarting.
+///
+/// The client packages cannot reach the Voltix session themselves, so the
+/// handler is installed here and they call it when they see a 401.
+///
+/// The Jellyfin proxy accepts the Voltix JWT in place of a password, which is
+/// the same exchange login performs, so re-minting needs no stored credentials
+/// and nothing to prompt the viewer for.
+void _installServerAuthRecovery() {
+  ServerAuthRecovery.handler = (String baseUrl) async {
+    if (!getIt.isRegistered<VoltixSessionStore>() ||
+        !getIt.isRegistered<MediaServerClientFactory>()) {
+      return null;
+    }
+
+    final store = getIt<VoltixSessionStore>();
+    final jwt = store.sessionToken;
+    final username = store.username;
+    if (jwt == null || jwt.isEmpty || username == null || username.isEmpty) {
+      return null;
+    }
+
+    final normalized = baseUrl.trim().toLowerCase().replaceAll(
+      RegExp(r'/+$'),
+      '',
+    );
+    MediaServerClient? client;
+    for (final candidate in getIt<MediaServerClientFactory>().clients.values) {
+      final address = candidate.baseUrl.trim().toLowerCase().replaceAll(
+        RegExp(r'/+$'),
+        '',
+      );
+      if (address == normalized) {
+        client = candidate;
+        break;
+      }
+    }
+    if (client == null) return null;
+
+    try {
+      final result = await client.authApi
+          .authenticateByName(username, jwt)
+          .timeout(const Duration(seconds: 15));
+      final token = result['AccessToken'] as String?;
+      if (token == null || token.isEmpty) return null;
+
+      final userJson = result['User'] as Map<String, dynamic>?;
+      final userId =
+          userJson?['Id'] as String? ?? result['UserId'] as String?;
+      if (userId != null && userId.isNotEmpty) {
+        client.userId = userId;
+      }
+      return token;
+    } catch (_) {
+      // A failure here means the 401 stands, which is what the caller does
+      // with a null anyway.
+      return null;
+    }
+  };
 }
 
 String? migrateIosPath(String? storedPath, String currentDocsPath) {
