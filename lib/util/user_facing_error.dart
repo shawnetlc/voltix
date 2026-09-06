@@ -27,6 +27,7 @@ String userFacingError(Object? error) {
       case DioExceptionType.connectionTimeout:
       case DioExceptionType.sendTimeout:
       case DioExceptionType.receiveTimeout:
+      case DioExceptionType.transformTimeout:
         return 'The server took too long to respond. Please try again.';
       case DioExceptionType.connectionError:
         return 'Could not reach the server. Check your connection and try '

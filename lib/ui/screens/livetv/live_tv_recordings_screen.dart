@@ -428,11 +428,16 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
     return ListView.separated(
       // Every channel section fetches its own guide and mounts a row of
       // artwork the moment it is built, so how far ahead this list builds is
-      // directly how much memory the screen holds. The default extent is
-      // tuned for cheap tiles; these are not cheap. One screen's worth ahead
-      // keeps scrolling smooth without a catalogue this size ending up
-      // resident all at once.
-      cacheExtent: 400,
+      // directly how much memory the screen holds.
+      //
+      // The default cache extent (250px) is left alone deliberately. An
+      // earlier version of this set 400, which was meant to reduce the extent
+      // and in fact raised it above the default -- more off-screen sections
+      // built, not fewer. Keeping the default is the smaller number.
+      //
+      // addAutomaticKeepAlives is what actually matters here: without it a
+      // section that scrolls out of view stays alive, holding its guide and
+      // its row of decoded artwork for as long as the screen is open.
       addAutomaticKeepAlives: false,
       itemCount: channels.length,
       separatorBuilder: (_, __) => const SizedBox(height: 14),
