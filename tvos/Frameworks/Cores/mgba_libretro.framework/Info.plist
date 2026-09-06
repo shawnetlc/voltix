@@ -4,7 +4,7 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key><string>en</string>
 	<key>CFBundleExecutable</key><string>mgba_libretro</string>
-	<key>CFBundleIdentifier</key><string>org.moonfin.core.mgba</string>
+	<key>CFBundleIdentifier</key><string>cc.voltix.core.mgba</string>
 	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
 	<key>CFBundleName</key><string>mgba_libretro</string>
 	<key>CFBundlePackageType</key><string>FMWK</string>

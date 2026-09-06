@@ -1,7 +1,12 @@
 import TVServices
 
 private enum TopShelfShared {
-    static let appGroupIdentifier = "group.org.moonfin.app"
+    static var appGroupIdentifier: String {
+        if let _ = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.cc.voltix.streaming") {
+            return "group.cc.voltix.streaming"
+        }
+        return "group.org.moonfin.app"
+    }
     static let cacheFileName = "topshelf_cache.json"
 
     static var cacheFileURL: URL? {

@@ -24,7 +24,7 @@
   <key>CFBundleDevelopmentRegion</key>
   <string>$(DEVELOPMENT_LANGUAGE)</string>
   <key>CFBundleDisplayName</key>
-  <string>Moonfin</string>
+  <string>Voltix</string>
   <key>CFBundleExecutable</key>
   <string>$(EXECUTABLE_NAME)</string>
   <key>CFBundleIdentifier</key>
@@ -32,7 +32,7 @@
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>moonfin</string>
+  <string>Voltix</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleURLTypes</key>
@@ -41,9 +41,10 @@
       <key>CFBundleTypeRole</key>
       <string>Viewer</string>
       <key>CFBundleURLName</key>
-      <string>org.moonfin.app</string>
+      <string>cc.voltix.streaming</string>
       <key>CFBundleURLSchemes</key>
       <array>
+        <string>voltix</string>
         <string>moonfin</string>
       </array>
     </dict>

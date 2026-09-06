@@ -86,7 +86,10 @@ jobs:
 
       - name: Prepare Flutter build settings and pods
         run: |
-          flutter-tvos build tvos --release --no-tree-shake-icons --dart-define=MOONFIN_TVOS=true || true
+          flutter-tvos build tvos --release --no-tree-shake-icons \
+            --dart-define=VOLTIX_TVOS=true \
+            --dart-define=MOONFIN_TVOS=true \
+            --dart-define=DISTRIBUTION_CHANNEL=tvos_unsigned || true
           test -f tvos/Flutter/Generated.xcconfig
           grep -q '^FLUTTER_ROOT=' tvos/Flutter/Generated.xcconfig \
             || echo "FLUTTER_ROOT=$HOME/flutter-tvos" >> tvos/Flutter/Generated.xcconfig
@@ -168,18 +171,18 @@ jobs:
               echo "::error::ITMS-90208 failure for TestFlight"; exit 1;
             fi
           fi
-          rm -rf "$RUNNER_TEMP/Payload" "$RUNNER_TEMP/moonfin.ipa"
+          rm -rf "$RUNNER_TEMP/Payload" "$RUNNER_TEMP/Voltix_tvOS.ipa"
           mkdir -p "$RUNNER_TEMP/Payload"
           cp -R "$APP" "$RUNNER_TEMP/Payload/"
-          ( cd "$RUNNER_TEMP" && zip -qry moonfin.ipa Payload )
-          unzip -l "$RUNNER_TEMP/moonfin.ipa" | grep -q "Payload/Runner.app/Runner"
+          ( cd "$RUNNER_TEMP" && zip -qry Voltix_tvOS.ipa Payload )
+          unzip -l "$RUNNER_TEMP/Voltix_tvOS.ipa" | grep -q "Payload/Runner.app/Runner"
 
       - name: Upload IPA artifact
         if: ${{ inputs.distribution == 'dev' }}
         uses: actions/upload-artifact@v4
         with:
-          name: moonfin-tvos-ipa
-          path: ${{ runner.temp }}/moonfin.ipa
+          name: Voltix-tvOS-IPA
+          path: ${{ runner.temp }}/Voltix_tvOS.ipa
           if-no-files-found: error
 
       - name: Archive for App Store (TestFlight)

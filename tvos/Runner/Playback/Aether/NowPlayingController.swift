@@ -8,7 +8,7 @@ import AppKit
 #endif
 
 /// Bridges the player to the system Now Playing infrastructure: it owns the
-/// Now Playing payload and remote-command handlers so Moonfin becomes the
+/// Now Playing payload and remote-command handlers so Voltix becomes the
 /// active Now Playing app. Without this, AirPods stem clicks and Control
 /// Center transport controls fall through to whatever app last held the Now
 /// Playing session.

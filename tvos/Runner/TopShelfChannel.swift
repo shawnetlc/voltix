@@ -7,7 +7,13 @@ final class TopShelfChannel: NSObject {
     private let channel: FlutterMethodChannel
     private var pendingDeepLink: String?
 
-    private static let appGroupIdentifier = "group.org.moonfin.app"
+    private static var appGroupIdentifier: String {
+        if let _ = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: "group.cc.voltix.streaming") {
+            return "group.cc.voltix.streaming"
+        }
+        return "group.org.moonfin.app"
+    }
     private static let cacheFileName = "topshelf_cache.json"
 
     init(messenger: FlutterBinaryMessenger) {

@@ -48,7 +48,7 @@ for dylib in "${dylibs[@]}"; do
   install_name_tool -id "@rpath/$name.framework/$name" "$fw/$name"
 
   # CFBundleIdentifier forbids underscores.
-  bundle_id="org.moonfin.core.$(echo "${name%_libretro}" | tr '_' '-')"
+  bundle_id="cc.voltix.core.$(echo "${name%_libretro}" | tr '_' '-')"
 
   cat > "$fw/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

@@ -31,7 +31,7 @@ target 'Runner' do
     deps = JSON.parse(File.read(flutter_plugins_deps))
     tvos_plugins = deps.dig('plugins', 'tvos') || []
     if tvos_plugins.empty?
-      raise 'moonfin: no tvos plugins to install, and the restore above did ' \
+      raise 'voltix: no tvos plugins to install, and the restore above did ' \
             'not put any back. A Runner built from this has no secure storage ' \
             'and cannot keep a signed in session. Check that python3 is on ' \
             'PATH and that flutter pub get has fetched the tvos packages.'

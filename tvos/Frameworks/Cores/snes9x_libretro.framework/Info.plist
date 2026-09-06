@@ -4,7 +4,7 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key><string>en</string>
 	<key>CFBundleExecutable</key><string>snes9x_libretro</string>
-	<key>CFBundleIdentifier</key><string>org.moonfin.core.snes9x</string>
+	<key>CFBundleIdentifier</key><string>cc.voltix.core.snes9x</string>
 	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
 	<key>CFBundleName</key><string>snes9x_libretro</string>
 	<key>CFBundlePackageType</key><string>FMWK</string>

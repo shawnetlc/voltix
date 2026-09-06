@@ -29,7 +29,7 @@ enum SubtitleFontLocator {
     {
         guard !attachments.isEmpty else { return bundledFontsDirectory() }
         let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("moonfin-sub-fonts", isDirectory: true)
+            .appendingPathComponent("voltix-sub-fonts", isDirectory: true)
         let fm = FileManager.default
         try? fm.removeItem(at: dir)
         do {

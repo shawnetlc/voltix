@@ -85,8 +85,8 @@ class TopShelfService {
       'title': item.name,
       'imageURL': ?image,
       'contentImageURL': ?image,
-      'displayURL': 'moonfin://item?$query',
-      'playURL': 'moonfin://play?$query',
+      'displayURL': 'voltix://item?$query',
+      'playURL': 'voltix://play?$query',
     };
   }
 
@@ -120,7 +120,7 @@ class TopShelfService {
   /// Resolves a `moonfin://` deep link into an in-app route path, or null if
   /// the link is not a recognized Top Shelf action.
   static String? routeForDeepLink(Uri uri) {
-    if (uri.scheme != 'moonfin') return null;
+    if (uri.scheme != 'voltix' && uri.scheme != 'moonfin') return null;
     final id = uri.queryParameters['id'];
     if (id == null || id.isEmpty) return null;
     final serverId = uri.queryParameters['serverId'];

@@ -228,7 +228,7 @@ final class SubtitleOverlay: PlatformView {
         assImageView.isHidden = true
     }
 
-    /// Moonfin's typed subtitle-style contract, mirroring the Dart
+    /// Voltix's typed subtitle-style contract, mirroring the Dart
     /// `configureSubtitleStyle` call. Colors are ARGB ints, `fontSize` is the
     /// user-facing size on the 24-based scale, and `verticalOffset` from 0 to
     /// 1 maps to a bottom margin.

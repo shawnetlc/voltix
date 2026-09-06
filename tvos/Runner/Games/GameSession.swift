@@ -142,7 +142,7 @@ final class GameSession {
         running = true
         paused = false
         let t = Thread { [weak self] in self?.runLoop() }
-        t.name = "moonfin.game.run"
+        t.name = "voltix.game.run"
         t.qualityOfService = .userInteractive
         thread = t
         t.start()
