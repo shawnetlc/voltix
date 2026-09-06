@@ -20,6 +20,40 @@ void main() {
       expect(codecs, isEmpty);
     });
 
+    test('returns empty codecs in auto mode when not on AV receiver route', () {
+      final codecs = MediaKitPlayerBackend.passthroughCodecsFromPreferences(
+        audioOutputMode: AudioOutputMode.auto,
+        ac3PassthroughEnabled: true,
+        eac3PassthroughEnabled: true,
+        eac3JocPassthroughEnabled: true,
+        dtsCorePassthroughEnabled: true,
+        dtsHdPassthroughEnabled: true,
+        dtsXPassthroughEnabled: true,
+        trueHdPassthroughEnabled: true,
+        trueHdAtmosPassthroughEnabled: true,
+        isAvReceiverRoute: false,
+      );
+
+      expect(codecs, isEmpty);
+    });
+
+    test('returns passthrough codecs in avrPassthrough mode even when isAvReceiverRoute is false', () {
+      final codecs = MediaKitPlayerBackend.passthroughCodecsFromPreferences(
+        audioOutputMode: AudioOutputMode.avrPassthrough,
+        ac3PassthroughEnabled: true,
+        eac3PassthroughEnabled: true,
+        eac3JocPassthroughEnabled: false,
+        dtsCorePassthroughEnabled: false,
+        dtsHdPassthroughEnabled: false,
+        dtsXPassthroughEnabled: false,
+        trueHdPassthroughEnabled: false,
+        trueHdAtmosPassthroughEnabled: false,
+        isAvReceiverRoute: false,
+      );
+
+      expect(codecs, equals(<String>['ac3', 'eac3']));
+    });
+
     test('maps enabled codec toggles to mpv passthrough codec names', () {
       final codecs = MediaKitPlayerBackend.passthroughCodecsFromPreferences(
         audioOutputMode: AudioOutputMode.avrPassthrough,

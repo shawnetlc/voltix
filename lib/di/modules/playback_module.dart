@@ -743,20 +743,40 @@ class DirectUrlResolver implements MediaStreamResolver {
     bool enableTranscoding = true,
   }) async {
     final String url;
+    String? container;
     if (mediaItem is String) {
       url = mediaItem;
     } else if (mediaItem is Map) {
       url = mediaItem['url'] as String? ?? '';
+      container = mediaItem['container'] as String?;
     } else if (mediaItem is AggregatedItem) {
       url = mediaItem.rawData['url'] as String? ?? '';
+      container = mediaItem.rawData['container'] as String?;
     } else {
       url = '';
+    }
+    if ((container == null || container.isEmpty) && url.isNotEmpty) {
+      final lower = url.toLowerCase();
+      if (lower.contains('.ts') ||
+          lower.contains('containerextension=ts') ||
+          lower.contains('output=ts')) {
+        container = 'ts';
+      } else if (lower.contains('.m3u8') || lower.contains('output=m3u8')) {
+        container = 'm3u8';
+      } else if (lower.contains('.mpd')) {
+        container = 'mpd';
+      } else if (lower.contains('.mp4')) {
+        container = 'mp4';
+      } else if (lower.contains('.mkv')) {
+        container = 'mkv';
+      }
     }
     return StreamResolutionResult(
       streamUrl: url,
       mediaSourceId: mediaSourceId ?? 'direct_url',
       playMethod: StreamPlayMethod.directPlay,
       mediaType: 'video',
+      container: container,
     );
   }
 }

@@ -959,7 +959,7 @@ class UserPreferences extends ChangeNotifier {
     defaultValue: false,
   );
 
-  /// Whether the per-library "Latest in <library>" rows show on the home
+  /// Whether the per-library "Latest in `library`" rows show on the home
   /// screen. Off by default on this version -- the server-side
   /// latestItemsExcludes config (per-library, synced from Jellyfin/Emby)
   /// still applies underneath this, this is just a client-side master
@@ -973,8 +973,8 @@ class UserPreferences extends ChangeNotifier {
   //
   // Ported from Moonfin Core 2.4.0. Replaces the taste-quiz recommendation
   // system: suggestions are scored from library metadata the user already has
-  // (shared genres, tags, cast, studio, year, title similarity) rather than
-  // from an onboarding questionnaire.
+  // rather than a one-time onboarding quiz. The Jellyfin/Emby plugin computes
+  // and syncs the rows; the client renders them in order.
 
   static final displaySinceYouWatchedRows = Preference(
     key: 'pref_display_since_you_watched_rows',
@@ -1032,6 +1032,37 @@ class UserPreferences extends ChangeNotifier {
 
   static final sinceYouWatchedIncludeWatched = Preference(
     key: 'pref_since_you_watched_include_watched',
+    defaultValue: false,
+  );
+
+  static final displayMoreWithActorRows = Preference(
+    key: 'pref_display_more_with_actor_rows',
+    defaultValue: true,
+  );
+
+  static final moreWithActor1Enabled = Preference(
+    key: 'more_with_actor_1_enabled',
+    defaultValue: true,
+  );
+
+  static final moreWithActor2Enabled = Preference(
+    key: 'more_with_actor_2_enabled',
+    defaultValue: true,
+  );
+
+  static final moreWithActor3Enabled = Preference(
+    key: 'more_with_actor_3_enabled',
+    defaultValue: false,
+  );
+
+  static final moreWithActorNumRows = EnumPreference(
+    key: 'pref_more_with_actor_num_rows',
+    defaultValue: MoreWithActorNumRows.two,
+    values: MoreWithActorNumRows.values,
+  );
+
+  static final moreWithActorIncludeWatched = Preference(
+    key: 'pref_more_with_actor_include_watched',
     defaultValue: false,
   );
 

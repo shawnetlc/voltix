@@ -492,6 +492,7 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
       aiFeaturesEnabled: _tasteRepo.currentProfile?.aiFeaturesEnabled ?? true,
       aiPersonaSummary: _aiPersonaInsight,
       azureBackupEnabled: _tasteRepo.currentProfile?.azureBackupEnabled ?? true,
+      enabledHomeRows: _tasteRepo.currentProfile?.enabledHomeRows ?? const {},
     );
   }
 
@@ -538,7 +539,20 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
 
     setState(() => _finishing = true);
     try {
-      final profile = _buildDraftProfile(status: TasteProfileStatus.completed);
+      final draft = _buildDraftProfile(status: TasteProfileStatus.completed);
+
+      // AI Analysis: Determine top 3-5 home rows / curated collections based on user picks
+      final suggestedRows = await _tasteRepo.grokAi.suggestTopHomeRows(draft);
+
+      // Disable all 14 rows by default, then enable only the AI-suggested rows
+      final initialEnabledRows = <String, bool>{
+        for (final r in PersonalizationRowType.values) r.key: false,
+      };
+      for (final row in suggestedRows) {
+        initialEnabledRows[row.key] = true;
+      }
+
+      final profile = draft.copyWith(enabledHomeRows: initialEnabledRows);
       await _tasteRepo.saveProfile(profile);
       _tasteRepo.startSilentBackgroundPopulation();
     } catch (e) {
@@ -2354,7 +2368,7 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
                   : const Icon(Icons.check_circle_rounded),
               label: Text(
                 _finishing
-                    ? 'Saving your profile...'
+                    ? 'AI personalizing your home rows...'
                     : 'Complete & Launch Personalized Experience',
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),

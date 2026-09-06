@@ -887,7 +887,7 @@ class _TasteProfileSettingsScreenState
     final enabledRows = profile.enabledHomeRows;
 
     Widget buildRowToggle(PersonalizationRowType row) {
-      final isEnabled = enabledRows[row.key] ?? true;
+      final isEnabled = enabledRows[row.key] ?? false;
       return Padding(
         padding: const EdgeInsets.only(bottom: 4),
         child: TvFocusHighlight(

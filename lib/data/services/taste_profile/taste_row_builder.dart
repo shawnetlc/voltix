@@ -317,12 +317,11 @@ class TasteRowBuilder {
 
   /// Rows the profile has switched on, in enum order.
   ///
-  /// Absent means enabled: the settings screen and the warmup loop both read
-  /// `enabledHomeRows[key] ?? true`, and disagreeing here would let a row show
-  /// in settings as on while never rendering.
+  /// Absent means disabled (false): rows only show when explicitly curated
+  /// by AI during onboarding or enabled by the user in settings.
   List<PersonalizationRowType> _enabledRows(TasteProfile profile) {
     return PersonalizationRowType.values
-        .where((r) => profile.enabledHomeRows[r.key] ?? true)
+        .where((r) => profile.enabledHomeRows[r.key] ?? false)
         .toList();
   }
 

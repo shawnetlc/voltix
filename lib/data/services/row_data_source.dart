@@ -30,10 +30,14 @@ class RowDataSource {
   static const int _recommendationCacheMaxEntries = 64;
   static final Map<String, List<Map<String, dynamic>>> _recommendationCache = {};
   static final Map<String, List<AggregatedItem>> _scoredRecommendationsCache = {};
+  static Future<List<({String id, String name, List<AggregatedItem> items})>>? _eligibleActorRowsFuture;
+  static String? _eligibleActorRowsKey;
 
   static void clearRecommendationCache() {
     _recommendationCache.clear();
     _scoredRecommendationsCache.clear();
+    _eligibleActorRowsFuture = null;
+    _eligibleActorRowsKey = null;
   }
 
   static void _cacheRecommendations(String key, List<Map<String, dynamic>> items) {
@@ -1304,6 +1308,7 @@ class RowDataSource {
     List<String>? excludeItemTypes,
     List<String>? genreIds,
     List<String>? genres,
+    List<String>? personIds,
     List<String>? filters,
     String? sortBy,
     String? sortOrder,
@@ -1320,6 +1325,7 @@ class RowDataSource {
         excludeItemTypes: excludeItemTypes,
         genreIds: genreIds,
         genres: genres,
+        personIds: personIds,
         filters: filters,
         sortBy: sortBy,
         sortOrder: sortOrder,
@@ -1346,6 +1352,7 @@ class RowDataSource {
         excludeItemTypes: excludeItemTypes,
         genreIds: genreIds,
         genres: genres,
+        personIds: personIds,
         filters: filters,
         sortBy: fallbackSort,
         sortOrder: sortOrder,
@@ -2175,6 +2182,170 @@ class RowDataSource {
       items: recommendedItems.take(15).toList(),
       totalCount: recommendedItems.length,
     );
+  }
+
+  Future<HomeRow> loadMoreWithActorRow(String serverId, int rowIndex) async {
+    final prefs = GetIt.instance<UserPreferences>();
+    final includeWatched = prefs.get(UserPreferences.moreWithActorIncludeWatched);
+
+    final actors = await _getEligibleMoreWithActors(serverId, includeWatched: includeWatched);
+    final targetIdx = rowIndex - 1;
+    final rowId = 'moreWithActor$rowIndex';
+
+    if (targetIdx >= actors.length) {
+      return HomeRow(
+        id: rowId,
+        title: 'More with actor',
+        rowType: HomeRowType.latestMedia,
+        items: const [],
+      );
+    }
+
+    final actor = actors[targetIdx];
+    _scoredRecommendationsCache[rowId] = actor.items;
+
+    return HomeRow(
+      id: rowId,
+      title: 'More with ${actor.name}',
+      rowType: HomeRowType.latestMedia,
+      items: actor.items.take(15).toList(),
+      totalCount: actor.items.length,
+    );
+  }
+
+  Future<List<({String id, String name, List<AggregatedItem> items})>> _getEligibleMoreWithActors(
+    String serverId, {
+    required bool includeWatched,
+  }) {
+    final key = '$serverId:$includeWatched';
+    if (_eligibleActorRowsFuture != null && _eligibleActorRowsKey == key) {
+      return _eligibleActorRowsFuture!;
+    }
+    _eligibleActorRowsKey = key;
+    _eligibleActorRowsFuture = _buildEligibleMoreWithActors(serverId, includeWatched: includeWatched);
+    return _eligibleActorRowsFuture!;
+  }
+
+  Future<List<({String id, String name, List<AggregatedItem> items})>> _buildEligibleMoreWithActors(
+    String serverId, {
+    required bool includeWatched,
+  }) async {
+    try {
+      final queryItemTypes = const ['Movie', 'Episode'];
+      final rawBaseItems = await _searchVisibleLibraryItems(
+        serverId,
+        queryItemTypes,
+        (parentId) => _getItemsWithFallback(
+          parentId: parentId,
+          sortBy: 'DatePlayed',
+          sortOrder: 'Descending',
+          filters: const ['IsPlayed'],
+          recursive: true,
+          includeItemTypes: queryItemTypes,
+          limit: 40,
+          fields: '$_fields,Tags,People,SeriesId',
+        ),
+        merge: _byLastPlayed,
+      );
+
+      if (rawBaseItems.isEmpty) return const [];
+
+      final seriesIdsToFetch = <String>[];
+      final episodeToSeriesMap = <String, String>{};
+      for (final item in rawBaseItems) {
+        if (item.type == 'Episode') {
+          final sId = item.rawData['SeriesId']?.toString();
+          if (sId != null && sId.isNotEmpty) {
+            episodeToSeriesMap[item.id] = sId;
+            seriesIdsToFetch.add(sId);
+          }
+        }
+      }
+
+      final seriesMap = <String, AggregatedItem>{};
+      if (seriesIdsToFetch.isNotEmpty) {
+        try {
+          final seriesRes = await _client.itemsApi.getItems(
+            ids: seriesIdsToFetch,
+            fields: '$_fields,Tags,People',
+          );
+          final fetchedSeries = _parseItems(seriesRes, serverId);
+          for (final s in fetchedSeries) {
+            seriesMap[s.id] = s;
+          }
+        } catch (_) {}
+      }
+
+      final candidateLeadActors = <({String id, String name})>[];
+      final seenActorIds = <String>{};
+
+      for (final item in rawBaseItems) {
+        List<dynamic>? peopleList = item.rawData['People'] as List<dynamic>?;
+        if ((peopleList == null || peopleList.isEmpty) && item.type == 'Episode') {
+          final sId = episodeToSeriesMap[item.id];
+          if (sId != null) {
+            peopleList = seriesMap[sId]?.rawData['People'] as List<dynamic>?;
+          }
+        }
+        if (peopleList == null) continue;
+
+        final actors = peopleList
+            .whereType<Map>()
+            .where((p) => p['Type'] == 'Actor')
+            .toList();
+
+        for (final p in actors.take(2)) {
+          final id = p['Id']?.toString() ?? '';
+          final name = p['Name']?.toString() ?? '';
+          if (id.isNotEmpty && name.isNotEmpty && !seenActorIds.contains(id)) {
+            seenActorIds.add(id);
+            candidateLeadActors.add((id: id, name: name));
+            if (candidateLeadActors.length >= 20) break;
+          }
+        }
+        if (candidateLeadActors.length >= 20) break;
+      }
+
+      if (candidateLeadActors.isEmpty) return const [];
+
+      final result = <({String id, String name, List<AggregatedItem> items})>[];
+
+      for (final actor in candidateLeadActors) {
+        final filters = includeWatched ? null : const ['IsUnplayed'];
+        final candidateItems = await _searchVisibleLibraryItems(
+          serverId,
+          const ['Movie', 'Series'],
+          (parentId) => _getItemsWithFallback(
+            parentId: parentId,
+            personIds: [actor.id],
+            includeItemTypes: const ['Movie', 'Series'],
+            filters: filters,
+            recursive: true,
+            limit: 25,
+            fields: '$_fields,UserData',
+            sortBy: 'CommunityRating,SortName',
+            sortOrder: 'Descending',
+          ),
+        );
+
+        final eligibleItems = includeWatched
+            ? candidateItems
+            : candidateItems.where((it) => it.rawData['UserData']?['Played'] != true).toList();
+
+        final minCount = includeWatched ? 2 : 1;
+        if (eligibleItems.length >= minCount) {
+          result.add((id: actor.id, name: actor.name, items: eligibleItems));
+          if (result.length >= 3) {
+            break;
+          }
+        }
+      }
+
+      return result;
+    } catch (e) {
+      debugPrint('[RowDataSource] _buildEligibleMoreWithActors error: $e');
+      return const [];
+    }
   }
 
   /// Loads a single Taste Profile personalized row, building it if needed.

@@ -256,6 +256,49 @@ class VoltixIptvRepository {
       getContent(IptvSection.series,
           categoryId: categoryId, offset: offset, limit: limit, search: search);
 
+  /// Every archive-capable live channel, as one flat list.
+  ///
+  /// Backed by `/api/iptv/catchup/channels`, which is the same endpoint the
+  /// web player's Catch Up section uses -- deliberately, so the two show the
+  /// same channels.
+  ///
+  /// The screen used to assemble this itself by walking every live category
+  /// and keeping whatever came back with `hasArchive`. That produced a
+  /// different list from the website, because the website's list is not a raw
+  /// `hasArchive` filter: the backend also drops foreign-language duplicates,
+  /// applies the account's package quality limits, collapses a channel's
+  /// quality variants down to the sharpest one, and treats a channel as
+  /// archive-capable when the provider exposes an archive variant under a
+  /// separate stream id -- which a `tv_archive` flag check on its own misses.
+  /// Reproducing four server-side rules in the client would only mean two
+  /// implementations to keep in step, so the client asks for the answer.
+  ///
+  /// It is also one request instead of a scan that pages through every
+  /// category to exhaustion.
+  Future<List<IptvContentItem>> getCatchupChannels({
+    bool forceRefresh = false,
+  }) {
+    const key = 'catchup_channels';
+    if (!forceRefresh) {
+      final cached = _cacheGet<List<IptvContentItem>>(key, _ttlContent);
+      if (cached != null) return Future.value(cached);
+    }
+    return _withRetry(() async {
+      final data = await _api.restGet(
+        '/api/iptv/catchup/channels',
+        sessionToken: _token,
+        timeout: _reqTimeout,
+      );
+      final rawItems = (data is Map ? data['items'] : null) as List? ?? const [];
+      final items = rawItems
+          .whereType<Map<String, dynamic>>()
+          .map(IptvContentItem.fromJson)
+          .toList(growable: false);
+      _cachePut(key, items);
+      return items;
+    }, 'CatchupChannels');
+  }
+
   /// In-memory cache for DStv programme thumbnails (channel/programme key -> iconUrl)
   static final Map<String, String> _dstvThumbCache = <String, String>{};
 
@@ -776,18 +819,26 @@ class VoltixIptvRepository {
   /// Playable URL for replaying a past [program] on an archive-enabled
   /// [channel] ("catch-up" / timeshift).
   ///
-  /// Resolved by the backend's existing `/api/iptv/replay-url`, which holds
-  /// the provider credentials and builds the Xtream timeshift URL
-  /// (`/timeshift/{user}/{pass}/{duration}/{start}/{streamId}.ts`). The
-  /// client cannot build that itself -- it never sees those credentials.
+  /// Goes through the backend's `/api/iptv/stream-proxy` in timeshift mode,
+  /// the same byte-proxied path live, VOD and series already use.
   ///
-  /// `start` is sent as an ISO-8601 local timestamp rather than epoch
-  /// seconds: the endpoint parses it with JavaScript's `new Date(...)`,
-  /// which would read a bare epoch-seconds number as milliseconds and land
-  /// in 1970.
+  /// It previously called `/api/iptv/replay-url`, which returns the provider's
+  /// own timeshift URL for the client to open directly. That is the one stream
+  /// type in the app that was not proxied, and a direct provider connection is
+  /// exactly what fails on a player that cannot reach the upstream host (the
+  /// provider IP-locks to the backend, blocks the device's user agent, or sits
+  /// behind a redirect chain the native player will not follow) -- so the tile
+  /// opens and the stream never starts.
   ///
-  /// Returns null when the backend declines (for example a sport-only line
-  /// that is not entitled to this channel).
+  /// `start` is sent as a naive local "YYYY-MM-DD HH:MM:SS" string rather than
+  /// epoch seconds: the endpoint parses it with JavaScript's `new Date(...)`,
+  /// which would read a bare epoch-seconds number as milliseconds and land in
+  /// 1970.
+  ///
+  /// Returns null only when the programme has no usable time window. Whether
+  /// the recording is still available, and whether this line is entitled to
+  /// the channel, is decided by the backend when the stream is requested -- it
+  /// answers 410 for an expired window and 403 for a sport-only line.
   Future<String?> fetchCatchupStreamUrl(
     IptvContentItem channel,
     IptvEpgEntry program,
@@ -806,7 +857,7 @@ class VoltixIptvRepository {
     final startArg = '${start.year}-${two(start.month)}-${two(start.day)} '
         '${two(start.hour)}:${two(start.minute)}:${two(start.second)}';
 
-    return _withRetry(() async {
+    try {
       final data = await _api.restGet(
         '/api/iptv/replay-url',
         query: {
@@ -816,11 +867,25 @@ class VoltixIptvRepository {
           'containerExtension': 'ts',
         },
         sessionToken: _token,
-        timeout: _reqTimeout,
+        timeout: const Duration(seconds: 4),
       );
-      final url = data is Map ? data['url']?.toString() : null;
-      return (url != null && url.isNotEmpty) ? url : null;
-    }, 'ReplayUrl');
+      if (data is Map && data['url'] != null) {
+        final replayUrl = data['url'].toString();
+        if (replayUrl.isNotEmpty) return replayUrl;
+      }
+    } catch (_) {}
+
+    // Fall back to stream-proxy in timeshift mode
+    return Uri.parse('${_api.baseUrl}/api/iptv/stream-proxy').replace(
+      queryParameters: {
+        'type': 'timeshift',
+        'streamId': streamId,
+        'start': startArg,
+        'durationMinutes': '$durationMinutes',
+        'containerExtension': 'ts',
+        'token': _token,
+      },
+    ).toString();
   }
 
   /// Container extensions the upstream Xtream provider actually serves. Some

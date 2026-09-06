@@ -252,6 +252,21 @@ class HomeViewModel extends ChangeNotifier {
     }
   }
 
+  static bool _isMoreWithActorSectionType(HomeSectionType type) {
+    return type == HomeSectionType.moreWithActor1 ||
+        type == HomeSectionType.moreWithActor2 ||
+        type == HomeSectionType.moreWithActor3;
+  }
+
+  static int _getMoreWithActorIndex(HomeSectionType type) {
+    switch (type) {
+      case HomeSectionType.moreWithActor1: return 1;
+      case HomeSectionType.moreWithActor2: return 2;
+      case HomeSectionType.moreWithActor3: return 3;
+      default: return 0;
+    }
+  }
+
   static bool _isSeerrSectionType(HomeSectionType type) {
     return type == HomeSectionType.seerrWatchlist ||
         type == HomeSectionType.seerrRecentRequests ||
@@ -350,11 +365,15 @@ class HomeViewModel extends ChangeNotifier {
 
       final showSinceYouWatched =
           _prefs.get(UserPreferences.displaySinceYouWatchedRows);
+      final showMoreWithActor =
+          _prefs.get(UserPreferences.displayMoreWithActorRows);
       final showRewatch = _prefs.get(UserPreferences.displayRewatchRow);
       final showImdbRows = _isAnyImdbSectionEnabled();
       final showTmdbRows = _isAnyTmdbSectionEnabled();
       final sinceYouWatchedNum =
           _prefs.get(UserPreferences.sinceYouWatchedNumRows).value;
+      final moreWithActorNum =
+          _prefs.get(UserPreferences.moreWithActorNumRows).value;
 
       final jellyfinEnabled = _prefs.get(UserPreferences.voltixJellyfinEnabled);
       final liveTvEnabled = _prefs.get(UserPreferences.voltixLiveTvEnabled);
@@ -385,6 +404,9 @@ class HomeViewModel extends ChangeNotifier {
                 (!_isSinceYouWatchedSectionType(c.type) ||
                     (showSinceYouWatched &&
                         _getSinceYouWatchedIndex(c.type) <= sinceYouWatchedNum)) &&
+                (!_isMoreWithActorSectionType(c.type) ||
+                    (showMoreWithActor &&
+                        _getMoreWithActorIndex(c.type) <= moreWithActorNum)) &&
                 (c.type != HomeSectionType.rewatch || showRewatch) &&
                 (!_isImdbSectionType(c.type) ||
                     (showImdbRows && _isImdbSectionEnabled(c.type))) &&
@@ -632,6 +654,7 @@ class HomeViewModel extends ChangeNotifier {
         return row.rowType == HomeRowType.latestMedia &&
             !row.id.startsWith('pluginDynamic:') &&
             !row.id.startsWith('sinceYouWatched') &&
+            !row.id.startsWith('moreWithActor') &&
             row.id != 'rewatch';
       case HomeSectionType.imdbTop250Movies:
         return row.id == 'imdb_top_250_movies';
@@ -688,6 +711,12 @@ class HomeViewModel extends ChangeNotifier {
         final idx = _getSinceYouWatchedIndex(cfg.type);
         return row.rowType == HomeRowType.latestMedia &&
             row.id == 'sinceYouWatched$idx';
+      case HomeSectionType.moreWithActor1:
+      case HomeSectionType.moreWithActor2:
+      case HomeSectionType.moreWithActor3:
+        final idx = _getMoreWithActorIndex(cfg.type);
+        return row.rowType == HomeRowType.latestMedia &&
+            row.id == 'moreWithActor$idx';
       case HomeSectionType.favoriteMovies:
       case HomeSectionType.favoriteSeries:
       case HomeSectionType.favoriteEpisodes:
@@ -982,6 +1011,12 @@ class HomeViewModel extends ChangeNotifier {
         return const {'sinceYouWatched4'};
       case HomeSectionType.sinceYouWatched5:
         return const {'sinceYouWatched5'};
+      case HomeSectionType.moreWithActor1:
+        return const {'moreWithActor1'};
+      case HomeSectionType.moreWithActor2:
+        return const {'moreWithActor2'};
+      case HomeSectionType.moreWithActor3:
+        return const {'moreWithActor3'};
       case HomeSectionType.latestMedia:
         return const {'latestMedia'};
       case HomeSectionType.recentlyReleased:
@@ -1156,6 +1191,15 @@ class HomeViewModel extends ChangeNotifier {
       case HomeSectionType.sinceYouWatched5:
         final rowIndex = _getSinceYouWatchedIndex(section);
         final row = await _dataSource.loadSinceYouWatchedRow(
+          _serverId,
+          rowIndex,
+        );
+        return [row];
+      case HomeSectionType.moreWithActor1:
+      case HomeSectionType.moreWithActor2:
+      case HomeSectionType.moreWithActor3:
+        final rowIndex = _getMoreWithActorIndex(section);
+        final row = await _dataSource.loadMoreWithActorRow(
           _serverId,
           rowIndex,
         );
@@ -1589,6 +1633,16 @@ class HomeViewModel extends ChangeNotifier {
         return HomeRow(
           id: 'sinceYouWatched$index',
           title: 'Since you watched',
+          rowType: HomeRowType.latestMedia,
+          isLoading: true,
+        );
+      case HomeSectionType.moreWithActor1:
+      case HomeSectionType.moreWithActor2:
+      case HomeSectionType.moreWithActor3:
+        final index = _getMoreWithActorIndex(section);
+        return HomeRow(
+          id: 'moreWithActor$index',
+          title: 'More with actor',
           rowType: HomeRowType.latestMedia,
           isLoading: true,
         );

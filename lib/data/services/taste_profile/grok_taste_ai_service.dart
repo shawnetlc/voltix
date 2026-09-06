@@ -410,4 +410,161 @@ class GrokTasteAiService {
     }
     return 'Recommended based on your calibrated cinematic taste profile.';
   }
+
+  /// Analyzes a user's completed taste profile picks and suggests the top 3-5
+  /// home rows and curated collections to enable by default.
+  Future<List<PersonalizationRowType>> suggestTopHomeRows(TasteProfile profile) async {
+    if (isConfigured) {
+      try {
+        final lovedTitles = _resolveLovedTitleNames(profile);
+        final lovedGenres = profile.explicit.genreRatings.entries
+            .where((e) => e.value == TasteRating.love || e.value == TasteRating.like)
+            .map((e) => e.key)
+            .toList();
+        final activeVibes = profile.explicit.selectedMoodIds
+            .map((id) => TasteMoodRegistry.getById(id)?.displayName ?? id)
+            .toList();
+
+        final availableKeys = PersonalizationRowType.values.map((r) => r.key).toList();
+
+        final prompt = 'Given this user profile:\n'
+            '- Loved Titles: ${lovedTitles.take(8).join(", ")}\n'
+            '- Loved Genres: ${lovedGenres.take(6).join(", ")}\n'
+            '- Moods/Vibes: ${activeVibes.take(6).join(", ")}\n'
+            '- Format Preference: ${profile.explicit.viewingPreferences.formatPreference}\n'
+            '- Era Preference: ${profile.explicit.viewingPreferences.preferredEra}\n\n'
+            'Choose between 3 and 5 of the most fitting recommendation rows/curated collections from this exact list:\n'
+            '${availableKeys.join(", ")}\n\n'
+            'Respond ONLY with a comma-separated list of the chosen keys, e.g.:\n'
+            'recommendedForYou, moodMatch, oscarWinners';
+
+        final response = await _dio.post<Map<String, dynamic>>(
+          endpoint,
+          data: {
+            'model': selectedModel,
+            'messages': [
+              {
+                'role': 'system',
+                'content': 'You are a cinephile recommendation AI curator for Voltix. Select 3-5 row keys from the provided list only.',
+              },
+              {'role': 'user', 'content': prompt},
+            ],
+            'max_tokens': 100,
+            'temperature': 0.3,
+          },
+          options: Options(
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $apiKey',
+            },
+            sendTimeout: const Duration(seconds: 5),
+            receiveTimeout: const Duration(seconds: 5),
+          ),
+        );
+
+        if (response.statusCode == 200 && response.data != null) {
+          final choices = response.data!['choices'] as List?;
+          if (choices != null && choices.isNotEmpty) {
+            final msg = choices.first['message'];
+            if (msg != null && msg['content'] != null) {
+              final text = (msg['content'] as String).trim();
+              final parsedKeys = text
+                  .split(RegExp(r'[,;\n]'))
+                  .map((s) => s.trim().replaceAll(RegExp(r'[^a-zA-Z0-9]'), ''))
+                  .where((s) => s.isNotEmpty)
+                  .toList();
+              final matches = <PersonalizationRowType>[];
+              for (final k in parsedKeys) {
+                final match = PersonalizationRowType.values
+                    .where((r) => r.key.toLowerCase() == k.toLowerCase())
+                    .firstOrNull;
+                if (match != null && !matches.contains(match)) {
+                  matches.add(match);
+                }
+              }
+              if (matches.length >= 2) {
+                return matches.take(5).toList();
+              }
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('[GrokTasteAiService] Live AI row suggestion failed: $e. Using local heuristic.');
+      }
+    }
+
+    return suggestLocalTopHomeRows(profile);
+  }
+
+  /// High quality deterministic cinephilic row selection heuristic based on user picks.
+  List<PersonalizationRowType> suggestLocalTopHomeRows(TasteProfile profile) {
+    final scores = <PersonalizationRowType, double>{
+      for (final r in PersonalizationRowType.values) r: 0.0,
+    };
+
+    // Baseline recommendation row
+    scores[PersonalizationRowType.recommendedForYou] = (scores[PersonalizationRowType.recommendedForYou] ?? 0) + 4.0;
+    scores[PersonalizationRowType.newInLibraryMatchesTaste] = (scores[PersonalizationRowType.newInLibraryMatchesTaste] ?? 0) + 2.5;
+
+    final lovedGenres = profile.explicit.genreRatings.entries
+        .where((e) => e.value == TasteRating.love || e.value == TasteRating.like)
+        .map((e) => e.key.toLowerCase())
+        .toList();
+
+    // Prestige / Award genres
+    final prestigeGenres = {'drama', 'history', 'biography', 'war', 'crime'};
+    if (lovedGenres.any((g) => prestigeGenres.contains(g))) {
+      scores[PersonalizationRowType.oscarWinners] = (scores[PersonalizationRowType.oscarWinners] ?? 0) + 5.0;
+      scores[PersonalizationRowType.awardSeasonEssentials] = (scores[PersonalizationRowType.awardSeasonEssentials] ?? 0) + 4.0;
+      scores[PersonalizationRowType.fromNomineeToWinner] = (scores[PersonalizationRowType.fromNomineeToWinner] ?? 0) + 3.0;
+    }
+
+    // Niche / Genre Deep Cuts
+    final nicheGenres = {'sci-fi', 'science fiction', 'horror', 'mystery', 'fantasy', 'animation', 'documentary'};
+    if (lovedGenres.any((g) => nicheGenres.contains(g))) {
+      scores[PersonalizationRowType.genreDeepCuts] = (scores[PersonalizationRowType.genreDeepCuts] ?? 0) + 5.0;
+      scores[PersonalizationRowType.hiddenGems] = (scores[PersonalizationRowType.hiddenGems] ?? 0) + 4.0;
+    }
+
+    // Popular / Mainstream
+    final popGenres = {'action', 'adventure', 'comedy', 'thriller'};
+    if (lovedGenres.any((g) => popGenres.contains(g))) {
+      scores[PersonalizationRowType.wellKnownTitles] = (scores[PersonalizationRowType.wellKnownTitles] ?? 0) + 3.5;
+    }
+
+    // Mood / Atmosphere
+    if (profile.explicit.selectedMoods.isNotEmpty || profile.explicit.selectedMoodIds.isNotEmpty) {
+      scores[PersonalizationRowType.moodMatch] = (scores[PersonalizationRowType.moodMatch] ?? 0) + 5.5;
+    }
+
+    // Format
+    final format = profile.explicit.viewingPreferences.formatPreference.toLowerCase();
+    final seriesCount = profile.explicit.titleRatings.keys.where((k) => k.startsWith('series_')).length;
+    if (format == 'series' || format == 'tv' || seriesCount >= 3) {
+      scores[PersonalizationRowType.seriesYouMightBinge] = (scores[PersonalizationRowType.seriesYouMightBinge] ?? 0) + 6.0;
+    }
+
+    // Era
+    final era = profile.explicit.viewingPreferences.preferredEra.toLowerCase();
+    if (era.contains('70') || era.contains('80') || era.contains('90') || era.contains('classic')) {
+      scores[PersonalizationRowType.careerMilestones] = (scores[PersonalizationRowType.careerMilestones] ?? 0) + 4.5;
+      scores[PersonalizationRowType.beforeTheyWereFamous] = (scores[PersonalizationRowType.beforeTheyWereFamous] ?? 0) + 4.0;
+    }
+
+    // Diversity
+    if (lovedGenres.length >= 4) {
+      scores[PersonalizationRowType.somethingDifferent] = (scores[PersonalizationRowType.somethingDifferent] ?? 0) + 3.0;
+    }
+
+    // Sort by score descending
+    final ranked = scores.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+
+    // Return the top 4 matching rows
+    final top = ranked.take(4).map((e) => e.key).toList();
+    if (!top.contains(PersonalizationRowType.recommendedForYou) && top.isNotEmpty) {
+      top[top.length - 1] = PersonalizationRowType.recommendedForYou;
+    }
+    return top;
+  }
 }

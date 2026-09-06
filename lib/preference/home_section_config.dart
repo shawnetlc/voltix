@@ -219,6 +219,21 @@ class HomeSectionConfig {
       enabled: false,
       order: 45,
     ),
+    HomeSectionConfig(
+      type: HomeSectionType.moreWithActor1,
+      enabled: true,
+      order: 46,
+    ),
+    HomeSectionConfig(
+      type: HomeSectionType.moreWithActor2,
+      enabled: true,
+      order: 47,
+    ),
+    HomeSectionConfig(
+      type: HomeSectionType.moreWithActor3,
+      enabled: false,
+      order: 48,
+    ),
     HomeSectionConfig(type: HomeSectionType.nextUp, enabled: true, order: 3),
     HomeSectionConfig(
       type: HomeSectionType.latestMedia,

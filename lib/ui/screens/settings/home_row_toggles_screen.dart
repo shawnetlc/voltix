@@ -119,6 +119,60 @@ class _HomeRowTogglesScreenState extends State<HomeRowTogglesScreen> {
 
   void _onSinceYouWatchedConfigChanged() => _syncSinceYouWatchedSections();
 
+  bool _getMoreWithActorLocalPrefEnabled(HomeSectionType type) {
+    return switch (type) {
+      HomeSectionType.moreWithActor1 => _prefs.get(UserPreferences.moreWithActor1Enabled),
+      HomeSectionType.moreWithActor2 => _prefs.get(UserPreferences.moreWithActor2Enabled),
+      HomeSectionType.moreWithActor3 => _prefs.get(UserPreferences.moreWithActor3Enabled),
+      _ => false,
+    };
+  }
+
+  /// Mirrors the master toggle + row count onto the three per-row booleans.
+  void _updateMoreWithActorPrefs() {
+    final showMoreWithActor = _prefs.get(UserPreferences.displayMoreWithActorRows);
+    final moreWithActorNum = _prefs.get(UserPreferences.moreWithActorNumRows).value;
+
+    _prefs.set(UserPreferences.moreWithActor1Enabled, showMoreWithActor && moreWithActorNum >= 1);
+    _prefs.set(UserPreferences.moreWithActor2Enabled, showMoreWithActor && moreWithActorNum >= 2);
+    _prefs.set(UserPreferences.moreWithActor3Enabled, showMoreWithActor && moreWithActorNum >= 3);
+  }
+
+  /// Keeps the home-section configs in step with those booleans, so turning a
+  /// row off has somewhere to persist and sync does not bring it back.
+  void _syncMoreWithActorSections() {
+    _updateMoreWithActorPrefs();
+    final configs = List<HomeSectionConfig>.from(_prefs.homeSectionsConfig);
+    var changed = false;
+    const types = {
+      HomeSectionType.moreWithActor1,
+      HomeSectionType.moreWithActor2,
+      HomeSectionType.moreWithActor3,
+    };
+    for (var i = 0; i < configs.length; i++) {
+      if (types.contains(configs[i].type)) {
+        final isEnabled = _getMoreWithActorLocalPrefEnabled(configs[i].type);
+        if (configs[i].enabled != isEnabled) {
+          configs[i] = configs[i].copyWith(enabled: isEnabled);
+          changed = true;
+        }
+      }
+    }
+    if (changed) {
+      _prefs.setHomeSectionsConfig(configs);
+    }
+    _pushPersonalizationSync();
+    _reloadHomeRows();
+  }
+
+  void _onMoreWithActorRowsToggleChanged() {
+    _syncMoreWithActorSections();
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  void _onMoreWithActorConfigChanged() => _syncMoreWithActorSections();
+
   void _syncRewatchSection() {
     final enabled = _prefs.get(UserPreferences.displayRewatchRow);
     final configs = List<HomeSectionConfig>.from(_prefs.homeSectionsConfig);
@@ -512,6 +566,34 @@ class _HomeRowTogglesScreenState extends State<HomeRowTogglesScreen> {
                 subtitle: 'Include watched items in recommendations',
                 icon: Icons.history,
                 onChanged: _onSinceYouWatchedConfigChanged,
+              ),
+            ],
+            _SectionHeader('MORE WITH [ACTOR]'),
+            SwitchPreferenceTile(
+              preference: UserPreferences.displayMoreWithActorRows,
+              title: 'Display More with [Actor] Rows',
+              subtitle:
+                  'Show rows featuring lead actors from movies and shows you watched.',
+              icon: Icons.person_search,
+              onChanged: _onMoreWithActorRowsToggleChanged,
+            ),
+            if (_prefs.get(UserPreferences.displayMoreWithActorRows)) ...[
+              EnumPreferenceTile<MoreWithActorNumRows>(
+                preference: UserPreferences.moreWithActorNumRows,
+                title: 'Number of Rows to Add',
+                description:
+                    'Choose how many More with [Actor] rows to display (1-3)',
+                icon: Icons.format_list_numbered,
+                values: MoreWithActorNumRows.values,
+                labelOf: (v) => v.displayName,
+                onChanged: _onMoreWithActorConfigChanged,
+              ),
+              SwitchPreferenceTile(
+                preference: UserPreferences.moreWithActorIncludeWatched,
+                title: 'Include Previously Watched',
+                subtitle: 'Include watched items in recommendations',
+                icon: Icons.history,
+                onChanged: _onMoreWithActorConfigChanged,
               ),
             ],
             _SectionHeader('REWATCH'),

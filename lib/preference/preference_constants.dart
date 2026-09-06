@@ -285,6 +285,9 @@ enum HomeSectionType {
   sinceYouWatched3('sinceyouwatched3'),
   sinceYouWatched4('sinceyouwatched4'),
   sinceYouWatched5('sinceyouwatched5'),
+  moreWithActor1('morewithactor1'),
+  moreWithActor2('morewithactor2'),
+  moreWithActor3('morewithactor3'),
   imdbTop250Movies('imdb_top_250_movies'),
   imdbTop250TvShows('imdb_top_250_tv_shows'),
   imdbMostPopularMovies('imdb_most_popular_movies'),
@@ -618,6 +621,17 @@ enum SinceYouWatchedNumRows {
   five(5);
 
   const SinceYouWatchedNumRows(this.value);
+  final int value;
+
+  String get displayName => value.toString();
+}
+
+enum MoreWithActorNumRows {
+  one(1),
+  two(2),
+  three(3);
+
+  const MoreWithActorNumRows(this.value);
   final int value;
 
   String get displayName => value.toString();

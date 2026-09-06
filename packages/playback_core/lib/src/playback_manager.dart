@@ -1088,6 +1088,11 @@ class PlaybackManager implements AudioOwnable {
     _mediaSourceId = resolution.mediaSourceId;
     _itemKnownDuration = _resolvedItemDuration(item, resolution.mediaSourceId);
 
+    if (resolution.mediaStreams.isEmpty) {
+      _audioStreamIndex = null;
+      _subtitleStreamIndex = null;
+    }
+
     if (_audioStreamIndex != null && _audioSelectionExplicit) {
       final audioStreams = resolution.mediaStreams.where((s) => s['Type'] == 'Audio').toList();
       final stream = audioStreams.firstWhere(

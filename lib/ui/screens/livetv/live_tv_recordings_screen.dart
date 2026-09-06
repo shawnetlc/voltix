@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
 import 'package:get_it/get_it.dart';
 import 'package:go_router/go_router.dart';
@@ -13,6 +14,7 @@ import '../../../data/repositories/voltix_iptv_repository.dart';
 import '../../../util/focus/key_event_utils.dart';
 import '../../navigation/destinations.dart';
 import '../../widgets/focus/request_initial_focus.dart';
+import '../playback/playback_takeover.dart';
 
 /// Catch-up TV — replays recent programmes on archive-enabled live channels.
 ///
@@ -44,12 +46,6 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
   bool _loadingChannels = false;
   String? _channelsError;
   int _loadToken = 0;
-  // Diagnostics shown under the header: how many channels were scanned, how
-  // many the provider flags as catch-up capable, and how many survive
-  // de-duplication. If the visible count ever looks wrong again these three
-  // numbers say immediately which stage is responsible.
-  int _scannedCount = 0;
-  int _archiveFlaggedCount = 0;
 
   @override
   void initState() {
@@ -67,6 +63,12 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
       if (!mounted) return;
       setState(() {
         _categories = cats;
+        // Open on movies, per the chip order in _orderedCategories. Falls
+        // back to "All" for an account whose provider has no movies folder.
+        final movies = _orderedCategories(cats).firstWhereOrNull(
+          (c) => !c.isAll && _categoryRank(c.name) == 0,
+        );
+        if (movies != null) _selectedCategoryId = movies.id;
         _loadingCategories = false;
       });
       unawaited(_loadArchiveChannels());
@@ -87,59 +89,14 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
       _archiveChannels = null;
     });
     try {
-      final matches = <IptvContentItem>[];
-      var scanned = 0;
-      var reportedTotal = 0;
-
-      // Walk every category to exhaustion rather than paging the "all"
-      // pseudo-category. Two reasons: "all" is the one listing most likely
-      // to be capped server-side, and going folder by folder guarantees no
-      // folder is missed just because it sorts late in a flat listing --
-      // which is what the old fixed 20-page (3000 channel) cap was doing on
-      // a catalogue this size. Channels listed in several folders come back
-      // more than once here; _dedupeSharedChannels resolves those after.
-      final cats = _categories ?? const <IptvCategory>[];
-      final realCats =
-          cats.where((c) => !c.isAll && !c.isFavorites).toList();
-      // Fall back to the flat listing only if the category list is empty.
-      final targets = realCats.isNotEmpty
-          ? realCats.map((c) => c.id).toList()
-          : <String>['all'];
-
-      const pageSize = 500;
-      for (final categoryId in targets) {
-        int offset = 0;
-        // Generous per-folder bound purely as a runaway guard; the loop
-        // normally exits on hasMore == false.
-        for (var page = 0; page < 60; page++) {
-          final result = await _repo.getLiveChannels(
-            categoryId: categoryId,
-            offset: offset,
-            limit: pageSize,
-          );
-          if (!mounted || token != _loadToken) return;
-          scanned += result.items.length;
-          if (result.total > reportedTotal) reportedTotal = result.total;
-          matches.addAll(result.items.where((c) => c.hasArchive));
-          final next = result.nextOffset;
-          // Stop if the backend stops advancing, so a listing that always
-          // reports hasMore can't spin here forever.
-          if (!result.hasMore || next == null || next <= offset) break;
-          offset = next;
-        }
-        if (!mounted || token != _loadToken) return;
-        // Progress, so a long scan doesn't look frozen.
-        setState(() {
-          _scannedCount = scanned;
-          _archiveFlaggedCount = matches.length;
-        });
-      }
-      final deduped = _dedupeSharedChannels(matches);
+      // One request to the same endpoint the website's Catch Up section uses,
+      // so the two agree on which channels have catch-up. See
+      // VoltixIptvRepository.getCatchupChannels for why the client no longer
+      // works this out for itself.
+      final channels = await _repo.getCatchupChannels();
       if (!mounted || token != _loadToken) return;
       setState(() {
-        _archiveChannels = deduped;
-        _scannedCount = scanned;
-        _archiveFlaggedCount = matches.length;
+        _archiveChannels = _sortForDisplay(channels);
         _loadingChannels = false;
       });
     } catch (e) {
@@ -151,33 +108,54 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
     }
   }
 
-  /// Some channels (BBC and other internationally-shared feeds) are listed
-  /// under more than one category folder, each with its own stream id --
-  /// which otherwise shows the same channel twice. Keeps one entry per
-  /// channel name, preferring whichever copy sits in the "DSTV South
-  /// Africa" category folder; a channel with no copy there keeps whatever
-  /// copy it does have.
-  List<IptvContentItem> _dedupeSharedChannels(List<IptvContentItem> channels) {
-    // Collapse only exact duplicate stream entries (the same underlying
-    // provider stream turning up twice because a folder scan overlapped a
-    // page boundary, or the same category id appearing under two names).
-    // An earlier version of this merged by *channel name* across folders
-    // to hide genuinely shared international feeds (BBC and the like) --
-    // but that also swallowed distinct DSTV listings that happen to share
-    // a cleaned-up display name, which is why the catch-up list was
-    // showing 140 channels instead of the 167 the provider actually
-    // flags as archive-capable. Identity is now the provider's own
-    // stream id, so every distinct listing the scan finds is shown.
-    final byId = <String, IptvContentItem>{};
-    for (final channel in channels) {
-      final key = channel.streamId?.toString() ?? channel.id;
-      if (key.isEmpty) continue;
-      byId.putIfAbsent(key, () => channel);
-    }
-    final result = byId.values.toList()
-      ..sort((a, b) =>
-          _cleanChannelName(a.title).compareTo(_cleanChannelName(b.title)));
-    return result;
+  // ── Category ordering ──────────────────────────────────────────────────────
+  //
+  // Catch Up opens on movies. Sports comes second: it is the other category
+  // people reach for a replay of, and both should be in front of the general
+  // entertainment folders rather than wherever the provider's own ordering
+  // happens to put them.
+  //
+  // Matched on the category name rather than an id because the provider's
+  // category ids are not stable between accounts, and the names vary in
+  // punctuation and case ("DSTV - Movies", "DStv Movies", "DSTV TV [MOVIES]").
+
+  /// 0 for movies, 1 for sport, 2 for everything else. Lower sorts first.
+  static int _categoryRank(String name) {
+    final n = name.toLowerCase();
+    if (n.contains('movie')) return 0;
+    if (n.contains('sport')) return 1;
+    return 2;
+  }
+
+  /// The category chips in display order: movies, then sport, then the rest
+  /// alphabetically, with "All" kept at the end so the two named categories
+  /// are the first things focus lands on.
+  List<IptvCategory> _orderedCategories(List<IptvCategory> cats) {
+    final all = cats.where((c) => c.isAll).toList();
+    final rest = cats.where((c) => !c.isAll && !c.isFavorites).toList()
+      ..sort((a, b) {
+        final byRank = _categoryRank(a.name).compareTo(_categoryRank(b.name));
+        return byRank != 0 ? byRank : a.name.compareTo(b.name);
+      });
+    return [...rest, ...all];
+  }
+
+  /// Channels sorted so the "All" view leads with movies and then sport,
+  /// matching the chip order, and is alphabetical within each category.
+  List<IptvContentItem> _sortForDisplay(List<IptvContentItem> channels) {
+    final nameById = {
+      for (final c in _categories ?? const <IptvCategory>[]) c.id: c.name,
+    };
+    final sorted = channels.toList()
+      ..sort((a, b) {
+        final rankA = _categoryRank(nameById[a.categoryId] ?? '');
+        final rankB = _categoryRank(nameById[b.categoryId] ?? '');
+        if (rankA != rankB) return rankA.compareTo(rankB);
+        return _cleanChannelName(a.title)
+            .toLowerCase()
+            .compareTo(_cleanChannelName(b.title).toLowerCase());
+      });
+    return sorted;
   }
 
   void _selectCategory(String categoryId) {
@@ -207,6 +185,22 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
       );
       return;
     }
+    // Hand the decoder the memory this screen is sitting on before asking it
+    // to start. Catch Up holds more decoded artwork than anywhere else in the
+    // app -- a row of programme cards for every archive channel -- and those
+    // bitmaps are live, so no cache limit will drop them on its own. The
+    // video decoder's buffers are a large native allocation made right here,
+    // and on a low-RAM TV box losing that race is not an exception the app can
+    // catch: the OS kills the process, which is what "it crashes when the
+    // stream loads" looks like from the outside.
+    //
+    // releaseImageMemoryForPlayback exists for exactly this and was written
+    // against two such reports (a 2 GB onn box, a 3 GB Shield) but had never
+    // been called from anywhere. Nothing artwork-backed is visible behind a
+    // full-screen player, so the only cost is re-decoding this screen when the
+    // viewer comes back to it.
+    releaseImageMemoryForPlayback();
+
     final manager = GetIt.instance<PlaybackManager>();
     final itemId = 'catchup_${channel.id}_${program.startTimestamp ?? 0}';
     final playbackItem = AggregatedItem(
@@ -218,6 +212,8 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
         'Name': '${_cleanChannelName(channel.title)} • ${program.title}',
         'isLive': false,
         'Type': 'Video',
+        'container': 'ts',
+        'mediaType': 'video',
       },
     );
     try {
@@ -302,10 +298,6 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
 
   Widget _buildHeader(BuildContext context) {
     final loaded = _archiveChannels;
-    // Kept terse on purpose: the scan counters only earn their place when
-    // they disagree with what is on screen.
-    final showScanDetail =
-        loaded != null && _archiveFlaggedCount > loaded.length;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -328,8 +320,7 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
           const SizedBox(height: 8),
           Text(
             '${loaded.length} ${loaded.length == 1 ? 'channel' : 'channels'}'
-            '  ·  last 24 hours'
-            '${showScanDetail ? '  ·  $_archiveFlaggedCount listings of $_scannedCount scanned' : ''}',
+            '  ·  last 24 hours',
             style: TextStyle(
               color: Colors.white.withValues(alpha: 0.38),
               fontSize: 11.5,
@@ -360,7 +351,7 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
         onRetry: _loadCategories,
       );
     }
-    final cats = _categories ?? const <IptvCategory>[];
+    final cats = _orderedCategories(_categories ?? const <IptvCategory>[]);
     final allChannels = _archiveChannels;
     // Counts (and hiding categories with none) match the reference catch-up
     // layout: "DSTV TV [MOVIES] (16)" etc, "All" showing the grand total.
@@ -434,6 +425,14 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
       );
     }
     return ListView.separated(
+      // Every channel section fetches its own guide and mounts a row of
+      // artwork the moment it is built, so how far ahead this list builds is
+      // directly how much memory the screen holds. The default extent is
+      // tuned for cheap tiles; these are not cheap. One screen's worth ahead
+      // keeps scrolling smooth without a catalogue this size ending up
+      // resident all at once.
+      cacheExtent: 400,
+      addAutomaticKeepAlives: false,
       itemCount: channels.length,
       separatorBuilder: (_, __) => const SizedBox(height: 14),
       itemBuilder: (context, index) => _ChannelCatchupSection(
@@ -513,6 +512,29 @@ class _CategoryChipState extends State<_CategoryChip> {
   }
 }
 
+/// Physical-pixel width to decode an image at, for a box [logicalWidth] wide.
+///
+/// Without this every picture on this screen is decoded at whatever size the
+/// feed happens to ship -- DStv programme artwork is typically 1280x720 or
+/// larger, which is 3.7 MB of ARGB_8888 bitmap for a card 188 logical pixels
+/// across that needs about 0.3 MB. Roughly a 12x overspend, per thumbnail.
+///
+/// That is not absorbed by the image cache limits set in main.dart. Those cap
+/// *cached* images; a bitmap referenced by a mounted widget is a "live" image,
+/// exempt from the byte cap and not evictable. Catch Up mounts a great many at
+/// once (a row of programme cards for every archive channel), so the live set
+/// alone can run to hundreds of megabytes -- and the moment that matters is
+/// pressing play, when the video decoder asks the OS for its own large native
+/// buffers and there is nothing left to give. The app does not throw, it is
+/// killed.
+///
+/// Capped at 2x rather than the true ratio because past that the extra detail
+/// is invisible at this size and only costs memory.
+int _decodeWidth(BuildContext context, double logicalWidth) {
+  final ratio = MediaQuery.devicePixelRatioOf(context).clamp(1.0, 2.0);
+  return (logicalWidth * ratio).round();
+}
+
 class _ChannelCatchupSection extends StatefulWidget {
   final IptvContentItem channel;
   final VoltixIptvRepository repo;
@@ -587,6 +609,8 @@ class _ChannelCatchupSectionState extends State<_ChannelCatchupSection> {
                 ? CachedNetworkImage(
                     imageUrl: poster,
                     fit: BoxFit.contain,
+                    memCacheWidth: _decodeWidth(context, 24),
+                    maxWidthDiskCache: 96,
                     errorWidget: (_, __, ___) =>
                         const Icon(Icons.live_tv, color: Colors.white54, size: 14),
                   )
@@ -671,6 +695,10 @@ class _ChannelCatchupSectionState extends State<_ChannelCatchupSection> {
   }
 }
 
+/// Card width, named because [_decodeWidth] is derived from it: change one
+/// and the decode size follows, instead of quietly staying wrong.
+const double _cardWidth = 188;
+
 class _CatchupItemCard extends StatefulWidget {
   final IptvEpgEntry program;
   final String? fallbackImage;
@@ -742,7 +770,7 @@ class _CatchupItemCardState extends State<_CatchupItemCard> {
         onTap: widget.onTap,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 120),
-          width: 188,
+          width: _cardWidth,
           decoration: BoxDecoration(
             color: const Color(0xCC0C1420),
             borderRadius: BorderRadius.circular(10),
@@ -777,6 +805,8 @@ class _CatchupItemCardState extends State<_CatchupItemCard> {
                         CachedNetworkImage(
                           imageUrl: image,
                           fit: BoxFit.cover,
+                          memCacheWidth: _decodeWidth(context, _cardWidth),
+                          maxWidthDiskCache: 640,
                           errorWidget: (_, __, ___) => const Icon(
                               Icons.live_tv,
                               color: Colors.white24,

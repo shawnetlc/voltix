@@ -344,7 +344,7 @@ class TasteProfileRepository extends ChangeNotifier {
       if (GetIt.instance.isRegistered<RowDataSource>()) {
         final dataSource = GetIt.instance<RowDataSource>();
         for (final rowType in PersonalizationRowType.values) {
-          final isEnabled = profile.enabledHomeRows[rowType.key] ?? true;
+          final isEnabled = profile.enabledHomeRows[rowType.key] ?? false;
           if (!isEnabled) continue;
 
           // Yield / pause between rows to protect playback bandwidth and server CPU

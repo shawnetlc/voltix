@@ -202,18 +202,20 @@ class MediaKitPlayerBackend extends PlayerBackend {
     };
   }
 
-  static bool _passthroughActive(UserPreferences prefs) {
+  static bool _passthroughActive(UserPreferences prefs, [AudioCapabilityProfile? profile]) {
+    final effectiveProfile = profile ?? prefs.detectedAudioCapabilities;
     return passthroughCodecsFromPreferences(
       audioOutputMode: prefs.resolveAudioOutputMode(),
-      ac3PassthroughEnabled: prefs.resolveAc3PassthroughEnabled(),
-      eac3PassthroughEnabled: prefs.resolveEac3PassthroughEnabled(),
-      eac3JocPassthroughEnabled: prefs.resolveEac3JocPassthroughEnabled(),
-      dtsCorePassthroughEnabled: prefs.resolveDtsCorePassthroughEnabled(),
-      dtsHdPassthroughEnabled: prefs.resolveDtsHdPassthroughEnabled(),
-      dtsXPassthroughEnabled: prefs.resolveDtsXPassthroughEnabled(),
-      trueHdPassthroughEnabled: prefs.resolveTrueHdPassthroughEnabled(),
+      ac3PassthroughEnabled: prefs.resolveAc3PassthroughEnabled(effectiveProfile),
+      eac3PassthroughEnabled: prefs.resolveEac3PassthroughEnabled(effectiveProfile),
+      eac3JocPassthroughEnabled: prefs.resolveEac3JocPassthroughEnabled(effectiveProfile),
+      dtsCorePassthroughEnabled: prefs.resolveDtsCorePassthroughEnabled(effectiveProfile),
+      dtsHdPassthroughEnabled: prefs.resolveDtsHdPassthroughEnabled(effectiveProfile),
+      dtsXPassthroughEnabled: prefs.resolveDtsXPassthroughEnabled(effectiveProfile),
+      trueHdPassthroughEnabled: prefs.resolveTrueHdPassthroughEnabled(effectiveProfile),
       trueHdAtmosPassthroughEnabled:
-          prefs.resolveTrueHdAtmosPassthroughEnabled(),
+          prefs.resolveTrueHdAtmosPassthroughEnabled(effectiveProfile),
+      isAvReceiverRoute: effectiveProfile.isAvReceiverRoute,
     ).isNotEmpty;
   }
 
@@ -403,6 +405,8 @@ class MediaKitPlayerBackend extends PlayerBackend {
       // Network resilience & demuxer threading
       _nativeSetProperty(platform, 'demuxer-lavf-o',
           'reconnect=1,reconnect_streamed=1,reconnect_delay_max=5');
+      _nativeSetProperty(platform, 'demuxer-lavf-probesize', '32M');
+      _nativeSetProperty(platform, 'demuxer-lavf-analyzeduration', '5000000');
       _nativeSetProperty(platform, 'demuxer-thread', 'yes');
       _nativeSetProperty(platform, 'cache', 'yes');
       _nativeSetProperty(platform, 'cache-pause-initial', 'yes');
@@ -591,6 +595,8 @@ class MediaKitPlayerBackend extends PlayerBackend {
 
     if (_player.platform is NativePlayer) {
       final native = _player.platform as NativePlayer;
+      await _nativeSetProperty(native, 'aid', 'auto');
+      await _nativeSetProperty(native, 'mute', 'no');
       await _nativeSetProperty(native, 'sid', 'auto');
       await _nativeSetProperty(native, 'secondary-sid', 'no');
       await _nativeSetProperty(native, 'sub-visibility', 'yes');
@@ -598,6 +604,7 @@ class MediaKitPlayerBackend extends PlayerBackend {
         await _nativeSetProperty(native, 'sub-ass', 'yes');
       }
     }
+    await _player.setAudioTrack(AudioTrack.auto());
 
     final media = Media(url);
     final openPaused = startPosition > Duration.zero;
@@ -665,8 +672,12 @@ class MediaKitPlayerBackend extends PlayerBackend {
     required bool dtsXPassthroughEnabled,
     required bool trueHdPassthroughEnabled,
     required bool trueHdAtmosPassthroughEnabled,
+    bool isAvReceiverRoute = true,
   }) {
     if (audioOutputMode == AudioOutputMode.forceStereo) {
+      return const <String>[];
+    }
+    if (audioOutputMode == AudioOutputMode.auto && !isAvReceiverRoute) {
       return const <String>[];
     }
 
@@ -709,6 +720,7 @@ class MediaKitPlayerBackend extends PlayerBackend {
     required bool trueHdPassthroughEnabled,
     required bool trueHdAtmosPassthroughEnabled,
     required bool includeAudioExclusive,
+    bool isAvReceiverRoute = true,
   }) {
     final codecs = passthroughCodecsFromPreferences(
       audioOutputMode: audioOutputMode,
@@ -720,6 +732,7 @@ class MediaKitPlayerBackend extends PlayerBackend {
       dtsXPassthroughEnabled: dtsXPassthroughEnabled,
       trueHdPassthroughEnabled: trueHdPassthroughEnabled,
       trueHdAtmosPassthroughEnabled: trueHdAtmosPassthroughEnabled,
+      isAvReceiverRoute: isAvReceiverRoute,
     );
 
     final properties = <String, String>{'audio-spdif': codecs.join(',')};
@@ -736,18 +749,20 @@ class MediaKitPlayerBackend extends PlayerBackend {
 
     try {
       final native = _player.platform as NativePlayer;
+      final profile = _prefs.detectedAudioCapabilities;
       final properties = passthroughMpvPropertiesFromPreferences(
         audioOutputMode: _prefs.resolveAudioOutputMode(),
-        ac3PassthroughEnabled: _prefs.resolveAc3PassthroughEnabled(),
-        eac3PassthroughEnabled: _prefs.resolveEac3PassthroughEnabled(),
-        eac3JocPassthroughEnabled: _prefs.resolveEac3JocPassthroughEnabled(),
-        dtsCorePassthroughEnabled: _prefs.resolveDtsCorePassthroughEnabled(),
-        dtsHdPassthroughEnabled: _prefs.resolveDtsHdPassthroughEnabled(),
-        dtsXPassthroughEnabled: _prefs.resolveDtsXPassthroughEnabled(),
-        trueHdPassthroughEnabled: _prefs.resolveTrueHdPassthroughEnabled(),
+        ac3PassthroughEnabled: _prefs.resolveAc3PassthroughEnabled(profile),
+        eac3PassthroughEnabled: _prefs.resolveEac3PassthroughEnabled(profile),
+        eac3JocPassthroughEnabled: _prefs.resolveEac3JocPassthroughEnabled(profile),
+        dtsCorePassthroughEnabled: _prefs.resolveDtsCorePassthroughEnabled(profile),
+        dtsHdPassthroughEnabled: _prefs.resolveDtsHdPassthroughEnabled(profile),
+        dtsXPassthroughEnabled: _prefs.resolveDtsXPassthroughEnabled(profile),
+        trueHdPassthroughEnabled: _prefs.resolveTrueHdPassthroughEnabled(profile),
         trueHdAtmosPassthroughEnabled: _prefs
-            .resolveTrueHdAtmosPassthroughEnabled(),
+            .resolveTrueHdAtmosPassthroughEnabled(profile),
         includeAudioExclusive: PlatformDetection.isDesktop,
+        isAvReceiverRoute: profile.isAvReceiverRoute,
       );
 
       if (mapEquals(_appliedAudioPassthroughProperties, properties)) {
