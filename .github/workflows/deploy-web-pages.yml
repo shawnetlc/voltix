@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - 2.5.0
 
 permissions:
   contents: read
@@ -44,7 +45,7 @@ jobs:
             "defaultServerUrl": null,
             "discoveryProxyUrl": null,
             "enableWebRtcScan": true,
-            "brandingName": "Moonfin",
+            "brandingName": "Voltix",
             "pluginMode": false,
             "forcedServerUrl": null
           }

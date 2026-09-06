@@ -1,4 +1,4 @@
-name: Build Moonfin Web Bundle
+name: Build Voltix Web Bundle
 
 on:
   release:
@@ -54,7 +54,7 @@ jobs:
       - name: Build web bundle
         run: |
           flutter pub get
-          flutter build web --wasm --release --base-href "/Moonfin/Web/"
+          flutter build web --wasm --release --base-href "/Voltix/Web/"
 
       - name: Ensure jq is available
         run: |
@@ -97,7 +97,7 @@ jobs:
               defaultServerUrl: (if ($defaultServerUrl | length) > 0 then $defaultServerUrl else null end),
               discoveryProxyUrl: (if ($discoveryProxyUrl | length) > 0 then $discoveryProxyUrl else null end),
               enableWebRtcScan: ($enableWebRtcScan == "true"),
-              brandingName: "Moonfin",
+              brandingName: "Voltix",
               pluginMode: ($pluginMode == "true"),
               forcedServerUrl: (if ($forcedServerUrl | length) > 0 then $forcedServerUrl else null end)
             }' > build/web/config.json
@@ -112,7 +112,7 @@ jobs:
             "commit": "${{ github.sha }}",
             "ref": "${{ github.ref }}",
             "flutterVersion": "${{ env.FLUTTER_VERSION }}",
-            "baseHref": "/Moonfin/Web/",
+            "baseHref": "/Voltix/Web/",
             "buildTime": "$BUILD_TIME"
           }
           EOF
@@ -120,7 +120,7 @@ jobs:
       - name: Package web bundle
         id: package
         run: |
-          TARBALL="moonfin-web-v${{ steps.version.outputs.semver }}.tar.gz"
+          TARBALL="voltix-web-v${{ steps.version.outputs.semver }}.tar.gz"
           tar -czf "$TARBALL" -C build/web .
           sha256sum "$TARBALL" > "$TARBALL.sha256"
           echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
@@ -128,7 +128,7 @@ jobs:
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
         with:
-          name: moonfin-web-bundle-${{ steps.version.outputs.semver }}
+          name: voltix-web-bundle-${{ steps.version.outputs.semver }}
           path: |
             ${{ steps.package.outputs.tarball }}
             ${{ steps.package.outputs.tarball }}.sha256
