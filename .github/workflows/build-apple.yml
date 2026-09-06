@@ -1,0 +1,141 @@
+name: Build Apple (iOS & macOS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Target platform to build'
+        type: choice
+        default: 'all'
+        options:
+          - 'all'
+          - 'ios'
+          - 'macos'
+
+env:
+  FLUTTER_VERSION: '3.44.1'
+
+jobs:
+  # ── iOS Build ─────────────────────────────────────────────────────────────
+  build-ios:
+    name: Build iOS (iPhone & iPad)
+    if: ${{ inputs.target == 'all' || inputs.target == 'ios' }}
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_16*.app /Applications/Xcode_26*.app /Applications/Xcode.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE" ] || [ ! -d "$XCODE" ]; then
+            XCODE="/Applications/Xcode.app"
+          fi
+          echo "Selected Xcode: $XCODE"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Set up Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Resolve Flutter dependencies
+        run: |
+          flutter pub get
+
+      - name: Install CocoaPods
+        run: |
+          cd ios
+          pod install
+          cd ..
+
+      - name: Build unsigned iOS IPA
+        run: |
+          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version:[[:space:]]*//' | cut -d'+' -f1 | tr -d '[:space:]')
+          flutter build ipa --release --no-codesign \
+            --dart-define=DISTRIBUTION_CHANNEL=ios_unsigned
+
+          APP_PATH=$(find build/ios/archive -type d -path '*/Products/Applications/*.app' | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: Built iOS .app not found in archive" && exit 1
+          fi
+
+          TMPDIR=$(mktemp -d)
+          mkdir -p "$TMPDIR/Payload"
+          cp -R "$APP_PATH" "$TMPDIR/Payload/"
+          OUT_IPA="Voltix_iOS_v${VERSION}_unsigned.ipa"
+          ( cd "$TMPDIR" && zip -qry "$OLDPWD/$OUT_IPA" Payload )
+          rm -rf "$TMPDIR"
+          echo "IPA created: $OUT_IPA"
+
+      - name: Upload iOS IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Voltix-iOS-IPA
+          path: Voltix_iOS_*_unsigned.ipa
+          if-no-files-found: error
+
+  # ── macOS Build ───────────────────────────────────────────────────────────
+  build-macos:
+    name: Build macOS (Desktop)
+    if: ${{ inputs.target == 'all' || inputs.target == 'macos' }}
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_16*.app /Applications/Xcode_26*.app /Applications/Xcode.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE" ] || [ ! -d "$XCODE" ]; then
+            XCODE="/Applications/Xcode.app"
+          fi
+          echo "Selected Xcode: $XCODE"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Set up Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Resolve Flutter dependencies
+        run: |
+          flutter pub get
+
+      - name: Install CocoaPods
+        run: |
+          cd macos
+          pod install
+          cd ..
+
+      - name: Build macOS Release App
+        run: |
+          flutter build macos --release \
+            --dart-define=DISTRIBUTION_CHANNEL=macos
+
+      - name: Package macOS DMG
+        run: |
+          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version:[[:space:]]*//' | cut -d'+' -f1 | tr -d '[:space:]')
+          APP_DIR=$(find build/macos/Build/Products/Release -maxdepth 2 -type d -name "*.app" | head -1)
+          if [ -z "$APP_DIR" ]; then
+            echo "Error: Built macOS .app not found" && exit 1
+          fi
+
+          OUT_DMG="Voltix_macOS_v${VERSION}.dmg"
+          hdiutil create -volname "Voltix" -srcfolder "$APP_DIR" -ov -format UDZO "$OUT_DMG"
+          echo "DMG created: $OUT_DMG"
+
+      - name: Upload macOS DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: Voltix-macOS-DMG
+          path: Voltix_macOS_*.dmg
+          if-no-files-found: error

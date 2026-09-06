@@ -1,0 +1,84 @@
+name: Build Samsung TV (Tizen)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_mode:
+        description: 'Build Mode'
+        type: choice
+        default: 'release'
+        options:
+          - 'release'
+          - 'debug'
+
+jobs:
+  build-tizen:
+    name: Build Tizen TPK
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install Tizen Studio CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libncurses5 gettext dbus-x11 gnome-keyring openjdk-17-jre-headless
+          
+          curl -fsSL https://download.tizen.org/sdk/Installer/tizen-sdk_10.0/web-cli_Tizen_SDK_10.0_ubuntu-64.bin -o install.bin
+          chmod +x install.bin
+          ./install.bin --accept-license "$HOME/tizen-studio"
+          rm install.bin
+          
+          "$HOME/tizen-studio/package-manager/package-manager-cli.bin" install \
+            NativeToolchain-Gcc-9.2 \
+            IOT-Headed-6.0-NativeAppDevelopment-CLI || true
+
+      - name: Create Tizen Certificate Profile
+        run: |
+          export PATH="$PATH:$HOME/tizen-studio/tools/ide/bin"
+          dbus-run-session -- bash -c "
+            echo tizen | gnome-keyring-daemon --unlock || true
+            tizen certificate -a tizen -p tizen -f tizen || true
+            tizen security-profiles add \
+              -n tizen \
+              -a '$HOME/tizen-studio-data/keystore/author/tizen.p12' \
+              -p tizen || true
+          "
+
+      - name: Set up flutter-tizen
+        run: |
+          if [ -d "flutter-tizen-3.44.8-tizen.1.1.0/bin" ]; then
+            echo "$PWD/flutter-tizen-3.44.8-tizen.1.1.0/bin" >> "$GITHUB_PATH"
+            export PATH="$PWD/flutter-tizen-3.44.8-tizen.1.1.0/bin:$PATH"
+          else
+            git clone --depth 1 https://github.com/flutter-tizen/flutter-tizen.git "$HOME/flutter-tizen"
+            echo "$HOME/flutter-tizen/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/flutter-tizen/bin:$PATH"
+          fi
+          flutter-tizen doctor -v || true
+
+      - name: Build Tizen TPK
+        run: |
+          export PATH="$PATH:$HOME/tizen-studio/tools/ide/bin"
+          chmod +x build-tizen.sh
+          dbus-run-session -- bash -c "
+            echo tizen | gnome-keyring-daemon --unlock || true
+            ./build-tizen.sh --${{ inputs.build_mode || 'release' }} --security-profile tizen
+          "
+
+      - name: Upload Tizen TPK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Voltix-SamsungTV-Tizen-TPK
+          path: |
+            Voltix_Tizen_*.tpk
+            build/tizen/tpk/*.tpk
+          if-no-files-found: error

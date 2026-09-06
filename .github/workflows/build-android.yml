@@ -1,0 +1,143 @@
+name: Build Android (APK & AAB)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_mobile_apk:
+        description: 'Build Mobile APK'
+        type: boolean
+        default: true
+      build_mobile_aab:
+        description: 'Build Mobile AAB (Play Store)'
+        type: boolean
+        default: true
+      build_tv_apk:
+        description: 'Build Android TV APK'
+        type: boolean
+        default: true
+      build_tv_aab:
+        description: 'Build Android TV AAB (Play Store)'
+        type: boolean
+        default: true
+
+env:
+  FLUTTER_VERSION: '3.44.1'
+  JAVA_VERSION: '17'
+  # Allows building release APK/AAB even if release keystore secrets are omitted
+  ORG_GRADLE_PROJECT_allowDebugSigning: 'true'
+
+jobs:
+  build-android:
+    name: Build Android
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Set up Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Configure Keystore signing (if secret available)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_TYPE: ${{ secrets.ANDROID_KEYSTORE_TYPE }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "Setting up release keystore from secrets..."
+            mkdir -p android/app
+            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > android/app/release.keystore
+            cat > android/keystore.properties <<EOF
+          storeFile=../app/release.keystore
+          storeType=${STORE_TYPE:-pkcs12}
+          storePassword=$STORE_PASSWORD
+          keyAlias=${KEY_ALIAS:-voltix-release}
+          keyPassword=${KEY_PASSWORD:-$STORE_PASSWORD}
+          EOF
+            echo "Release keystore configured successfully."
+          else
+            echo "No ANDROID_KEYSTORE_BASE64 secret; falling back to unsigned/debug-signed build."
+          fi
+
+      - name: Resolve Flutter dependencies
+        run: |
+          flutter pub get
+
+      # ── Mobile APK ──────────────────────────────────────────────────────────
+      - name: Build Mobile APK
+        if: ${{ inputs.build_mobile_apk }}
+        run: |
+          flutter build apk --release \
+            --flavor mobile \
+            --dart-define=DISTRIBUTION_CHANNEL=apk
+
+      - name: Upload Mobile APK
+        if: ${{ inputs.build_mobile_apk }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Voltix-Android-Mobile-APK
+          path: build/app/outputs/flutter-apk/app-mobile-release.apk
+          if-no-files-found: error
+
+      # ── Mobile AAB ──────────────────────────────────────────────────────────
+      - name: Build Mobile AAB
+        if: ${{ inputs.build_mobile_aab }}
+        run: |
+          flutter build appbundle --release \
+            --flavor mobile \
+            --dart-define=DISTRIBUTION_CHANNEL=aab
+
+      - name: Upload Mobile AAB
+        if: ${{ inputs.build_mobile_aab }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Voltix-Android-Mobile-AAB
+          path: build/app/outputs/bundle/mobileRelease/app-mobile-release.aab
+          if-no-files-found: error
+
+      # ── Android TV APK ──────────────────────────────────────────────────────
+      - name: Build Android TV APK
+        if: ${{ inputs.build_tv_apk }}
+        run: |
+          flutter build apk --release \
+            --flavor androidTv \
+            --dart-define=MOONFIN_FORCE_TV=true \
+            --dart-define=DISTRIBUTION_CHANNEL=android_tv_apk
+
+      - name: Upload Android TV APK
+        if: ${{ inputs.build_tv_apk }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Voltix-Android-TV-APK
+          path: build/app/outputs/flutter-apk/app-androidtv-release.apk
+          if-no-files-found: error
+
+      # ── Android TV AAB ──────────────────────────────────────────────────────
+      - name: Build Android TV AAB
+        if: ${{ inputs.build_tv_aab }}
+        run: |
+          flutter build appbundle --release \
+            --flavor androidTv \
+            --dart-define=MOONFIN_FORCE_TV=true \
+            --dart-define=DISTRIBUTION_CHANNEL=android_tv_aab
+
+      - name: Upload Android TV AAB
+        if: ${{ inputs.build_tv_aab }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Voltix-Android-TV-AAB
+          path: build/app/outputs/bundle/androidTvRelease/app-androidTv-release.aab
+          if-no-files-found: error

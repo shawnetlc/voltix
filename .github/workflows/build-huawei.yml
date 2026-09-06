@@ -1,0 +1,84 @@
+name: Build Huawei (AppGallery APK)
+
+on:
+  workflow_dispatch:
+    inputs:
+      appgallery_app_id:
+        description: 'AppGallery App ID (Optional, e.g. C123456789)'
+        type: string
+        required: false
+        default: ''
+
+env:
+  FLUTTER_VERSION: '3.44.1'
+  JAVA_VERSION: '17'
+  ORG_GRADLE_PROJECT_allowDebugSigning: 'true'
+
+jobs:
+  build-huawei:
+    name: Build Huawei AppGallery APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Set up Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Configure Keystore signing (if secret available)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_TYPE: ${{ secrets.ANDROID_KEYSTORE_TYPE }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "Setting up release keystore from secrets..."
+            mkdir -p android/app
+            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > android/app/release.keystore
+            cat > android/keystore.properties <<EOF
+          storeFile=../app/release.keystore
+          storeType=${STORE_TYPE:-pkcs12}
+          storePassword=$STORE_PASSWORD
+          keyAlias=${KEY_ALIAS:-voltix-release}
+          keyPassword=${KEY_PASSWORD:-$STORE_PASSWORD}
+          EOF
+            echo "Release keystore configured successfully."
+          else
+            echo "No ANDROID_KEYSTORE_BASE64 secret; falling back to unsigned/debug-signed build."
+          fi
+
+      - name: Resolve Flutter dependencies
+        run: flutter pub get
+
+      - name: Build Huawei AppGallery APK
+        run: |
+          DART_DEFINES=(
+            "--dart-define=DISTRIBUTION_CHANNEL=huawei"
+          )
+          if [ -n "${{ inputs.appgallery_app_id }}" ]; then
+            DART_DEFINES+=("--dart-define=APPGALLERY_APP_ID=${{ inputs.appgallery_app_id }}")
+          fi
+
+          flutter build apk --release \
+            --flavor mobile \
+            "${DART_DEFINES[@]}"
+
+      - name: Upload Huawei APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Voltix-Huawei-AppGallery-APK
+          path: build/app/outputs/flutter-apk/app-mobile-release.apk
+          if-no-files-found: error
