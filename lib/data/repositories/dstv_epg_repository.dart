@@ -459,24 +459,27 @@ class DstvEpgRepository {
   /// the XMLTV feed's per-programme artwork and synopsis on top.
   Future<List<IptvEpgEntry>> getCatchupProgrammesForDstvChannel(
     DstvChannel channel, {
-    Duration lookback = const Duration(hours: 24),
+    Duration lookback = const Duration(hours: 72),
   }) async {
     try {
       final now = nowSast();
       final today = _dateOnly(now);
-      final yesterday = today.subtract(const Duration(days: 1));
+      // Fetch sufficient days to cover the requested lookback window (plus today).
+      // e.g. 72h = 3 days lookback + today = 4 days total.
+      final daysToFetch = ((lookback.inHours / 24).ceil() + 1).clamp(1, 7);
+      final dates = List.generate(
+        daysToFetch,
+        (i) => today.subtract(Duration(days: daysToFetch - 1 - i)),
+      );
 
       final results = await Future.wait([
-        _getProgrammesForDate(yesterday).catchError((_) => <DstvChannelSchedule>[]),
-        _getProgrammesForDate(today).catchError((_) => <DstvChannelSchedule>[]),
+        for (final date in dates)
+          _getProgrammesForDate(date).catchError((_) => <DstvChannelSchedule>[]),
       ]);
 
-      final yestSched = results[0].where((s) => s.number == channel.number).firstOrNull;
-      final todaySched = results[1].where((s) => s.number == channel.number).firstOrNull;
-
       final allProgs = <DstvProgramme>[
-        if (yestSched != null) ...yestSched.programmes,
-        if (todaySched != null) ...todaySched.programmes,
+        for (final schedList in results)
+          ...?schedList.where((s) => s.number == channel.number).firstOrNull?.programmes,
       ];
 
       // DStv's guide is authoritative for titles and times but ships no

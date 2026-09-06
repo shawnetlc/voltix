@@ -440,7 +440,7 @@ class VoltixIptvRepository {
   /// clean English titles & thumbnails.
   Future<List<IptvEpgEntry>> getCatchupEpg(
     IptvContentItem channel, {
-    Duration lookback = const Duration(hours: 24),
+    Duration lookback = const Duration(hours: 72),
     String? source,
   }) async {
     final streamId = channel.catchupStreamId;
@@ -830,10 +830,11 @@ class VoltixIptvRepository {
   /// behind a redirect chain the native player will not follow) -- so the tile
   /// opens and the stream never starts.
   ///
-  /// `start` is sent as a naive local "YYYY-MM-DD HH:MM:SS" string rather than
-  /// epoch seconds: the endpoint parses it with JavaScript's `new Date(...)`,
-  /// which would read a bare epoch-seconds number as milliseconds and land in
-  /// 1970.
+  /// `start` is sent as a naive UTC "YYYY-MM-DD HH:MM:SS" string rather than
+  /// epoch seconds: the endpoint parses it with JavaScript's `new Date(...)` in
+  /// UTC, which would read a bare epoch-seconds number as milliseconds and land
+  /// in 1970. Using UTC ensures the Xtream timeshift start time matches the
+  /// actual broadcast UTC time regardless of client device timezone.
   ///
   /// Returns null only when the programme has no usable time window. Whether
   /// the recording is still available, and whether this line is entitled to
@@ -846,9 +847,10 @@ class VoltixIptvRepository {
     // The archive variant, which is not always the channel's own stream id.
     final streamId = channel.catchupStreamId;
     if (!program.hasTimes) return null;
-    final start =
-        DateTime.fromMillisecondsSinceEpoch(program.startTimestamp! * 1000)
-            .toLocal();
+    final start = DateTime.fromMillisecondsSinceEpoch(
+      program.startTimestamp! * 1000,
+      isUtc: true,
+    );
     final durationMinutes =
         ((program.stopTimestamp! - program.startTimestamp!) / 60).ceil();
     if (durationMinutes <= 0) return null;
