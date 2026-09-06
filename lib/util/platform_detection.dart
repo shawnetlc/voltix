@@ -319,7 +319,19 @@ class PlatformDetection {
   /// Whether to use a 10-foot (lean-back) UI optimized for remote control.
   static bool get useLeanbackUi => isTV;
   static bool get useDesktopUi => !_hasMobileFormFactor && !isTV;
+  /// Manual override for the 10-foot / desktop / phone layout decision.
+  ///
+  /// Half-built: [setInterfaceLayout] stored the choice and nothing ever read
+  /// it back, so the value was write-only and the layout getters above still
+  /// decide purely from the platform. Neither the setter nor
+  /// [canOverrideInterfaceLayout] has a caller anywhere in the app.
+  ///
+  /// Kept rather than deleted, with a getter so the stored value can actually
+  /// be read -- finishing the feature means consulting [interfaceLayout] in
+  /// useLeanbackUi, useDesktopUi and useMobileUi, which is a deliberate
+  /// behaviour change rather than a lint fix.
   static InterfaceLayout _interfaceLayout = InterfaceLayout.automatic;
+  static InterfaceLayout get interfaceLayout => _interfaceLayout;
   static void setInterfaceLayout(InterfaceLayout value) =>
       _interfaceLayout = value;
   static bool get canOverrideInterfaceLayout => isAndroid || isDesktop;

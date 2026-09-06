@@ -18,9 +18,7 @@ import '../../widgets/focus/request_initial_focus.dart';
 const _tmdbPosterBase = 'https://image.tmdb.org/t/p/w200';
 
 class SeerrRequestsScreen extends StatefulWidget {
-  final int initialTab;
-
-  const SeerrRequestsScreen({super.key, this.initialTab = 0});
+  const SeerrRequestsScreen({super.key});
 
   @override
   State<SeerrRequestsScreen> createState() => _SeerrRequestsScreenState();
@@ -29,12 +27,10 @@ class SeerrRequestsScreen extends StatefulWidget {
 class _SeerrRequestsScreenState extends State<SeerrRequestsScreen> {
   SeerrRequestsViewModel? _vm;
   bool _initializing = true;
-  int _tab = 0;
 
   @override
   void initState() {
     super.initState();
-    _tab = widget.initialTab;
     _init();
   }
 

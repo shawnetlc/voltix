@@ -287,7 +287,7 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
                   height: 56,
                   fit: BoxFit.contain,
                   cacheWidth: 112,
-                  errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                  errorBuilder: (_, _, _) => const SizedBox.shrink(),
                 ),
               ),
             ],
@@ -372,7 +372,7 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         itemCount: visibleCats.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        separatorBuilder: (_, _) => const SizedBox(width: 10),
         itemBuilder: (context, index) {
           final cat = visibleCats[index];
           final baseName = cat.name.isNotEmpty
@@ -440,7 +440,7 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
       // its row of decoded artwork for as long as the screen is open.
       addAutomaticKeepAlives: false,
       itemCount: channels.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 14),
+      separatorBuilder: (_, _) => const SizedBox(height: 14),
       itemBuilder: (context, index) => _ChannelCatchupSection(
         channel: channels[index],
         repo: _repo,
@@ -617,7 +617,7 @@ class _ChannelCatchupSectionState extends State<_ChannelCatchupSection> {
                     fit: BoxFit.contain,
                     memCacheWidth: _decodeWidth(context, 24),
                     maxWidthDiskCache: 96,
-                    errorWidget: (_, __, ___) =>
+                    errorWidget: (_, _, _) =>
                         const Icon(Icons.live_tv, color: Colors.white54, size: 14),
                   )
                 : const Icon(Icons.live_tv, color: Colors.white54, size: 14),
@@ -690,7 +690,7 @@ class _ChannelCatchupSectionState extends State<_ChannelCatchupSection> {
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         itemCount: programs.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        separatorBuilder: (_, _) => const SizedBox(width: 10),
         itemBuilder: (context, index) => _CatchupItemCard(
           program: programs[index],
           fallbackImage: fallback,
@@ -813,7 +813,7 @@ class _CatchupItemCardState extends State<_CatchupItemCard> {
                           fit: BoxFit.cover,
                           memCacheWidth: _decodeWidth(context, _cardWidth),
                           maxWidthDiskCache: 640,
-                          errorWidget: (_, __, ___) => const Icon(
+                          errorWidget: (_, _, _) => const Icon(
                               Icons.live_tv,
                               color: Colors.white24,
                               size: 28),

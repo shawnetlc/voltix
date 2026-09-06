@@ -2,6 +2,14 @@ analyzer:
   exclude:
     - _parked_2_4/**
     - flutter-tizen*/**
+    # A vendored copy of the upstream plugin
+    # (pichillilorenzo/flutter_inappwebview), carried here only so the Windows
+    # build has it. Its three analyzer findings -- a SCREAMING_CASE channel
+    # constant, an unused local and a dead branch -- are upstream's code and
+    # upstream's to fix. Analyzing it means every `flutter analyze` reports
+    # problems nobody here will ever act on, which is how real findings get
+    # lost. Drop this line if the fork is ever modified locally.
+    - packages/flutter_inappwebview_windows/**
 
 # This file configures the analyzer, which statically analyzes Dart code to
 # check for errors, warnings, and lints.

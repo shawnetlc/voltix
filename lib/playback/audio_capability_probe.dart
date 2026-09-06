@@ -107,7 +107,9 @@ class AudioCapabilityProbe {
     try {
       final profile = await queryWithRetry();
       if (profile == null ||
-          (looksEmpty(profile) && PlatformDetection.hasAudioCapabilities)) return;
+          (looksEmpty(profile) && PlatformDetection.hasAudioCapabilities)) {
+        return;
+      }
       apply(profile);
     } catch (_) {}
   }

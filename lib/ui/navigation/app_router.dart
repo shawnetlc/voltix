@@ -851,9 +851,7 @@ final appRouter = GoRouter(
     ),
     GoRoute(
       path: Destinations.seerrRequests,
-      builder: (context, state) => SeerrRequestsScreen(
-        initialTab: state.uri.queryParameters['tab'] == 'issues' ? 1 : 0,
-      ),
+      builder: (context, state) => const SeerrRequestsScreen(),
     ),
     GoRoute(
       path: Destinations.seerrBrowse,
