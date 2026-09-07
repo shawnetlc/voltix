@@ -13,6 +13,7 @@ import 'app.dart';
 import 'data/services/cast/airplay_command_bridge.dart';
 import 'data/services/download_notification_service.dart';
 import 'data/services/media_server_client_factory.dart';
+import 'data/services/push_messaging_service.dart';
 import 'data/services/storage_path_service.dart';
 import 'data/services/theme_store_service.dart';
 import 'di/injection.dart';
@@ -467,6 +468,16 @@ Future<void> _startVoltix() async {
   try {
     await notificationService.initialize();
   } catch (_) {}
+
+  if (PlatformDetection.isAndroid || PlatformDetection.isIOS) {
+    try {
+      if (GetIt.instance.isRegistered<PushMessagingService>()) {
+        await GetIt.instance<PushMessagingService>().initialize();
+      }
+    } catch (e) {
+      debugPrint('PushMessagingService init error: $e');
+    }
+  }
 
   // Android TV also gets the MediaSession so music is controllable from the
   // system quick-access / screensaver after leaving the app. Apple
