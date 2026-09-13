@@ -3,11 +3,13 @@ import 'package:dio/dio.dart';
 import 'package:logger/logger.dart';
 import 'package:get_it/get_it.dart';
 import 'package:jellyfin_preference/jellyfin_preference.dart';
+import 'package:package_info_plus/package_info_plus.dart' as pkg;
 import '../../auth/repositories/session_repository.dart';
 import '../../auth/store/voltix_session_store.dart';
 import '../../ui/navigation/app_router.dart';
 import '../../ui/navigation/destinations.dart';
 import '../../preference/user_preferences.dart';
+import '../../util/platform_detection.dart';
 
 /// Dart client for the Voltix tRPC API.
 ///
@@ -30,6 +32,37 @@ class VoltixApiService {
     } catch (_) {
       return defaultBaseUrl;
     }
+  }
+
+  // ─────────────────────── app version ───────────────────────
+  //
+  // Sent on every login/ping so the admin dashboard's connected-users list
+  // can show which build each device is on. Resolved once and cached — same
+  // approach used in di/injection.dart's _resolveAppVersion, with the same
+  // tvOS-native fallback since PackageInfo can misreport there.
+  String? _cachedAppVersion;
+
+  Future<String> _resolveAppVersion() async {
+    final cached = _cachedAppVersion;
+    if (cached != null) return cached;
+
+    if (PlatformDetection.isAppleTV) {
+      final native = PlatformDetection.clientVersion?.trim();
+      if (native != null && native.isNotEmpty && native != 'Unknown') {
+        _cachedAppVersion = native;
+        return native;
+      }
+    }
+    try {
+      final info = await pkg.PackageInfo.fromPlatform();
+      final version = info.version.trim();
+      _cachedAppVersion = version.isNotEmpty ? version : '0.1.0';
+    } catch (_) {
+      _cachedAppVersion = PlatformDetection.clientVersion?.trim().isNotEmpty == true
+          ? PlatformDetection.clientVersion!.trim()
+          : '0.1.0';
+    }
+    return _cachedAppVersion!;
   }
 
   VoltixApiService({String? baseUrl})
@@ -75,6 +108,7 @@ class VoltixApiService {
   }) async {
     final url = '$baseUrl/api/trpc/voltix.directLogin';
     _logger.i('[VoltixApi] directLogin: username=$username device=$deviceName');
+    final appVersion = await _resolveAppVersion();
 
     try {
       final response = await _dio.post(url, data: {
@@ -88,6 +122,9 @@ class VoltixApiService {
           // When true, the backend should disconnect the oldest active session
           // to make room instead of rejecting with a device-limit error.
           'forceReplace': forceReplace,
+          // Lets the admin dashboard's connected-users list show which build
+          // each device is running.
+          'appVersion': appVersion,
         },
       });
 
@@ -208,6 +245,7 @@ class VoltixApiService {
   }) async {
     final url = '$baseUrl/api/trpc/voltix.loginByMac';
     _logger.i('[VoltixApi] loginByMac: mac=$macAddress');
+    final appVersion = await _resolveAppVersion();
 
     try {
       final response = await _dio.post(url, data: {
@@ -215,6 +253,7 @@ class VoltixApiService {
           'macAddress': macAddress,
           'deviceName':? deviceName,
           'deviceType':? deviceType,
+          'appVersion': appVersion,
         },
       });
 
@@ -325,10 +364,11 @@ class VoltixApiService {
 
   Future<Map<String, dynamic>> ping(String sessionToken) async {
     final url = '$baseUrl/api/trpc/voltix.ping';
+    final appVersion = await _resolveAppVersion();
 
     try {
       final response = await _dio.post(url,
-          data: {'json': {}},
+          data: {'json': {'appVersion': appVersion}},
           options: Options(headers: {
             'Authorization': 'Bearer $sessionToken',
             'Cookie': 'voltix_session=$sessionToken',

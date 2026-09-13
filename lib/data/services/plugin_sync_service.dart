@@ -10,6 +10,7 @@ import 'package:voltix_design/voltix_design.dart';
 import 'package:jellyfin_preference/jellyfin_preference.dart';
 import 'package:server_core/server_core.dart';
 
+import '../../auth/store/voltix_session_store.dart';
 import '../../data/repositories/seerr_repository.dart';
 import 'storage_path_service.dart';
 import '../../ui/widgets/navigation_layout.dart';
@@ -449,6 +450,29 @@ class PluginSyncService extends ChangeNotifier {
       return;
     }
 
+    // Moonfin/Settings/Stream carries admin broadcast messages (adminMessage,
+    // themesChanged) and the server-side plugin rejects it with a 401 for any
+    // non-admin account. Every regular-user device was opening it anyway and
+    // getting bounced instantly, then retrying forever — pure log/battery/data
+    // waste with no chance of ever succeeding. Skip it up front for non-admins
+    // instead of learning that the hard way on every reconnect attempt.
+    final voltixStore = GetIt.instance.isRegistered<VoltixSessionStore>()
+        ? GetIt.instance<VoltixSessionStore>()
+        : null;
+    final isAdminAccount = voltixStore != null &&
+        voltixStore.hasSession &&
+        (voltixStore.isAdmin ||
+            (voltixStore.username?.toLowerCase() == 'voltixadmin') ||
+            (voltixStore.username?.toLowerCase() == 'admin') ||
+            (voltixStore.username?.toLowerCase().contains('admin') ?? false));
+    if (!isAdminAccount) {
+      ServerLog.network(
+        '✗ Settings stream skipped — non-admin account, server would refuse it anyway.',
+        level: ServerLogLevel.info,
+      );
+      return;
+    }
+
     final headers = _authHeaders(client);
     if (headers == null) {
       return;
@@ -505,6 +529,26 @@ class PluginSyncService extends ChangeNotifier {
             },
             cancelOnError: false,
           );
+    } on DioException catch (e) {
+      if (cancelToken.isCancelled) return;
+
+      // A 401/403 here means the server itself refused this account access
+      // to the settings stream (e.g. it's scoped to admin accounts) — that
+      // is a permanent decision, not a network blip. Retrying it forever
+      // every few seconds just spams the logs and wastes battery/data on
+      // every non-privileged device, so stop instead of rescheduling.
+      final status = e.response?.statusCode;
+      if (status == 401 || status == 403) {
+        ServerLog.network(
+          '✗ Settings stream refused (HTTP $status) — the server has denied '
+          'this account access to Moonfin/Settings/Stream, not retrying.',
+          level: ServerLogLevel.error,
+        );
+        _stopSettingsStream();
+        return;
+      }
+
+      _scheduleSettingsStreamReconnect(client);
     } catch (_) {
       if (!cancelToken.isCancelled) {
         _scheduleSettingsStreamReconnect(client);
@@ -1641,7 +1685,7 @@ class PluginSyncService extends ChangeNotifier {
       }
 
       await _dio.post(
-        '${client.baseUrl}/Moonfin/Notifications/Register',
+        '${client.baseUrl}/$_pluginPrefix/Notifications/Register',
         data: {
           'token': token,
           'platform': platform,
@@ -1668,7 +1712,7 @@ class PluginSyncService extends ChangeNotifier {
       if (headers == null) return;
 
       await _dio.delete(
-        '${client.baseUrl}/Moonfin/Notifications/Register',
+        '${client.baseUrl}/$_pluginPrefix/Notifications/Register',
         data: {'deviceId': deviceId},
         options: Options(
           headers: {...headers, 'Content-Type': 'application/json'},
@@ -1688,7 +1732,7 @@ class PluginSyncService extends ChangeNotifier {
 
     try {
       final response = await _dio.post(
-        '${client.baseUrl}/Moonfin/Collections/$collectionId/Order',
+        '${client.baseUrl}/$_pluginPrefix/Collections/$collectionId/Order',
         data: itemIds,
         options: Options(
           headers: {...headers, 'Content-Type': 'application/json'},
