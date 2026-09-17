@@ -1,8 +1,8 @@
 # Project-level configuration.
 cmake_minimum_required(VERSION 3.14)
-project(moonfin LANGUAGES CXX)
+project(voltix LANGUAGES CXX)
 
-set(BINARY_NAME "moonfin")
+set(BINARY_NAME "voltix")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.

@@ -102,12 +102,6 @@ class _NavigationSettingsScreenState extends State<NavigationSettingsScreen> {
               onChanged: _pushSync,
             ),
             SwitchPreferenceTile(
-              preference: UserPreferences.showRemoteControlButton,
-              title: 'Show remote control in main menu',
-              icon: Icons.settings_remote_rounded,
-              onChanged: _pushSync,
-            ),
-            SwitchPreferenceTile(
               preference: UserPreferences.showLibrariesInToolbar,
               title: l10n.showLibrariesInToolbar,
               iconBuilder: (size, color) => Image.asset(

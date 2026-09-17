@@ -28,6 +28,7 @@ import '../../../util/overlay_color_palette.dart';
 import '../../../util/platform_detection.dart';
 import '../../../util/app_distribution.dart';
 import '../../widgets/app_update_dialog.dart';
+import '../../widgets/remote_control_dialog.dart';
 import 'downloaded_games_screen.dart';
 import 'emulator_cores_screen.dart';
 import '../../../util/game_cores.dart';

@@ -1,0 +1,73 @@
+<title>Voltix TV Notification Banner</title>
+<style>
+  :root{--bg:#f6f7f9;--fg:#11161c;--muted:#5c6b7a;--card:#0c141e;--accent:#00c9b7}
+  :root:not([data-theme="light"]){}
+  @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0d1117;--fg:#e6edf3;--muted:#8ba3b8}}
+  :root[data-theme="dark"]{--bg:#0d1117;--fg:#e6edf3;--muted:#8ba3b8}
+  body{background:var(--bg);color:var(--fg);font:14px/1.6 system-ui,-apple-system,Segoe UI,sans-serif;padding-block:28px;padding-left:16px;padding-right:16px;max-width:900px;margin:0 auto}
+  h1{font-size:1.2rem;margin:0 0 4px}
+  p.sub{color:var(--muted);margin:0 0 26px}
+  h2{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:30px 0 10px;font-weight:700}
+  .screen{background:#000;border-radius:10px;padding:26px 0 44px;display:flex;justify-content:center;align-items:flex-start;
+    background-image:linear-gradient(135deg,#1b2735 0%,#090a0f 100%)}
+  .screen.right{justify-content:flex-end;padding-right:22px}
+  .card{width:420px;border:1px solid rgba(0,201,183,.4);border-radius:14px;overflow:hidden;
+    box-shadow:0 8px 24px rgba(0,0,0,.45);background:var(--card);position:relative}
+  .card.sm{width:300px}
+  .art{aspect-ratio:16/9;position:relative;display:block}
+  .art img{width:100%;height:100%;object-fit:cover;display:block}
+  .scrim{position:absolute;inset:0;background:linear-gradient(to bottom,
+     rgba(0,0,0,0) 35%, rgba(0,0,0,.55) 65%, rgba(0,0,0,.92) 100%)}
+  .txt{position:absolute;left:0;right:0;bottom:0;padding:12px 16px 14px}
+  .t{color:#fff;font-weight:700;font-size:16px;text-shadow:0 1px 6px rgba(0,0,0,.55);margin:0}
+  .b{color:rgba(255,255,255,.92);font-size:12.5px;text-shadow:0 1px 6px rgba(0,0,0,.55);margin:3px 0 0}
+  .plain{display:flex;gap:12px;padding:14px 16px;align-items:flex-start}
+  .bell{color:var(--accent);font-size:18px;line-height:1}
+  .plain .t{color:#e6edf3;font-size:14px;text-shadow:none}
+  .plain .b{color:rgba(230,237,243,.8);font-size:12px;text-shadow:none}
+  .note{color:var(--muted);font-size:12.5px;margin-top:10px}
+  code{background:rgba(127,127,127,.15);padding:1px 5px;border-radius:4px;font-size:12px}
+</style>
+
+<h1>TV notification banner</h1>
+<p class="sub">Approximate rendering of the new layout — proportions and the scrim ramp are to spec, exact colours come from <code>AppColorScheme</code> at runtime.</p>
+
+<h2>TV · with artwork · top centre</h2>
+<div class="screen">
+  <div class="card">
+    <div class="art">
+      <img src="https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=900&q=60" alt="">
+      <div class="scrim"></div>
+      <div class="txt">
+        <p class="t">New on Voltix</p>
+        <p class="b">Dune: Part Two just landed in Movies — 4K HDR, available now.</p>
+      </div>
+    </div>
+  </div>
+</div>
+<p class="note">560&nbsp;px wide on TV, 16:9. Gradient is transparent to 35%, then ramps to 92% opaque behind the text.</p>
+
+<h2>TV · no artwork</h2>
+<div class="screen">
+  <div class="card" style="width:520px">
+    <div class="plain">
+      <span class="bell">&#9679;</span>
+      <div><p class="t">Scheduled maintenance</p><p class="b">Live TV will restart briefly at 02:00.</p></div>
+    </div>
+  </div>
+</div>
+
+<h2>Mobile · with artwork · top right</h2>
+<div class="screen right" style="padding-top:18px;padding-bottom:30px">
+  <div class="card sm">
+    <div class="art">
+      <img src="https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=700&q=60" alt="">
+      <div class="scrim"></div>
+      <div class="txt">
+        <p class="t" style="font-size:13px">New on Voltix</p>
+        <p class="b" style="font-size:11px">Dune: Part Two just landed in Movies.</p>
+      </div>
+    </div>
+  </div>
+</div>
+<p class="note">340&nbsp;px on mobile, same treatment, still anchored top right.</p>

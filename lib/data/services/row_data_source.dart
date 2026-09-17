@@ -1856,15 +1856,22 @@ class RowDataSource {
         }
       }
 
-      for (final key in const [
+      final itemType = (merged['Type'] ?? rawItem['Type']) as String?;
+      final isEpisodicOrAudio = itemType == 'Episode' ||
+          itemType == 'Season' ||
+          itemType == 'Audio';
+
+      for (final key in [
         'PrimaryImageTag',
         'PrimaryImageItemId',
-        'ParentPrimaryImageTag',
-        'ParentPrimaryImageItemId',
-        'SeriesPrimaryImageTag',
-        'SeriesId',
-        'ParentThumbItemId',
-        'ParentThumbImageTag',
+        if (isEpisodicOrAudio) ...const [
+          'ParentPrimaryImageTag',
+          'ParentPrimaryImageItemId',
+          'SeriesPrimaryImageTag',
+          'SeriesId',
+          'ParentThumbItemId',
+          'ParentThumbImageTag',
+        ],
         'BackdropImageTags',
         'ParentBackdropItemId',
         'ParentBackdropImageTags',

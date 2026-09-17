@@ -304,7 +304,70 @@ class HomeViewModel extends ChangeNotifier {
        _client = client,
        _mediaBarViewModel = mediaBarViewModel,
        _multiServerRepo = multiServerRepo,
-       _ownerUserId = client.userId ?? '';
+       _ownerUserId = client.userId ?? '' {
+    _startDailySync();
+  }
+
+  // ─── Once-a-day full resync ─────────────────────────────────────────────────
+  //
+  // Every launch already revalidates, so on a device that gets opened and closed
+  // this does nothing. It exists for the device that never closes: a TV box left
+  // on for a week would otherwise keep showing whatever the home screen looked
+  // like when it was last opened, because nothing would ever ask the server
+  // again.
+  //
+  // Checked on a tick rather than scheduled precisely. A timer set to fire in
+  // eleven hours does not survive the process being suspended, and on a TV that
+  // is most of its life — so a short repeating "have we passed today's sync time
+  // yet?" is the thing that actually fires.
+
+  /// Local hour at which the daily resync happens. Early morning: the set is
+  /// either off or nobody is watching, so a full refetch costs nothing.
+  static const _dailySyncHour = 4;
+
+  static const _dailySyncCheckInterval = Duration(minutes: 15);
+
+  Timer? _dailySyncTimer;
+
+  void _startDailySync() {
+    _dailySyncTimer?.cancel();
+    _dailySyncTimer = Timer.periodic(
+      _dailySyncCheckInterval,
+      (_) => unawaited(_resyncIfDue()),
+    );
+  }
+
+  Future<void> _resyncIfDue() async {
+    if (_isLoading) return;
+
+    final savedAt = await _cacheStore.savedAt();
+    if (savedAt == null) return;
+
+    // The most recent moment the sync should have happened. Before the sync hour
+    // that is yesterday's, so a box that has been on since 02:00 does not
+    // refetch the moment it starts ticking.
+    final now = DateTime.now();
+    var due = DateTime(now.year, now.month, now.day, _dailySyncHour);
+    if (due.isAfter(now)) {
+      due = due.subtract(const Duration(days: 1));
+    }
+
+    if (savedAt.isAfter(due)) return;
+
+    debugPrint(
+      '⚡🏠 [HomeCache] Daily resync — cache written ${savedAt.toIso8601String()}, '
+      'due since ${due.toIso8601String()}',
+    );
+    // preserveExisting keeps the current rows on screen while they refresh, so a
+    // resync on a TV somebody is looking at does not blank the home screen.
+    await load(preserveExisting: true);
+  }
+
+  @override
+  void dispose() {
+    _dailySyncTimer?.cancel();
+    super.dispose();
+  }
 
   Future<void> load({bool preserveExisting = false}) async {
     if (_isLoading) {

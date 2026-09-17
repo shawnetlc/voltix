@@ -79,13 +79,14 @@ class _SyncPlaySettingsScreenState extends State<_SyncPlaySettingsScreen> {
               ),
             ),
             const _SectionHeader('Remote Control'),
-            SwitchPreferenceTile(
-              preference: UserPreferences.showRemoteControlButton,
-              title: 'Show remote control in main menu',
-              subtitle:
-                  'Adds a Remote control entry to the account menu for driving '
-                  'playback on your other devices.',
-              icon: Icons.settings_remote_rounded,
+            ListTile(
+              leading: const Icon(Icons.settings_remote_rounded),
+              title: const Text('Open Remote Control'),
+              subtitle: const Text(
+                'Connect to and control playback on your other devices',
+              ),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: () => showRemoteControlDialog(context),
             ),
             SwitchPreferenceTile(
               preference: UserPreferences.remoteControlShowDpad,

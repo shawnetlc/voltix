@@ -13,6 +13,7 @@ import '../../playback/external_player_policy.dart';
 import '../../preference/user_preferences.dart';
 import '../../syncplay/syncplay_manager.dart';
 import '../../util/platform_detection.dart';
+import '../screens/notifications/notifications_screen.dart';
 import '../screens/auth/emby_connect_screen.dart';
 import '../screens/auth/login_screen.dart';
 import '../screens/auth/server_screen.dart';
@@ -628,7 +629,13 @@ final appRouter = GoRouter(
         ),
         GoRoute(
           path: 'iptv',
-          builder: (context, state) => const VoltixLiveTvScreen(),
+          // streamId/channelName arrive from the TV Guide's Play button and
+          // from a tapped programme reminder; without them this is the ordinary
+          // Live TV entry point.
+          builder: (context, state) => VoltixLiveTvScreen(
+            initialStreamId: state.uri.queryParameters['streamId'],
+            initialChannelName: state.uri.queryParameters['channelName'],
+          ),
         ),
       ],
     ),
@@ -836,6 +843,12 @@ final appRouter = GoRouter(
               AdminMetadataEditScreen(itemId: state.pathParameters['itemId']!),
         ),
       ],
+    ),
+
+    // Notifications
+    GoRoute(
+      path: Destinations.notifications,
+      builder: (context, state) => const NotificationsScreen(),
     ),
 
     // Settings

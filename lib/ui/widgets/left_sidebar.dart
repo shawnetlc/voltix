@@ -13,6 +13,7 @@ import '../../auth/repositories/user_repository.dart';
 import '../../data/models/aggregated_library.dart';
 import '../../data/repositories/multi_server_repository.dart';
 import '../../data/repositories/user_views_repository.dart';
+import '../../data/services/notification_inbox.dart';
 import '../../data/services/plugin_sync_service.dart';
 import '../../preference/preference_constants.dart';
 import '../../preference/seerr_preferences.dart';
@@ -28,7 +29,6 @@ import 'navigation_layout.dart';
 import 'settings/settings_panel.dart';
 import '../screens/syncplay/syncplay_screen.dart';
 import '../screens/settings/settings_side_panel.dart';
-import 'remote_control_dialog.dart';
 import 'seerr_icons.dart';
 import 'shuffle_overlay.dart';
 import 'user_menu_dialog.dart';
@@ -761,7 +761,6 @@ class _LeftSidebarState extends State<LeftSidebar> {
     final showSyncPlay =
         _prefs.get(UserPreferences.syncPlayEnabled) &&
         _prefs.get(UserPreferences.showSyncPlayButton);
-    final showRemote = _prefs.get(UserPreferences.showRemoteControlButton);
     final seerrPrefs = GetIt.instance<SeerrPreferences>();
     final seerrDisplayName = seerrPrefs.voltixDisplayName.trim();
     final seerrNavLabel = seerrDisplayName.isNotEmpty
@@ -954,18 +953,6 @@ class _LeftSidebarState extends State<LeftSidebar> {
                       );
                     },
                   ),
-                if (jellyfinEnabled && showRemote)
-                  _SidebarItem(
-                    key: const ValueKey('sidebar-remote'),
-                    icon: Icons.settings_remote_rounded,
-                    label: l10n.remoteControl,
-                    baseColor: nextMainSidebarColor(),
-                    showLabel: _showLabels,
-                    onPressed: () {
-                      _onNavigate();
-                      showRemoteControlDialog(context);
-                    },
-                  ),
                 if (jellyfinEnabled &&
                     _prefs.get(UserPreferences.showSeerrButton) &&
                     GetIt.instance<PluginSyncService>().seerrAvailable)
@@ -1063,6 +1050,22 @@ class _LeftSidebarState extends State<LeftSidebar> {
                         : const SizedBox.shrink(),
                   ),
                 ],
+                // Sits directly above Settings: it is the viewer's own record
+                // rather than a place to browse, and the unread count belongs
+                // where the eye already goes at the end of the list.
+                _SidebarItem(
+                  key: const ValueKey('sidebar-notifications'),
+                  icon: Icons.notifications_rounded,
+                  label: 'Notifications',
+                  baseColor: nextMainSidebarColor(),
+                  showLabel: _showLabels,
+                  trailing: const _UnreadBadge(),
+                  onPressed: () {
+                    _onNavigate();
+                    _markNavigationAwayFromSidebar();
+                    context.navigateTopLevel(Destinations.notifications);
+                  },
+                ),
                 _SidebarItem(
                   key: const ValueKey('sidebar-settings'),
                   icon: Icons.settings_rounded,
@@ -1838,6 +1841,61 @@ class _SidebarMusicCardState extends State<SidebarMusicCard> {
           ),
         ),
       ),
+    );
+  }
+}
+
+
+/// The unread count beside the Notifications entry.
+///
+/// Listens to the inbox directly rather than being handed a number, because a
+/// push can arrive while the sidebar is on screen and the count has to move
+/// without anything rebuilding the whole menu. Renders nothing at zero — an
+/// empty badge is just noise.
+class _UnreadBadge extends StatefulWidget {
+  const _UnreadBadge();
+
+  @override
+  State<_UnreadBadge> createState() => _UnreadBadgeState();
+}
+
+class _UnreadBadgeState extends State<_UnreadBadge> {
+  final _inbox = NotificationInbox.instance;
+
+  @override
+  void initState() {
+    super.initState();
+    // Cheap when already loaded, and this is the first thing on screen that
+    // needs the count, so it is where the initial read belongs.
+    _inbox.loadIfNeeded();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _inbox,
+      builder: (context, _) {
+        final count = _inbox.unreadCount;
+        if (count == 0) return const SizedBox.shrink();
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          constraints: const BoxConstraints(minWidth: 18),
+          decoration: BoxDecoration(
+            color: AppColorScheme.accent,
+            borderRadius: BorderRadius.circular(9),
+          ),
+          child: Text(
+            count > 99 ? '99+' : '$count',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: Colors.white,
+              height: 1.3,
+            ),
+          ),
+        );
+      },
     );
   }
 }

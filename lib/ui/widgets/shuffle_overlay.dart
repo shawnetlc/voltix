@@ -502,9 +502,31 @@ class _ShuffleOverlayState extends State<_ShuffleOverlay> {
       );
     }
 
-    return primary(item.id, item.primaryImageTag) ??
-        primary(item.primaryImageItemId, item.primaryImageTagField) ??
-        primary(item.parentPrimaryImageItemId, item.parentPrimaryImageTag);
+    // Direct item primary image.
+    final direct = primary(item.id, item.primaryImageTag);
+    if (direct != null) return direct;
+
+    final isEpisodicOrAudio = item.type == 'Episode' ||
+        item.type == 'Season' ||
+        item.type == 'Audio';
+
+    // If PrimaryImageItemId is null or equals item.id, it belongs to the item itself.
+    if (item.primaryImageItemId == null || item.primaryImageItemId == item.id) {
+      final fieldPrimary = primary(item.id, item.primaryImageTagField);
+      if (fieldPrimary != null) return fieldPrimary;
+    }
+
+    // Only episodes, seasons, or audio tracks should fall back to ancestor/parent artwork.
+    // Movies or Collections must never inherit a parent collection/boxset poster!
+    if (isEpisodicOrAudio) {
+      final inheritedPrimary =
+          primary(item.primaryImageItemId, item.primaryImageTagField);
+      if (inheritedPrimary != null) return inheritedPrimary;
+
+      return primary(item.parentPrimaryImageItemId, item.parentPrimaryImageTag);
+    }
+
+    return null;
   }
 
   String? _resolveCardImageUrl(

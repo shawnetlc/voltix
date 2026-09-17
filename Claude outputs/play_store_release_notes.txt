@@ -1,0 +1,24 @@
+What's New
+
+📺 TV Guide
+• Tap any DStv channel on the Schedule page to see what's on, with artwork and full programme details
+• Set a reminder for upcoming programmes — get a push notification with a tune-in link when it starts
+• Fixed: the live "now" indicator and programme times were running out of sync on TV
+
+🔔 Notifications
+• New Notifications screen — see everything you've been sent, mark as read, and tap through to watch
+• Push notifications now display properly on TV, including request updates and library alerts
+• Fixed: reminders and announcements were sometimes not reaching registered devices
+
+📡 Catch-Up
+• Fixed: switching categories on the Catch-Up page could show the wrong channel's guide data
+• Added a loading indicator while new schedule data loads
+
+🔗 Sharing
+• New deep links — tapping a shared film, show or channel now opens it directly in the app
+
+⚙️ Other improvements
+• Home screen loads faster by remembering your rows between visits
+• Added a setting to fully close the app when your TV goes to standby, fixing a black-screen issue on resume
+• Menu clean-up: Libraries is now hidden by default
+• General stability and bug fixes

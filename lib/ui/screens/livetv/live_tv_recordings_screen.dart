@@ -99,6 +99,14 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
       setState(() {
         _archiveChannels = _sortForDisplay(channels);
         _loadingChannels = false;
+        // If the pre-selected category (e.g. movies) has no channels, fall
+        // back to "all" so the user never lands on an empty screen when there
+        // IS content in other categories.
+        if (_selectedCategoryId != 'all') {
+          final hasMatch = _archiveChannels!
+              .any((c) => c.categoryId == _selectedCategoryId);
+          if (!hasMatch) _selectedCategoryId = 'all';
+        }
       });
     } catch (e) {
       if (!mounted || token != _loadToken) return;
@@ -159,9 +167,59 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
     return sorted;
   }
 
-  void _selectCategory(String categoryId) {
+  /// True while a newly-picked category's guide is being fetched.
+  bool _switchingCategory = false;
+
+  /// How many channels' guides to fetch before showing the category.
+  ///
+  /// Only the first screenful matters: those are the sections the viewer will
+  /// actually see, and the rest load as they scroll. Waiting for all of them on
+  /// a category like DStv Sport would mean holding the spinner for dozens of
+  /// requests nobody is looking at.
+  static const _prefetchChannels = 6;
+
+  /// Switches category, with the new guide fetched before anything is shown.
+  ///
+  /// Selecting a category used to swap the list instantly, which meant the
+  /// sections appeared immediately with their programme rows empty and filled
+  /// in one at a time over the next few seconds — and, worse, could show the
+  /// previous category's programmes while doing it (see the ValueKey note in
+  /// the list builder). Fetching the first screenful up front trades a brief,
+  /// honest spinner for a stretch of wrong content.
+  Future<void> _selectCategory(String categoryId) async {
     if (categoryId == _selectedCategoryId) return;
-    setState(() => _selectedCategoryId = categoryId);
+
+    setState(() {
+      _selectedCategoryId = categoryId;
+      _switchingCategory = true;
+    });
+
+    try {
+      final all = _archiveChannels ?? const <IptvContentItem>[];
+      final inCategory = categoryId == 'all'
+          ? all
+          : all.where((c) => c.categoryId == categoryId).toList();
+
+      // Warms the very cache each section reads on build, so they paint
+      // populated on their first frame instead of empty-then-filled.
+      await Future.wait(
+        inCategory.take(_prefetchChannels).map(
+              (channel) => _repo
+                  .getCatchupEpg(channel)
+                  // One channel with no guide must not hold up the category.
+                  .catchError((_) => <IptvEpgEntry>[]),
+            ),
+      ).timeout(
+        // A cap, not a target. If the provider is slow, showing the category
+        // with some sections still loading beats an indefinite spinner.
+        const Duration(seconds: 12),
+        onTimeout: () => const [],
+      );
+    } catch (_) {
+      // Nothing to do — the sections will each surface their own error.
+    } finally {
+      if (mounted) setState(() => _switchingCategory = false);
+    }
   }
 
   Future<void> _playCatchup(IptvContentItem channel, IptvEpgEntry program) async {
@@ -385,7 +443,7 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
             label: label,
             selected: cat.id == _selectedCategoryId,
             autofocus: index == 0,
-            onTap: () => _selectCategory(cat.id),
+            onTap: () => unawaited(_selectCategory(cat.id)),
           );
         },
       ),
@@ -394,6 +452,7 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
 
   Widget _buildBody(BuildContext context) {
     if (_loadingCategories) return const SizedBox.shrink();
+    if (_switchingCategory) return const _CategoryLoading();
     if (_loadingChannels) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -403,7 +462,13 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
         onRetry: _loadArchiveChannels,
       );
     }
-    final allChannels = _archiveChannels ?? const <IptvContentItem>[];
+    // Channel data hasn't arrived yet — show a loading indicator, never the
+    // "nothing found" empty state.
+    if (_archiveChannels == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    final allChannels = _archiveChannels!;
+    
     final channels = _selectedCategoryId == 'all'
         ? allChannels
         : allChannels
@@ -442,10 +507,67 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
       itemCount: channels.length,
       separatorBuilder: (_, _) => const SizedBox(height: 14),
       itemBuilder: (context, index) => _ChannelCatchupSection(
+        // Keyed by channel.
+        //
+        // Without this, changing category was showing the PREVIOUS category's
+        // programmes and artwork. The list rebuilds with a different set of
+        // channels, but the widgets are the same type at the same positions, so
+        // Flutter reuses each section's State object and only swaps
+        // `widget.channel`. The guide was fetched in initState, which does not
+        // run again on reuse — so the header said DStv Sport while the rows
+        // underneath were still whatever had been there before.
+        //
+        // A ValueKey makes each channel its own element, so a different channel
+        // gets a fresh State and fetches its own guide.
+        key: ValueKey(channels[index].id),
         channel: channels[index],
         repo: _repo,
         onPlay: _playCatchup,
         cleanName: _cleanChannelName,
+      ),
+    );
+  }
+}
+
+/// Shown while a newly-picked category's guide is loading.
+///
+/// Deliberately in the content area rather than a dialog over it. A modal
+/// barrier on a TV steals d-pad focus and leaves the category rail unreachable
+/// until it clears; this keeps the rail live, so someone who picked the wrong
+/// category can just pick another.
+class _CategoryLoading extends StatelessWidget {
+  const _CategoryLoading();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(
+            width: 34,
+            height: 34,
+            child: CircularProgressIndicator(strokeWidth: 2.6),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Loading guide…',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.85),
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Fetching programmes and artwork for this category.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.55),
+              fontSize: 12.5,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -548,6 +670,7 @@ class _ChannelCatchupSection extends StatefulWidget {
   final String Function(String raw) cleanName;
 
   const _ChannelCatchupSection({
+    super.key,
     required this.channel,
     required this.repo,
     required this.onPlay,
@@ -567,6 +690,21 @@ class _ChannelCatchupSectionState extends State<_ChannelCatchupSection> {
   void initState() {
     super.initState();
     _load();
+  }
+
+  /// Belt and braces alongside the ValueKey in the list above: if this State is
+  /// ever handed a different channel, drop what it is holding and fetch again
+  /// rather than showing one channel's guide under another's name.
+  @override
+  void didUpdateWidget(covariant _ChannelCatchupSection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.channel.id != widget.channel.id) {
+      setState(() {
+        _programs = null;
+        _error = null;
+      });
+      _load();
+    }
   }
 
   Future<void> _load() async {

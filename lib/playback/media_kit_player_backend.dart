@@ -403,12 +403,14 @@ class MediaKitPlayerBackend extends PlayerBackend {
       _nativeSetProperty(platform, 'video-sync', 'audio');
 
       // Network resilience & demuxer threading
+      _nativeSetProperty(platform, 'stream-lavf-o',
+          'reconnect=1,reconnect_streamed=1,reconnect_delay_max=5,reconnect_on_network_error=1,reconnect_on_http_error=4xx,5xx');
       _nativeSetProperty(platform, 'demuxer-lavf-o',
-          'reconnect=1,reconnect_streamed=1,reconnect_delay_max=5');
+          'reconnect=1,reconnect_streamed=1,reconnect_delay_max=5,reconnect_on_network_error=1');
       _nativeSetProperty(platform, 'demuxer-thread', 'yes');
       _nativeSetProperty(platform, 'cache', 'yes');
       _nativeSetProperty(platform, 'cache-pause-initial', 'yes');
-      _nativeSetProperty(platform, 'cache-pause-wait', '2');
+      _nativeSetProperty(platform, 'cache-pause-wait', '5');
 
       if (PlatformDetection.isAndroid) {
         if (PlatformDetection.isTV) {
@@ -420,10 +422,10 @@ class MediaKitPlayerBackend extends PlayerBackend {
         }
 
         // Buffer optimizations for Android / TV
-        _nativeSetProperty(platform, 'demuxer-readahead-secs', '5');
-        _nativeSetProperty(platform, 'demuxer-max-bytes', '30MiB');
-        _nativeSetProperty(platform, 'demuxer-max-back-bytes', '10MiB');
-        _nativeSetProperty(platform, 'network-timeout', '30');
+        _nativeSetProperty(platform, 'demuxer-readahead-secs', '30');
+        _nativeSetProperty(platform, 'demuxer-max-bytes', '64MiB');
+        _nativeSetProperty(platform, 'demuxer-max-back-bytes', '20MiB');
+        _nativeSetProperty(platform, 'network-timeout', '120');
         _nativeSetProperty(platform, 'autosync', '30');
       }
 
@@ -614,6 +616,9 @@ class MediaKitPlayerBackend extends PlayerBackend {
       if (isTsStream) {
         await _nativeSetProperty(native, 'demuxer-lavf-probesize', '32M');
         await _nativeSetProperty(native, 'demuxer-lavf-analyzeduration', '10');
+        await _nativeSetProperty(native, 'stream-lavf-o',
+            'reconnect=1,reconnect_streamed=1,reconnect_delay_max=5,reconnect_on_network_error=1,reconnect_on_http_error=4xx,5xx');
+        await _nativeSetProperty(native, 'network-timeout', '300');
       } else {
         await _nativeSetProperty(native, 'demuxer-lavf-probesize', '5M');
         await _nativeSetProperty(native, 'demuxer-lavf-analyzeduration', '2');

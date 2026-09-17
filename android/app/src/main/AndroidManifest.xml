@@ -59,6 +59,47 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
             </intent-filter>
+
+            <!--
+              Deep links.
+
+              Without these the app had no link handling at all. DeepLinkService
+              understands voltix:// URLs, but Android never routed one to us
+              because the scheme was declared nowhere, so tapping such a link
+              did nothing whatsoever.
+
+              First, the custom scheme — for QR codes and in-app links.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="voltix"/>
+            </intent-filter>
+
+            <!--
+              Then Android App Links, for anything sent to customers.
+
+              https is the only form messaging apps turn into something
+              tappable, so this is what belongs in a broadcast. autoVerify makes
+              Android fetch https://voltixstudio.com/.well-known/assetlinks.json
+              at install time; when the fingerprint there matches the app's
+              signing certificate, these links open Voltix directly with no
+              "which app?" dialog.
+
+              Until that file is served with the RELEASE signing fingerprint,
+              verification fails and Android falls back to asking the user. The
+              link still works — it is just uglier.
+            -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="https" android:host="voltixstudio.com" android:pathPrefix="/watch"/>
+                <data android:scheme="https" android:host="voltixstudio.com" android:pathPrefix="/live"/>
+                <data android:scheme="https" android:host="www.voltixstudio.com" android:pathPrefix="/watch"/>
+                <data android:scheme="https" android:host="www.voltixstudio.com" android:pathPrefix="/live"/>
+            </intent-filter>
         </activity>
         <activity
             android:name=".VoltixCrashActivity"

@@ -157,6 +157,7 @@ class _LiveTvGuideScreenState extends State<LiveTvGuideScreen>
   final ValueNotifier<GuideProgram?> _focusedProgram = ValueNotifier(null);
   final ValueNotifier<GuideChannel?> _focusedChannel = ValueNotifier(null);
   bool _didInitializeMiniPlayerMode = false;
+  bool _didScrollToNow = false;
   late EpgMobileView _mobileView;
 
   bool get _apple => AppUiIdiomResolver.isApple;
@@ -267,6 +268,13 @@ class _LiveTvGuideScreenState extends State<LiveTvGuideScreen>
   void _onChanged() {
     if (!mounted) return;
     setState(_initializeMiniPlayerMode);
+    // After the guide grid is laid out for the first time, snap the horizontal
+    // scroll so the current-time programmes (blue "live" cells) are visible.
+    if (!_didScrollToNow && _vm.state == GuideState.ready) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _scrollToNow();
+      });
+    }
   }
 
   void _initializeMiniPlayerMode() {
@@ -299,6 +307,53 @@ class _LiveTvGuideScreenState extends State<LiveTvGuideScreen>
       if (!mounted) return;
       _focusChannelRow(initialIndex);
     });
+  }
+
+  /// Snaps the guide grid and time-header horizontal scrolls so the current
+  /// time (the "now" line / blue live-programme overlay) is visible on screen.
+  /// Called once after the first successful data load.
+  void _scrollToNow([int attempt = 0]) {
+    if (!mounted || _didScrollToNow) return;
+    if (_vm.state != GuideState.ready) return;
+
+    final now = DateTime.now();
+    if (now.isBefore(_vm.windowStart) || now.isAfter(_vm.windowEnd)) {
+      _didScrollToNow = true;
+      return;
+    }
+
+    if (!_guideHorizontalScrollController.hasClients ||
+        _guideHorizontalScrollController.position.maxScrollExtent <= 0) {
+      if (attempt < 10) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && !_didScrollToNow) {
+            _scrollToNow(attempt + 1);
+          }
+        });
+      }
+      return;
+    }
+
+    // Pixel offset of "now" within the guide width.
+    final nowMinutes = now.difference(_vm.windowStart).inMinutes;
+    final nowOffset = nowMinutes * _kPixelsPerMinute;
+
+    // Place "now" ~100 px from the left edge so the viewer can see the
+    // tail end of any programme that started earlier.
+    final desiredScroll = (nowOffset - 100).clamp(0.0, double.maxFinite);
+
+    void snap(ScrollController controller) {
+      if (!controller.hasClients) return;
+      final target = desiredScroll.clamp(
+        0.0,
+        controller.position.maxScrollExtent,
+      );
+      controller.jumpTo(target);
+    }
+
+    snap(_guideHorizontalScrollController);
+    snap(_timeHeaderHorizontalScrollController);
+    _didScrollToNow = true;
   }
 
   void _scrollToRow(int index) {
@@ -1108,21 +1163,45 @@ class _LiveTvGuideScreenState extends State<LiveTvGuideScreen>
           ),
           headerPadding: const EdgeInsets.fromLTRB(8, 0, 8, 2),
           contentSpacing: 2,
-          builder: (_, controller) => SizedBox(
-            height: _kTimeHeaderHeight,
-            child: Row(
-              children: [
-                const SizedBox(width: _kChannelColumnWidth),
-                Expanded(
-                  child: SingleChildScrollView(
-                    controller: controller,
-                    scrollDirection: Axis.horizontal,
-                    child: _buildTimeHeader(guideWidth),
+          builder: (_, controller) {
+            final now = DateTime.now();
+            final nowInWindow = !now.isBefore(_vm.windowStart) &&
+                !now.isAfter(_vm.windowEnd);
+            final nowOffset = nowInWindow
+                ? now.difference(_vm.windowStart).inMinutes *
+                    _kPixelsPerMinute
+                : 0.0;
+
+            return SizedBox(
+              height: _kTimeHeaderHeight,
+              child: Row(
+                children: [
+                  const SizedBox(width: _kChannelColumnWidth),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      controller: controller,
+                      scrollDirection: Axis.horizontal,
+                      child: Stack(
+                        children: [
+                          _buildTimeHeader(guideWidth),
+                          if (nowInWindow)
+                            Positioned(
+                              left: nowOffset,
+                              top: 0,
+                              bottom: 0,
+                              child: Container(
+                                width: 2,
+                                color: AppColorScheme.accent,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
                   ),
-                ),
-              ],
-            ),
-          ),
+                ],
+              ),
+            );
+          },
         ),
         Divider(
           color: ThemeRegistry.active.borders.chipBorder.color,
@@ -1157,6 +1236,8 @@ class _LiveTvGuideScreenState extends State<LiveTvGuideScreen>
                   programsForChannel: _vm.programsForChannel,
                   hasProgramsFor: _vm.hasProgramsFor,
                   buildPlaceholderRow: _buildProgramPlaceholderRow,
+                  windowStart: _vm.windowStart,
+                  windowEnd: _vm.windowEnd,
                 ),
               ),
             ],
@@ -1469,6 +1550,8 @@ class _GuideGridView extends StatefulWidget {
   final List<GuideProgram> Function(String channelId) programsForChannel;
   final bool Function(String channelId) hasProgramsFor;
   final Widget Function() buildPlaceholderRow;
+  final DateTime windowStart;
+  final DateTime windowEnd;
 
   const _GuideGridView({
     required this.channels,
@@ -1479,6 +1562,8 @@ class _GuideGridView extends StatefulWidget {
     required this.programsForChannel,
     required this.hasProgramsFor,
     required this.buildPlaceholderRow,
+    required this.windowStart,
+    required this.windowEnd,
   });
 
   @override
@@ -1488,29 +1573,53 @@ class _GuideGridView extends StatefulWidget {
 class _GuideGridViewState extends State<_GuideGridView> {
   @override
   Widget build(BuildContext context) {
+    final now = DateTime.now();
+    final nowInWindow =
+        !now.isBefore(widget.windowStart) && !now.isAfter(widget.windowEnd);
+    final nowOffset = nowInWindow
+        ? now.difference(widget.windowStart).inMinutes * _kPixelsPerMinute
+        : 0.0;
+
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       controller: widget.horizontalController,
       child: SizedBox(
         width: widget.guideWidth,
-        child: ListView.builder(
-          controller: widget.verticalController,
-          itemCount: widget.channels.length,
-          itemExtent: _kRowHeight,
-          itemBuilder: (context, index) {
-            final channel = widget.channels[index];
-            final loaded = widget.hasProgramsFor(channel.id);
-            return SizedBox(
-              width: widget.guideWidth,
-              height: _kRowHeight,
-              child: loaded
-                  ? widget.buildProgramRow(
-                      widget.programsForChannel(channel.id),
-                      index,
-                    )
-                  : widget.buildPlaceholderRow(),
-            );
-          },
+        child: Stack(
+          children: [
+            ListView.builder(
+              controller: widget.verticalController,
+              itemCount: widget.channels.length,
+              itemExtent: _kRowHeight,
+              itemBuilder: (context, index) {
+                final channel = widget.channels[index];
+                final loaded = widget.hasProgramsFor(channel.id);
+                return SizedBox(
+                  width: widget.guideWidth,
+                  height: _kRowHeight,
+                  child: loaded
+                      ? widget.buildProgramRow(
+                          widget.programsForChannel(channel.id),
+                          index,
+                        )
+                      : widget.buildPlaceholderRow(),
+                );
+              },
+            ),
+            // ── Now-line: accent-colored vertical bar at the current time ──
+            if (nowInWindow)
+              Positioned(
+                left: nowOffset,
+                top: 0,
+                bottom: 0,
+                child: IgnorePointer(
+                  child: Container(
+                    width: 2,
+                    color: AppColorScheme.accent.withValues(alpha: 0.8),
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     );

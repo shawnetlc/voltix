@@ -3632,7 +3632,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   bool _isBringupInProgress(PlaybackBringupPhase phase) {
-    return phase == PlaybackBringupPhase.stoppingPrevious ||
+    return phase == PlaybackBringupPhase.preparing ||
+        phase == PlaybackBringupPhase.stoppingPrevious ||
         phase == PlaybackBringupPhase.resolving ||
         phase == PlaybackBringupPhase.opening ||
         phase == PlaybackBringupPhase.waitingForReady ||
@@ -3643,6 +3644,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     switch (_bringupState.phase) {
       case PlaybackBringupPhase.stoppingPrevious:
         return 'Stopping previous playback...';
+      case PlaybackBringupPhase.preparing:
       case PlaybackBringupPhase.resolving:
       case PlaybackBringupPhase.opening:
       case PlaybackBringupPhase.waitingForReady:
@@ -3689,7 +3691,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   Widget _buildBufferingIndicator() {
-    if (!_showBuffering || _isBringupInProgress(_bringupState.phase)) {
+    final isInitialLoading = !_isBringupInProgress(_bringupState.phase) &&
+        !_state.isPlaying &&
+        _state.position == Duration.zero &&
+        !_isStopping &&
+        !_isCurrentPreroll &&
+        _bringupState.phase != PlaybackBringupPhase.failed &&
+        _bringupState.phase != PlaybackBringupPhase.idle;
+    if ((!_showBuffering && !isInitialLoading) ||
+        _isBringupInProgress(_bringupState.phase)) {
       return const SizedBox.shrink();
     }
     final hasTrickplay = _trickplayInfo != null && _trickplayInfo!.isValid;
@@ -4458,12 +4468,17 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                         final use24Hour = _prefs.get(
                           UserPreferences.use24HourClock,
                         );
-                        String label(PlaybackTimeSlot slot) => _timeSlotLabel(
-                          slot,
-                          position: shown,
-                          duration: duration,
-                          use24Hour: use24Hour,
-                        );
+                        String label(PlaybackTimeSlot slot) {
+                          // The "Ends at" indicator is permanently placed above the
+                          // seek bar; suppress endsAt here to eliminate the duplicate timer.
+                          if (slot == PlaybackTimeSlot.endsAt) return '';
+                          return _timeSlotLabel(
+                            slot,
+                            position: shown,
+                            duration: duration,
+                            use24Hour: use24Hour,
+                          );
+                        }
                         final aboveLeft = label(
                           _prefs.get(UserPreferences.playbackTimeAboveLeft),
                         );

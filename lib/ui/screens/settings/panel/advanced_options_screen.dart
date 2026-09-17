@@ -38,6 +38,21 @@ class _AdvancedOptionsScreenState extends State<_AdvancedOptionsScreen> {
               divisions: 20,
               labelOf: (v) => l10n.settingsMillisecondsValue(v.round()),
             ),
+            if (PlatformDetection.isTV) ...[
+              // Literal strings rather than l10n keys: new keys mean an .arb
+              // edit plus a codegen run, and this ships as a fix for people who
+              // are currently force-stopping the app every evening. Worth
+              // translating properly next time the .arb files are touched.
+              _SectionHeader('Standby'),
+              SwitchPreferenceTile(
+                preference: UserPreferences.exitOnBackground,
+                title: 'Close Voltix when the TV sleeps',
+                subtitle:
+                    'Exits the app when it goes to the background, so it always '
+                    'starts fresh instead of coming back to a black screen.',
+                icon: Icons.power_settings_new,
+              ),
+            ],
             if (PlatformDetection.isAndroid && PlatformDetection.isTV) ...[
               _SectionHeader(l10n.playerRouting),
               SwitchPreferenceTile(

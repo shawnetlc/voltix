@@ -872,6 +872,41 @@ class UserPreferences extends ChangeNotifier {
     defaultValue: true,
   );
 
+  /// Closes the app outright when it goes to the background instead of leaving
+  /// it resident.
+  ///
+  /// This is for the black screen people hit after TV standby. A television
+  /// does not tell an app it is going into standby — all the app ever sees is
+  /// that it has been backgrounded — and on the way back the surface the
+  /// renderer was drawing to is gone, so the app returns black and has to be
+  /// force-stopped. Exiting on the way out makes the way back in always a clean
+  /// start.
+  ///
+  /// Off by default. It is the right trade for someone who leaves Voltix open
+  /// on a TV and hits this every evening, and the wrong one for someone who
+  /// switches to another app for ten seconds and wants their place back — so it
+  /// is a choice rather than a behaviour.
+  static final exitOnBackground = Preference(
+    key: 'pref_exit_on_background',
+    defaultValue: false,
+  );
+
+  /// How long the on-screen notification banner stays up on a TV, in seconds.
+  ///
+  /// Set in the admin portal and delivered inside each push from the Voltix
+  /// backend. It is remembered here because not every push comes from there:
+  /// the Moonfin plugin sends its own FCM messages for Seerr events straight
+  /// from the Jellyfin server, and those carry no such field. Without a
+  /// remembered value, a Seerr notification would ignore the configured
+  /// duration and fall back to the built-in default — so two notifications a
+  /// second apart would sit on screen for different lengths of time.
+  ///
+  /// Not shown in Settings: it is an admin decision, not a viewer one.
+  static final tvNotificationSeconds = Preference(
+    key: 'pref_tv_notification_seconds',
+    defaultValue: 8,
+  );
+
   /// Hides Continue Watching entries that come from the shared Extra / 4K
   /// Lumistream servers, so the home row only shows the user's own primary
   /// progress. The two per-server switches below apply when this is on.
@@ -1239,9 +1274,20 @@ class UserPreferences extends ChangeNotifier {
     defaultValue: true,
   );
 
+  /// Libraries in the main menu.
+  ///
+  /// Off by default: the Voltix menu leads with Home, Live TV and the guide,
+  /// and the raw Jellyfin library list underneath them is not how people are
+  /// meant to find things here.
+  ///
+  /// NOTE: this is only the default. The Moonfin plugin syncs a
+  /// `showLibrariesInToolbar` setting over the top of it (see
+  /// PluginSyncService), so if the server sends `true` the entry comes back
+  /// regardless of what is set here — turn it off there to make it stick
+  /// without shipping an app build.
   static final showLibrariesInToolbar = Preference(
     key: 'pref_show_libraries_in_toolbar',
-    defaultValue: true,
+    defaultValue: false,
   );
 
   static final showSeerrButton = Preference(

@@ -16,7 +16,6 @@ import '../../../auth/repositories/user_repository.dart';
 import '../../../auth/store/authentication_preferences.dart';
 import '../../../auth/store/authentication_store.dart';
 import '../../../auth/store/voltix_session_store.dart';
-import '../../../data/repositories/taste_profile_repository.dart';
 import '../../../data/services/device_id_service.dart';
 import '../../../data/services/media_server_client_factory.dart';
 import '../../../data/services/user_settings_sync_service.dart';
@@ -29,7 +28,7 @@ import '../../navigation/app_router.dart';
 import '../../navigation/destinations.dart';
 import '../../widgets/login_scaffold.dart';
 import 'voltix_register_screen.dart';
-import '../taste_profile/taste_onboarding_wizard.dart';
+import '../taste_profile/taste_onboarding_launcher.dart';
 import 'package:logger/logger.dart';
 
 
@@ -586,46 +585,13 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
     const target = Destinations.home;
 
     // Show the taste onboarding wizard once, immediately after first login.
-    final userPrefs = GetIt.instance<UserPreferences>();
-    var hasSeenWizard = userPrefs.get(UserPreferences.tasteOnboardingSeen);
-
-    // Before deciding to show the wizard, give a profile the user already
-    // completed a chance to come back -- from Jellyfin's roaming
-    // DisplayPreferences, or from the Azure backup taken the last time this
-    // user finished onboarding on any device. Without this, a fresh install
-    // or a new device always re-ran the wizard even though the answers were
-    // already sitting in the cloud, because nothing here ever asked.
-    if (!hasSeenWizard &&
-        GetIt.instance.isRegistered<TasteProfileRepository>() &&
-        GetIt.instance.isRegistered<MediaServerClient>()) {
-      try {
-        final client = GetIt.instance<MediaServerClient>();
-        final userId = client.userId?.trim() ?? '';
-        if (userId.isNotEmpty) {
-          final restored = await GetIt.instance<TasteProfileRepository>()
-              .loadProfile(userId: userId, serverId: client.baseUrl)
-              .timeout(const Duration(seconds: 6));
-          if (restored.isCompleted) {
-            hasSeenWizard = true;
-            await userPrefs.set(UserPreferences.tasteOnboardingSeen, true);
-          }
-        }
-      } catch (e) {
-        // A restore failure must not block login -- worst case the wizard
-        // asks again, which is recoverable; getting stuck here is not.
-        _logger.w('[Login] Taste profile restore failed: $e');
-      }
-    }
-
-    if (!hasSeenWizard && mounted) {
-      if (mounted) {
-        await TasteOnboardingWizard.showAsDialog(context);
-      }
-      // Marked only once it has actually been shown. Setting it beforehand
-      // spent the single shot even when the wizard never managed to load,
-      // which is how the taste profile could disappear for good after one
-      // bad launch.
-      await userPrefs.set(UserPreferences.tasteOnboardingSeen, true);
+    //
+    // The logic lives in maybeShowTasteOnboarding() rather than here so the
+    // registration path can run the identical thing. It only ever existed on
+    // this path, which is why taste recommendations started on TV — where
+    // everyone signs in — and not on mobile, where new users register.
+    if (mounted) {
+      await maybeShowTasteOnboarding(context);
     }
 
     // Route through the router, not this widget's context.

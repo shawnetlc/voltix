@@ -682,67 +682,247 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
     );
   }
 
-  /// The cloud step has nothing to mock up the way the layout steps do, so
-  /// the card art is a plain glyph on the same preview surface.
-  Widget _cloudPreview(IconData icon, Color color) => SetupPreview(
-    child: Center(child: Icon(icon, size: 44, color: color)),
-  );
+  Widget _buildStepCardPreview({
+    required IconData icon,
+    required Color accentColor,
+    required String tag,
+    required String subtitle,
+    String? badgeText,
+    List<String> featurePills = const [],
+  }) {
+    final aspect = setupPreviewAspect();
+    return AspectRatio(
+      aspectRatio: aspect,
+      child: SetupPreview(
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                accentColor.withValues(alpha: 0.14),
+                AppColorScheme.surface,
+                const Color(0xFF0B0E14),
+              ],
+            ),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (badgeText != null && badgeText.isNotEmpty) ...[
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: accentColor.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: accentColor.withValues(alpha: 0.35),
+                      width: 0.8,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.person_rounded, size: 11, color: accentColor),
+                      const SizedBox(width: 4),
+                      Text(
+                        badgeText,
+                        style: TextStyle(
+                          color: accentColor,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.2,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: accentColor.withValues(alpha: 0.15),
+                  border: Border.all(
+                    color: accentColor.withValues(alpha: 0.4),
+                    width: 1.2,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: accentColor.withValues(alpha: 0.25),
+                      blurRadius: 14,
+                      spreadRadius: 1,
+                    ),
+                  ],
+                ),
+                child: Icon(icon, size: 22, color: accentColor),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                tag,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              if (featurePills.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 4,
+                  runSpacing: 4,
+                  alignment: WrapAlignment.center,
+                  children: featurePills
+                      .map((pill) => Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.06),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.1),
+                                width: 0.5,
+                              ),
+                            ),
+                            child: Text(
+                              pill,
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: 0.7),
+                                fontSize: 9,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ))
+                      .toList(),
+                ),
+              ] else ...[
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.5),
+                    fontSize: 10,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _buildCloudSyncStep(AppLocalizations l10n) {
     final selected = _cloudChoice;
     final account = _cloudUsername ?? '';
-    return _OptionLayout(
-      columns: 3,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        _OptionCard(
-          order: 0,
-          label: 'Import',
-          preview: _cloudPreview(
-            Icons.cloud_download_rounded,
-            AppColorScheme.accent,
+        if (account.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: AppSpacing.spaceMd),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E293B).withValues(alpha: 0.6),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: AppColorScheme.accent.withValues(alpha: 0.35),
+                  width: 1,
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.cloud_done_rounded,
+                      size: 15, color: AppColorScheme.accent),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Cloud backup ready for @$account',
+                    style: TextStyle(
+                      color: AppColorScheme.onSurface,
+                      fontSize: AppTypography.fontSizeSm,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
-          hint: 'Restore the settings saved for @$account. '
-              'Your answers on the previous steps are kept.',
-          selected: selected == CloudDataAction.importAll,
-          autofocus: selected == null || selected == CloudDataAction.importAll,
-          focusNode:
-              (selected == null || selected == CloudDataAction.importAll)
+        _OptionLayout(
+          columns: 3,
+          children: [
+            _OptionCard(
+              order: 0,
+              label: 'Import',
+              preview: _buildStepCardPreview(
+                icon: Icons.cloud_download_rounded,
+                accentColor: AppColorScheme.accent,
+                tag: 'Restore Backup',
+                subtitle: 'Keep earlier answers',
+                badgeText: account.isNotEmpty ? '@$account' : 'Voltix Cloud',
+                featurePills: const ['Preferences', 'Layout', 'Sync'],
+              ),
+              hint: 'Restore the settings saved for @$account. '
+                  'Your answers on the previous steps are kept.',
+              selected: selected == CloudDataAction.importAll,
+              autofocus: selected == null || selected == CloudDataAction.importAll,
+              focusNode:
+                  (selected == null || selected == CloudDataAction.importAll)
+                      ? _stepDefaultFocusNode
+                      : null,
+              onPressed: () =>
+                  setState(() => _cloudChoice = CloudDataAction.importAll),
+            ),
+            _OptionCard(
+              order: 1,
+              label: 'Start fresh',
+              preview: _buildStepCardPreview(
+                icon: Icons.auto_awesome_rounded,
+                accentColor: const Color(0xFF10B981),
+                tag: 'New Baseline',
+                subtitle: 'Clean local setup',
+                badgeText: 'Local Setup',
+                featurePills: const ['Local Defaults', 'Cloud Untouched'],
+              ),
+              hint: 'Leave the cloud copy untouched and carry on with the '
+                  'settings on this device.',
+              selected: selected == CloudDataAction.skip,
+              autofocus: selected == CloudDataAction.skip,
+              focusNode:
+                  selected == CloudDataAction.skip ? _stepDefaultFocusNode : null,
+              onPressed: () => setState(() => _cloudChoice = CloudDataAction.skip),
+            ),
+            _OptionCard(
+              order: 2,
+              label: 'Delete cloud data',
+              preview: _buildStepCardPreview(
+                icon: Icons.delete_outline_rounded,
+                accentColor: const Color(0xFFEF4444),
+                tag: 'Clear Cloud Copy',
+                subtitle: 'Permanent removal',
+                badgeText: 'Danger Zone',
+                featurePills: const ['Wipe Server Copy'],
+              ),
+              hint: 'Remove the saved copy from the cloud for good. This cannot '
+                  'be undone.',
+              selected: selected == CloudDataAction.delete,
+              autofocus: selected == CloudDataAction.delete,
+              focusNode: selected == CloudDataAction.delete
                   ? _stepDefaultFocusNode
                   : null,
-          onPressed: () =>
-              setState(() => _cloudChoice = CloudDataAction.importAll),
-        ),
-        _OptionCard(
-          order: 1,
-          label: 'Start fresh',
-          preview: _cloudPreview(
-            Icons.auto_awesome_rounded,
-            AppColorScheme.onSurface,
-          ),
-          hint: 'Leave the cloud copy untouched and carry on with the '
-              'settings on this device.',
-          selected: selected == CloudDataAction.skip,
-          autofocus: selected == CloudDataAction.skip,
-          focusNode:
-              selected == CloudDataAction.skip ? _stepDefaultFocusNode : null,
-          onPressed: () => setState(() => _cloudChoice = CloudDataAction.skip),
-        ),
-        _OptionCard(
-          order: 2,
-          label: 'Delete cloud data',
-          preview: _cloudPreview(
-            Icons.delete_outline_rounded,
-            const Color(0xFFEF4444),
-          ),
-          hint: 'Remove the saved copy from the cloud for good. This cannot '
-              'be undone.',
-          selected: selected == CloudDataAction.delete,
-          autofocus: selected == CloudDataAction.delete,
-          focusNode: selected == CloudDataAction.delete
-              ? _stepDefaultFocusNode
-              : null,
-          onPressed: () =>
-              setState(() => _cloudChoice = CloudDataAction.delete),
+              onPressed: () =>
+                  setState(() => _cloudChoice = CloudDataAction.delete),
+            ),
+          ],
         ),
       ],
     );
@@ -755,9 +935,12 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
         _OptionCard(
           order: 0,
           label: 'Personalise',
-          preview: _cloudPreview(
-            Icons.auto_awesome_motion_rounded,
-            AppColorScheme.accent,
+          preview: _buildStepCardPreview(
+            icon: Icons.auto_awesome_motion_rounded,
+            accentColor: AppColorScheme.accent,
+            tag: 'Voltix Recommends',
+            subtitle: 'Calibrate stream shelves',
+            featurePills: const ['Movies', 'Series', 'Genres', 'Moods'],
           ),
           hint: 'Rate a few titles and genres so the home screen can suggest '
               'things worth watching. Takes a couple of minutes.',
@@ -769,9 +952,12 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
         _OptionCard(
           order: 1,
           label: 'Not now',
-          preview: _cloudPreview(
-            Icons.schedule_rounded,
-            AppColorScheme.onSurface,
+          preview: _buildStepCardPreview(
+            icon: Icons.schedule_rounded,
+            accentColor: AppColorScheme.onSurface.withValues(alpha: 0.7),
+            tag: 'Skip for Now',
+            subtitle: 'Set up anytime in Settings',
+            featurePills: const ['Standard Home Rows'],
           ),
           hint: 'Skip for now. You can build a taste profile at any time from '
               'Settings.',

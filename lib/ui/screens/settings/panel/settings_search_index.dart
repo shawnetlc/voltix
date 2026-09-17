@@ -635,7 +635,7 @@ List<_SettingsSearchEntry> _buildSettingsSearchIndex({
     downloads.leaf('2', l10n.storageLimit),
     downloads.leaf('3', l10n.settingsConcurrentDownloads),
     syncplay.screen(keywords: const ['syncplay','together','group','watch party']),
-    syncplay.leaf('0', 'Show remote control in main menu'),
+    syncplay.leaf('0', 'Open remote control'),
     syncplay.leaf('1', 'Show D-pad on remote'),
     syncplay.leaf('2', l10n.settingsSyncplayEnabled),
     syncplay.leaf('3', l10n.settingsSyncplayButton),

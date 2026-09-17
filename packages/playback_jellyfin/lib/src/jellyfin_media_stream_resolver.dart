@@ -88,7 +88,11 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
       throw Exception('No media sources available for item $itemId');
     }
 
-    final source = _selectBestSource(info.mediaSources, preferredId: resolvedMediaSourceId);
+    final source = _selectBestSource(
+      info.mediaSources,
+      preferredId: resolvedMediaSourceId,
+      enableDirectPlay: enableDirectPlay,
+    );
     final hasKnownMediaStreams = source.mediaStreams.isNotEmpty;
     final hasVideoStream = source.mediaStreams.any((stream) => stream['Type'] == 'Video');
     final isAudioByStreams = hasKnownMediaStreams && !hasVideoStream;
@@ -187,12 +191,13 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
     final query = params.entries
         .map((entry) => '${entry.key}=${Uri.encodeQueryComponent(entry.value)}')
         .join('&');
-    return _appendAuth('${_client.baseUrl}/Audio/$itemId/main.m3u8?$query');
+    return _appendAuth(_joinServerUrl('/Audio/$itemId/main.m3u8?$query'));
   }
 
   PlaybackMediaSource _selectBestSource(
     List<PlaybackMediaSource> sources, {
     String? preferredId,
+    bool enableDirectPlay = true,
   }) {
     if (preferredId != null) {
       final preferred = sources.where((s) => s.id == preferredId).firstOrNull;
@@ -200,19 +205,40 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
         return preferred;
       }
     }
+    PlaybackMediaSource? directPlay;
     PlaybackMediaSource? directStream;
     PlaybackMediaSource? transcode;
     for (final s in sources) {
-      if (s.supportsDirectPlay) {
+      if (enableDirectPlay && s.supportsDirectPlay) {
         return s;
+      }
+      if (s.supportsDirectPlay) {
+        directPlay ??= s;
       }
       directStream ??= s.supportsDirectStream ? s : null;
       transcode ??= s.supportsTranscoding ? s : null;
     }
-    return directStream ?? transcode ?? sources.first;
+    return directStream ?? transcode ?? directPlay ?? sources.first;
   }
 
-  bool _isServerUrl(String url) => url.startsWith(_client.baseUrl);
+  bool _isServerUrl(String url) {
+    final base = _client.baseUrl.trim().toLowerCase();
+    final cleanBase =
+        base.endsWith('/') ? base.substring(0, base.length - 1) : base;
+    final cleanUrl = url.trim().toLowerCase();
+    return cleanUrl.startsWith(cleanBase);
+  }
+
+  String _joinServerUrl(String path) {
+    if (path.startsWith('http://') || path.startsWith('https://')) {
+      return path;
+    }
+    final base = _client.baseUrl.endsWith('/')
+        ? _client.baseUrl.substring(0, _client.baseUrl.length - 1)
+        : _client.baseUrl;
+    final normalizedPath = path.startsWith('/') ? path : '/$path';
+    return '$base$normalizedPath';
+  }
 
   String _appendAuth(String url) {
     final token = _client.accessToken;
@@ -238,7 +264,7 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
     final query = params.entries
         .map((entry) => '${entry.key}=${Uri.encodeQueryComponent(entry.value)}')
         .join('&');
-    return '${_client.baseUrl}/Audio/$itemId/stream?$query';
+    return _joinServerUrl('/Audio/$itemId/stream?$query');
   }
 
   (String, StreamPlayMethod) _resolveStreamUrl(
@@ -250,7 +276,8 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
     final remotePath = source.path;
     final isManagedLiveStream =
         source.liveStreamId != null && source.liveStreamId!.isNotEmpty;
-    if (source.supportsDirectPlay &&
+    if (enableDirectPlay &&
+        source.supportsDirectPlay &&
         source.isRemote &&
         !isManagedLiveStream &&
         source.protocol?.toLowerCase() == 'http' &&
@@ -274,28 +301,28 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
       return (remotePath, method);
     }
 
-    if (source.supportsDirectPlay && isAudio) {
+    if (enableDirectPlay && source.supportsDirectPlay && isAudio) {
       return (
         _buildDirectPlayAudioUrl(itemId, source),
         StreamPlayMethod.directPlay,
       );
     }
 
-    if (source.supportsDirectPlay) {
+    if (enableDirectPlay && source.supportsDirectPlay) {
       return (
         _client.playbackApi.getStreamUrl(itemId, mediaSourceId: source.id, liveStreamId: source.liveStreamId),
         StreamPlayMethod.directPlay,
       );
     }
     if (source.supportsDirectStream && source.directStreamUrl != null) {
-      var dsUrl = '${_client.baseUrl}${source.directStreamUrl}';
+      var dsUrl = _joinServerUrl(source.directStreamUrl!);
       if (source.liveStreamId != null) {
         dsUrl = '$dsUrl${dsUrl.contains('?') ? '&' : '?'}LiveStreamId=${Uri.encodeComponent(source.liveStreamId!)}';
       }
       return (dsUrl, StreamPlayMethod.directStream);
     }
     if (source.supportsTranscoding && source.transcodingUrl != null) {
-      var tcUrl = '${_client.baseUrl}${source.transcodingUrl}';
+      var tcUrl = _joinServerUrl(source.transcodingUrl!);
       if (source.liveStreamId != null) {
         tcUrl = '$tcUrl${tcUrl.contains('?') ? '&' : '?'}LiveStreamId=${Uri.encodeComponent(source.liveStreamId!)}';
       }

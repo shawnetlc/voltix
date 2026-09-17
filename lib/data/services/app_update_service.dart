@@ -136,9 +136,12 @@ class AppUpdateService {
     }
   }
 
-  /// Checks the server's minimum_version config. Returns true if the server
-  /// requires a higher version than [currentVersion].
-  Future<bool> _isServerForceUpdate(String currentVersion) async {
+  /// Fetches the Voltix server's app configuration which may include:
+  /// - `latestVersion`: the newest version published to stores
+  /// - `minimumVersion`: the minimum version the server will accept
+  /// - `releaseNotes`: optional release notes for the latest version
+  /// - `forceUpdate`: whether this update is mandatory
+  Future<_VoltixAppConfig?> _fetchAppConfig() async {
     try {
       final apiService = VoltixApiService();
 
@@ -153,7 +156,7 @@ class AppUpdateService {
       if (httpResponse.statusCode < 200 || httpResponse.statusCode >= 300) {
         await httpResponse.drain<void>().catchError((_) {});
         client.close(force: true);
-        return false;
+        return null;
       }
 
       final body = await httpResponse.transform(utf8.decoder).join();
@@ -162,16 +165,107 @@ class AppUpdateService {
       final decoded = jsonDecode(body);
       final result = decoded is Map ? decoded['result'] : null;
       final data = result is Map ? result['data'] : null;
-      final minVersion = data is Map ? data['minimumVersion']?.toString() : null;
+      if (data is! Map) return null;
 
-      if (minVersion == null || minVersion.isEmpty || minVersion == '0.0.0') {
-        return false;
-      }
-
-      return _isNewerVersion(minVersion, currentVersion);
+      return _VoltixAppConfig(
+        latestVersion: data['latestVersion']?.toString(),
+        minimumVersion: data['minimumVersion']?.toString(),
+        releaseNotes: data['releaseNotes']?.toString(),
+        forceUpdate: data['forceUpdate'] == true,
+      );
     } catch (_) {
+      return null;
+    }
+  }
+
+  /// Update check path for Play Store / AppGallery builds.
+  ///
+  /// Queries the Voltix server's appConfig endpoint for the latest published
+  /// version instead of the GitHub releases API (which has no releases — they
+  /// go straight to the store). If a newer version exists, produces an
+  /// [updateAvailable] result whose [downloadUri] points at the store listing.
+  Future<DesktopUpdateCheckResult> _checkForUpdateViaVoltixApi({
+    required String currentVersion,
+    required bool suppressIfAlreadyNotified,
+  }) async {
+    final config = await _fetchAppConfig();
+    if (config == null) {
+      return const DesktopUpdateCheckResult(
+        status: DesktopUpdateCheckStatus.checkFailed,
+      );
+    }
+
+    // Determine the latest version. The server may provide `latestVersion`
+    // explicitly; if not, fall back to `minimumVersion` (which at least tells
+    // us *some* newer version exists if it's higher than ours).
+    final serverVersion = config.latestVersion ?? config.minimumVersion;
+    if (serverVersion == null || serverVersion.isEmpty || serverVersion == '0.0.0') {
+      return const DesktopUpdateCheckResult(
+        status: DesktopUpdateCheckStatus.upToDate,
+      );
+    }
+
+    if (!_isNewerVersion(serverVersion, currentVersion)) {
+      return const DesktopUpdateCheckResult(
+        status: DesktopUpdateCheckStatus.upToDate,
+      );
+    }
+
+    // Is this a force update?
+    final minVersion = config.minimumVersion;
+    final isForced = config.forceUpdate ||
+        (minVersion != null &&
+            minVersion.isNotEmpty &&
+            minVersion != '0.0.0' &&
+            _isNewerVersion(minVersion, currentVersion));
+
+    final lastNotified = _store.getString(_lastNotifiedVersionKey);
+    if (suppressIfAlreadyNotified &&
+        !isForced &&
+        _normalizeVersion(lastNotified) == _normalizeVersion(serverVersion)) {
+      return const DesktopUpdateCheckResult(
+        status: DesktopUpdateCheckStatus.alreadyNotified,
+      );
+    }
+
+    await _store.setString(_lastNotifiedVersionKey, serverVersion);
+
+    // Build a store-listing URI — the dialog will show "Update via Play Store"
+    // or "Update via AppGallery" and open this.
+    String pkgName = 'cc.voltix.streaming';
+    try {
+      final packageInfo = await PackageInfo.fromPlatform();
+      if (packageInfo.packageName.trim().isNotEmpty) {
+        pkgName = packageInfo.packageName.trim();
+      }
+    } catch (_) {}
+    final storeUri = Uri.parse(
+      'https://play.google.com/store/apps/details?id=$pkgName',
+    );
+
+    return DesktopUpdateCheckResult(
+      status: DesktopUpdateCheckStatus.updateAvailable,
+      update: DesktopUpdateInfo(
+        version: serverVersion,
+        downloadUri: storeUri,
+        assetName: '',
+        releaseNotesUrl: storeUri.toString(),
+        releaseNotesBody: config.releaseNotes ?? '',
+        forceUpdate: isForced,
+      ),
+    );
+  }
+
+  /// Checks the server's minimum_version config. Returns true if the server
+  /// requires a higher version than [currentVersion].
+  Future<bool> _isServerForceUpdate(String currentVersion) async {
+    final config = await _fetchAppConfig();
+    if (config == null) return false;
+    final minVersion = config.minimumVersion;
+    if (minVersion == null || minVersion.isEmpty || minVersion == '0.0.0') {
       return false;
     }
+    return _isNewerVersion(minVersion, currentVersion);
   }
 
   String _extensionFor(String path) {
@@ -215,6 +309,21 @@ class AppUpdateService {
 
     await _store.setInt(_lastCheckMsKey, now.millisecondsSinceEpoch);
 
+    final currentVersion = await _currentAppVersion();
+
+    // ── Store-managed builds: use the Voltix API as the version source ──
+    // Play Store and AppGallery releases are not published on GitHub, so the
+    // GitHub releases API returns 404. Instead, the Voltix server's appConfig
+    // endpoint provides `latestVersion` (and `minimumVersion` for force
+    // updates). This path produces a store-listing link, never an APK.
+    if (AppDistribution.isManagedStoreBuild) {
+      return _checkForUpdateViaVoltixApi(
+        currentVersion: currentVersion,
+        suppressIfAlreadyNotified: suppressIfAlreadyNotified,
+      );
+    }
+
+    // ── Sideload / APK / desktop builds: use GitHub releases ──
     final release = await _fetchLatestRelease();
     if (release == null) {
       return const DesktopUpdateCheckResult(
@@ -222,7 +331,6 @@ class AppUpdateService {
       );
     }
 
-    final currentVersion = await _currentAppVersion();
     if (!_isNewerVersion(release.version, currentVersion)) {
       return const DesktopUpdateCheckResult(
         status: DesktopUpdateCheckStatus.upToDate,
@@ -230,11 +338,7 @@ class AppUpdateService {
     }
 
     _ReleaseAsset? selectedAsset;
-    // Store-managed builds (Play, AppGallery) never resolve a GitHub asset:
-    // the store owns the update, and picking an APK here would offer a
-    // self-install the dialog is not allowed to perform anyway.
-    if (!AppDistribution.opensReleasesInBrowser &&
-        !AppDistribution.isManagedStoreBuild) {
+    if (!AppDistribution.opensReleasesInBrowser) {
       selectedAsset = _selectAsset(release.assets);
       if (selectedAsset == null) {
         return const DesktopUpdateCheckResult(
@@ -491,4 +595,18 @@ class _ReleaseAsset {
   final String downloadUrl;
 
   const _ReleaseAsset({required this.name, required this.downloadUrl});
+}
+
+class _VoltixAppConfig {
+  final String? latestVersion;
+  final String? minimumVersion;
+  final String? releaseNotes;
+  final bool forceUpdate;
+
+  const _VoltixAppConfig({
+    this.latestVersion,
+    this.minimumVersion,
+    this.releaseNotes,
+    this.forceUpdate = false,
+  });
 }

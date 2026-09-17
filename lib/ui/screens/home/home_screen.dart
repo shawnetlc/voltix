@@ -414,7 +414,7 @@ class _HomeShellState extends State<_HomeShell>
                   height: 32,
                   fit: BoxFit.contain,
                   cacheWidth: 64,
-                  errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                  errorBuilder: (_, _, _) => const SizedBox.shrink(),
                 ),
               ),
             ],
@@ -4396,9 +4396,32 @@ class _ContentRowsState extends State<_ContentRows>
       );
     }
 
-    return primary(item.id, item.primaryImageTag) ??
-        primary(item.primaryImageItemId, item.primaryImageTagField) ??
-        primary(item.parentPrimaryImageItemId, item.parentPrimaryImageTag);
+    // Direct item primary image.
+    final direct = primary(item.id, item.primaryImageTag);
+    if (direct != null) return direct;
+
+    final isEpisodicOrAudio = item.type == 'Episode' ||
+        item.type == 'Season' ||
+        item.type == 'Audio';
+
+    // If PrimaryImageItemId is null or equals item.id, it belongs to the item itself.
+    if (item.primaryImageItemId == null || item.primaryImageItemId == item.id) {
+      final fieldPrimary = primary(item.id, item.primaryImageTagField);
+      if (fieldPrimary != null) return fieldPrimary;
+    }
+
+    // Only episodes, seasons, or audio tracks should fall back to ancestor/parent artwork
+    // (e.g. series poster for episode/season, album cover for song).
+    // Movies or Collections must never inherit a parent collection/boxset poster!
+    if (isEpisodicOrAudio) {
+      final inheritedPrimary =
+          primary(item.primaryImageItemId, item.primaryImageTagField);
+      if (inheritedPrimary != null) return inheritedPrimary;
+
+      return primary(item.parentPrimaryImageItemId, item.parentPrimaryImageTag);
+    }
+
+    return null;
   }
 
   static String? _resolveLandscapeImageUrl(

@@ -50,7 +50,25 @@ Future<void> _showCenteredIptvSheet({
 }
 
 class VoltixLiveTvScreen extends StatefulWidget {
-  const VoltixLiveTvScreen({super.key});
+  /// Stream to tune to as soon as the screen opens, instead of landing on the
+  /// channel list.
+  ///
+  /// Set when arriving from somewhere that already knows which channel the
+  /// viewer wants — Play in the TV Guide's channel sheet, or a tapped
+  /// programme-reminder notification. Null on the ordinary Live TV entry.
+  final String? initialStreamId;
+
+  /// Provider channel name for [initialStreamId], used to find it quickly.
+  ///
+  /// The live list is paged, so without a name the lookup would have to walk
+  /// every page to find one channel. The name turns it into one search.
+  final String? initialChannelName;
+
+  const VoltixLiveTvScreen({
+    super.key,
+    this.initialStreamId,
+    this.initialChannelName,
+  });
 
   @override
   State<VoltixLiveTvScreen> createState() => _VoltixLiveTvScreenState();
@@ -391,6 +409,55 @@ class _VoltixLiveTvScreenState extends State<VoltixLiveTvScreen> {
     _repo.fetchIsAdmin().then((admin) {
       if (mounted && admin) setState(() => _isAdmin = admin);
     });
+    final wantsChannel =
+        (widget.initialStreamId != null && widget.initialStreamId!.isNotEmpty) ||
+        (widget.initialChannelName != null &&
+            widget.initialChannelName!.isNotEmpty);
+    if (wantsChannel) {
+      unawaited(_tuneToInitialChannel());
+    }
+  }
+
+  /// Finds the channel named by [VoltixLiveTvScreen.initialStreamId] and plays
+  /// it, so arriving here from the guide or a reminder starts the stream rather
+  /// than dropping the viewer on the channel list to find it themselves.
+  ///
+  /// Searches by name where one was supplied, because the live list is paged
+  /// and a channel can be several pages in. Falls back to the first page only:
+  /// if it is not there and there is no name to search on, the viewer is left
+  /// on the list, which is a reasonable place to be.
+  Future<void> _tuneToInitialChannel() async {
+    final wantedId = widget.initialStreamId;
+    final wantedName = widget.initialChannelName;
+    if (wantedId == null && (wantedName == null || wantedName.isEmpty)) return;
+
+    try {
+      final page = await _repo.getLiveChannels(
+        search: widget.initialChannelName,
+        limit: 60,
+      );
+      if (!mounted) return;
+
+      IptvContentItem? match;
+      if (wantedId != null) {
+        for (final item in page.items) {
+          if (item.id == wantedId) {
+            match = item;
+            break;
+          }
+        }
+      }
+      // A name search that found exactly one channel is that channel, even if
+      // the stream id has been reissued since the guide resolved it.
+      match ??= page.items.length == 1 ? page.items.first : null;
+
+      if (match != null) {
+        _playLiveChannel(match);
+      }
+    } catch (_) {
+      // Leave the viewer on the channel list rather than showing an error for
+      // something they did not explicitly ask for.
+    }
   }
 
   @override

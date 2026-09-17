@@ -50,8 +50,25 @@ class DstvEpgRepository {
   /// DStv's guide times are SAST (UTC+2) with no offset in the payload, so
   /// "now" for comparing against them has to be computed the same way rather
   /// than relying on the device's own timezone.
-  static DateTime nowSast() =>
-      DateTime.now().toUtc().add(const Duration(hours: 2));
+  static DateTime nowSast() {
+    // .toUtc() returns a DateTime flagged isUtc, and adding two hours keeps
+    // that flag. Every other time in the guide — DstvProgramme.start/end, and
+    // the midnight the grid measures its "now" line from — is a *naive* local
+    // DateTime holding SAST wall-clock. Mixing the two makes Dart compare
+    // absolute instants rather than wall-clock, so on a SAST device the now
+    // line landed two hours ahead (15:53 drawn at 17:53) and "on now" in the
+    // channel modal picked the wrong programme. Strip the flag: return the
+    // same wall-clock as a naive DateTime, exactly as the XMLTV parser does.
+    final sast = DateTime.now().toUtc().add(const Duration(hours: 2));
+    return DateTime(
+      sast.year,
+      sast.month,
+      sast.day,
+      sast.hour,
+      sast.minute,
+      sast.second,
+    );
+  }
 
   static DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
 
@@ -168,13 +185,29 @@ class DstvEpgRepository {
     };
 
     final rows = <DstvGuideRow>[];
+    // Fetch XMLTV map in background (cached) to graft synopsis and artwork onto guide programmes
+    Map<String, List<DstvProgramme>> xmltvMap = const {};
+    try {
+      xmltvMap = await _getXmltvProgrammes();
+    } catch (_) {}
+
     for (final channel in channels) {
       final today = todayByNumber[channel.number];
       final overflow = nextByNumber[channel.number]
               ?.programmes
               .where((p) => p.start.isBefore(cutoff)) ??
           const <DstvProgramme>[];
-      final programmes = [...?today?.programmes, ...overflow];
+      final rawProgrammes = [...?today?.programmes, ...overflow];
+
+      // Merge XMLTV synopsis and artwork if available
+      final xmltvPool = xmltvMap[channel.number] ?? const <DstvProgramme>[];
+      final programmes = xmltvPool.isNotEmpty
+          ? [
+              for (final p in rawProgrammes)
+                p.mergedWith(_matchArtwork(xmltvPool, p))
+            ]
+          : rawProgrammes;
+
       rows.add(DstvGuideRow(channel: channel, programmes: programmes));
     }
     return rows;

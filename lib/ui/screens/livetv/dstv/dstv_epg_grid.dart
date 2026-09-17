@@ -8,6 +8,7 @@ import 'package:voltix_design/voltix_design.dart';
 import '../../../../data/models/dstv/dstv_epg_models.dart';
 import '../../../../data/repositories/dstv_epg_repository.dart';
 import '../../../widgets/bounded_network_image.dart';
+import 'dstv_channel_modal.dart';
 
 const _kChannelColumnWidth = 148.0;
 const _kTimeHeaderHeight = 56.0;
@@ -42,6 +43,8 @@ class _DstvEpgGridState extends State<DstvEpgGrid> {
   DateTime _now = DstvEpgRepository.nowSast();
 
 
+  bool _didScrollToNow = false;
+
   @override
   void initState() {
     super.initState();
@@ -55,7 +58,6 @@ class _DstvEpgGridState extends State<DstvEpgGrid> {
     _nowTimer = Timer.periodic(const Duration(minutes: 1), (_) {
       if (mounted) setState(() => _now = DstvEpgRepository.nowSast());
     });
-    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToNow());
   }
 
   @override
@@ -63,7 +65,6 @@ class _DstvEpgGridState extends State<DstvEpgGrid> {
     super.didUpdateWidget(oldWidget);
     if (!_isSameDate(oldWidget.date, widget.date)) {
       _load();
-      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToNow());
     }
   }
 
@@ -71,9 +72,14 @@ class _DstvEpgGridState extends State<DstvEpgGrid> {
       a.year == b.year && a.month == b.month && a.day == b.day;
 
   void _load() {
+    _didScrollToNow = false;
+    final future =
+        GetIt.instance<DstvEpgRepository>().getGuideRows(widget.date);
     setState(() {
-      _rowsFuture =
-          GetIt.instance<DstvEpgRepository>().getGuideRows(widget.date);
+      _rowsFuture = future;
+    });
+    future.then((_) {
+      if (mounted) _scheduleScrollToNow();
     });
   }
 
@@ -105,21 +111,38 @@ class _DstvEpgGridState extends State<DstvEpgGrid> {
     _syncingH = false;
   }
 
+  void _scheduleScrollToNow([int attempt = 0]) {
+    if (!mounted || _didScrollToNow || !_isSameDate(widget.date, _now)) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _didScrollToNow || !_isSameDate(widget.date, _now)) return;
+      if (!_gridHController.hasClients ||
+          _gridHController.position.maxScrollExtent <= 0) {
+        if (attempt < 10) {
+          _scheduleScrollToNow(attempt + 1);
+        }
+        return;
+      }
+      _scrollToNow();
+    });
+  }
+
   void _scrollToNow() {
     if (!_isSameDate(widget.date, _now)) return;
     if (!_gridHController.hasClients) return;
+    final maxExtent = _gridHController.position.maxScrollExtent;
+    if (maxExtent <= 0) return;
+
     final midnight = DateTime(_now.year, _now.month, _now.day);
     final minutesSinceMidnight = _now.difference(midnight).inMinutes;
     final offset =
         (minutesSinceMidnight * _kPixelsPerMinute) - 80;
-    final clamped = offset
-        .clamp(0.0, _gridHController.position.maxScrollExtent)
-        .toDouble();
-    _gridHController.animateTo(
-      clamped,
-      duration: const Duration(milliseconds: 300),
-      curve: Curves.easeOut,
-    );
+    final clamped = offset.clamp(0.0, maxExtent).toDouble();
+
+    _gridHController.jumpTo(clamped);
+    if (_headerHController.hasClients) {
+      _headerHController.jumpTo(clamped);
+    }
+    _didScrollToNow = true;
   }
 
   @override
@@ -207,7 +230,14 @@ class _DstvEpgGridState extends State<DstvEpgGrid> {
                       itemCount: rows.length,
                       itemExtent: _kRowHeight,
                       itemBuilder: (context, i) =>
-                          _ChannelCell(channel: rows[i].channel),
+                          _ChannelCell(
+                            channel: rows[i].channel,
+                            onTap: () => showDstvChannelModal(
+                              context,
+                              channel: rows[i].channel,
+                              programmes: rows[i].programmes,
+                            ),
+                          ),
                     ),
                   ),
                   Expanded(
@@ -313,11 +343,22 @@ class _TimeRuler extends StatelessWidget {
 
 class _ChannelCell extends StatelessWidget {
   final DstvChannel channel;
-  const _ChannelCell({required this.channel});
+  final VoidCallback? onTap;
+  const _ChannelCell({required this.channel, this.onTap});
 
   @override
   Widget build(BuildContext context) {
     final logo = channel.logo ?? channel.thumbnailUrl;
+    // Wrapped rather than restyled: the cell keeps the exact look it had, and
+    // only gains the tap. Selecting the channel is the whole point of the
+    // guide, and until now the column was decoration.
+    return InkWell(
+      onTap: onTap,
+      child: _cell(context, logo),
+    );
+  }
+
+  Widget _cell(BuildContext context, String? logo) {
     return Container(
       height: _kRowHeight,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
@@ -419,6 +460,7 @@ class _ProgrammeRow extends StatelessWidget {
               child: _ProgrammeBlock(
                 programme: programme,
                 isNow: programme.isAiringAt(now),
+                row: row,
               ),
             ),
         ],
@@ -430,8 +472,13 @@ class _ProgrammeRow extends StatelessWidget {
 class _ProgrammeBlock extends StatelessWidget {
   final DstvProgramme programme;
   final bool isNow;
+  final DstvGuideRow row;
 
-  const _ProgrammeBlock({required this.programme, required this.isNow});
+  const _ProgrammeBlock({
+    required this.programme,
+    required this.isNow,
+    required this.row,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -445,7 +492,7 @@ class _ProgrammeBlock extends StatelessWidget {
         borderRadius: BorderRadius.circular(10),
         child: InkWell(
           borderRadius: BorderRadius.circular(10),
-          onTap: () => _showProgrammeInfo(context, programme),
+          onTap: () => _openChannel(context),
           child: Container(
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(10),
@@ -502,24 +549,19 @@ class _ProgrammeBlock extends StatelessWidget {
     );
   }
 
-  void _showProgrammeInfo(BuildContext context, DstvProgramme programme) {
-    final fmt = DateFormat('EEE d MMM, HH:mm');
-    showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(programme.title),
-        content: Text(
-          '${fmt.format(programme.start)} - ${DateFormat('HH:mm').format(programme.end)}',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
+  /// Opens the channel sheet, scrolled to this programme.
+  ///
+  /// Replaces a dialog that showed the title and two times and offered nothing
+  /// to do — no artwork, no synopsis, no way to watch or be reminded.
+  void _openChannel(BuildContext context) {
+    showDstvChannelModal(
+      context,
+      channel: row.channel,
+      programmes: row.programmes,
+      focus: programme,
     );
   }
+
 }
 
 class _ErrorState extends StatelessWidget {

@@ -19,7 +19,6 @@ import '../navigation/destinations.dart';
 import '../navigation/home_refresh_bus.dart';
 import '../screens/settings/settings_side_panel.dart';
 import '../screens/syncplay/syncplay_screen.dart';
-import 'remote_control_dialog.dart';
 import 'seerr_icons.dart';
 import 'settings/settings_panel.dart';
 import 'shuffle_overlay.dart';
@@ -233,17 +232,6 @@ class _MobileBottomNavBarState extends State<MobileBottomNavBar> {
           onTap: () => Navigator.of(context).push(
             MaterialPageRoute<void>(builder: (_) => const SyncPlayScreen()),
           ),
-        ),
-      );
-    }
-
-    if (_prefs.get(UserPreferences.showRemoteControlButton)) {
-      actions.add(
-        _BottomNavAction(
-          icon: Icons.settings_remote_rounded,
-          label: l10n.remoteControl,
-          isActive: false,
-          onTap: () => showRemoteControlDialog(context),
         ),
       );
     }
@@ -600,7 +588,19 @@ class _MobileBottomNavBarState extends State<MobileBottomNavBar> {
     final l10n = AppLocalizations.of(context);
     final content = _contentActions(context, l10n);
     final settings = _settingsAction(context, l10n);
-    final actions = <_BottomNavAction>[...content, settings];
+    // No unread badge here: _BottomNavAction has no slot for one, and adding
+    // it would mean reshaping the bar for every caller. The sidebar carries
+    // the count; this is the way in on a phone.
+    final notifications = _BottomNavAction(
+      icon: Icons.notifications_rounded,
+      label: 'Notifications',
+      isActive: _isActive(Destinations.notifications),
+      onTap: () {
+        if (_isActive(Destinations.notifications)) return;
+        context.navigateTopLevel(Destinations.notifications);
+      },
+    );
+    final actions = <_BottomNavAction>[...content, notifications, settings];
 
     const maxInline = 5;
     final List<_BottomNavAction> tabs;

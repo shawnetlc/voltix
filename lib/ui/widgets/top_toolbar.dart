@@ -25,7 +25,6 @@ import '../../util/platform_detection.dart';
 import '../navigation/destinations.dart';
 import '../navigation/home_refresh_bus.dart';
 import 'expandable_icon_button.dart';
-import 'remote_control_dialog.dart';
 import 'navigation_layout.dart';
 import 'settings/settings_panel.dart';
 import '../screens/settings/settings_side_panel.dart';
@@ -758,7 +757,6 @@ class _TopToolbarState extends State<TopToolbar> {
     final showSyncPlay =
         _prefs.get(UserPreferences.syncPlayEnabled) &&
         _prefs.get(UserPreferences.showSyncPlayButton);
-    final showRemote = _prefs.get(UserPreferences.showRemoteControlButton);
     final seerrPrefs = GetIt.instance<SeerrPreferences>();
     final showSeerr = _prefs.get(UserPreferences.showSeerrButton) &&
         GetIt.instance<PluginSyncService>().seerrAvailable;
@@ -946,22 +944,6 @@ class _TopToolbarState extends State<TopToolbar> {
                           builder: (_) => const SyncPlayScreen(),
                         ),
                       ),
-                    ),
-                  ),
-                ],
-                // Sits on the main menu rather than buried in the user menu:
-                // driving another session is a thing you reach for mid-browse,
-                // not a profile setting.
-                if (jellyfinEnabled && showRemote) ...[
-                  _gap(),
-                  _orderButton(
-                    order: (order++).toDouble(),
-                    child: ExpandableIconButton(
-                      key: const ValueKey('toolbar_remote'),
-                      icon: Icons.settings_remote_rounded,
-                      label: l10n.remoteControl,
-                      baseColor: nextNavColor(),
-                      onPressed: () => showRemoteControlDialog(context),
                     ),
                   ),
                 ],

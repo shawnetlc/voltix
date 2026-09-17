@@ -12,6 +12,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'data/services/app_update_service.dart';
 import 'data/services/cast/cast_service.dart';
+import 'data/services/deep_link_service.dart';
 import 'data/services/download_service.dart';
 import 'data/services/plugin_sync_service.dart';
 import 'data/services/topshelf_service.dart';
@@ -54,6 +55,7 @@ class VoltixApp extends StatefulWidget {
 class _VoltixAppState extends State<VoltixApp> {
   late final UserPreferences _prefs;
   late final AppThemeController _themeController;
+  final DeepLinkService _deepLinks = DeepLinkService();
   Locale? _lastResolvedLocale;
 
   @override
@@ -71,6 +73,16 @@ class _VoltixAppState extends State<VoltixApp> {
     if (PlatformDetection.isAppleTV) {
       TopShelfService().startDeepLinkListener(appRouter.go);
       SiriRemoteGlide.instance.attach();
+    } else {
+      // Deep links from outside the app: voltix:// and the https App Links on
+      // voltixstudio.com.
+      //
+      // DeepLinkService existed and was never started by anything, so the whole
+      // path was dead — a link that reached the app went nowhere, and no link
+      // reached it anyway because the scheme was not in the manifest either.
+      // Apple TV keeps its own listener above; the two must not both run, or a
+      // single link navigates twice.
+      _deepLinks.startListener(appRouter.go);
     }
   }
 
@@ -129,6 +141,7 @@ class _VoltixAppState extends State<VoltixApp> {
     _prefs.removeListener(_syncLocaleFromPrefs);
     _prefs.removeListener(_syncIdiomFromPrefs);
     _prefs.removeListener(_syncGlassFromPrefs);
+    _deepLinks.dispose();
     _themeController.dispose();
     super.dispose();
   }
@@ -605,6 +618,52 @@ class _GlobalShortcutScopeState extends State<_GlobalShortcutScope>
     final paused = state != AppLifecycleState.resumed;
     _screensaverController.activityPaused = paused;
     _maybePausePlaybackForBackground(state);
+    _maybeExitForBackground(state);
+  }
+
+  /// Closes the app when it is backgrounded, if the viewer has asked for that.
+  ///
+  /// The problem it solves: a TV going into standby never tells the app so.
+  /// What the app sees is an ordinary background transition, and when the set
+  /// wakes, the surface its renderer was drawing to is gone — the app comes
+  /// back to a black screen that only a force-stop clears. People have been
+  /// doing exactly that by hand. Exiting on the way out makes every return a
+  /// clean start.
+  ///
+  /// Called after [_maybePausePlaybackForBackground] so playback is released
+  /// first, and goes through [AppExit.closeApp] so the offline database is
+  /// closed properly rather than having its isolate aborted mid-write.
+  void _maybeExitForBackground(AppLifecycleState state) {
+    if (!PlatformDetection.isTV) return;
+    if (!GetIt.instance<UserPreferences>().get(
+      UserPreferences.exitOnBackground,
+    )) {
+      return;
+    }
+
+    // `inactive` is excluded deliberately: it fires for transient interruptions
+    // — a system dialog, a volume overlay, the launcher being summoned — and
+    // exiting on those would close the app out from under someone who never
+    // actually left it.
+    final isBackground =
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached;
+    if (!isBackground) return;
+
+    // Casting means the viewer is still watching, on another device. Killing
+    // the app here would stop the thing they are actually using.
+    if (GetIt.instance.isRegistered<CastService>() &&
+        GetIt.instance<CastService>().activeKind != null) {
+      return;
+    }
+    if (GetIt.instance.isRegistered<PlaybackArbiter>() &&
+        GetIt.instance<PlaybackArbiter>().pipActive) {
+      return;
+    }
+
+    debugPrint('[AppExit] Backgrounded with exit-on-background on; closing.');
+    unawaited(AppExit.closeApp());
   }
 
   void _maybePausePlaybackForBackground(AppLifecycleState state) {

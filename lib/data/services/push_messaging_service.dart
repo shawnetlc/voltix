@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show DartPluginRegistrant;
 
 import 'package:dio/dio.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -9,16 +10,77 @@ import 'package:get_it/get_it.dart';
 import 'package:server_core/server_core.dart';
 
 import '../../auth/repositories/user_repository.dart';
+import '../../auth/store/voltix_session_store.dart';
 import '../../firebase_options.dart';
+import '../../preference/user_preferences.dart';
 import '../../ui/navigation/app_router.dart';
+import '../../ui/widgets/floating_notification.dart';
 import '../../util/platform_detection.dart';
 import 'local_notification_bootstrap.dart';
+import 'notification_inbox.dart';
 import 'plugin_sync_service.dart';
 
 /// Every push carries a notification block, so the OS draws background and
-/// terminated notifications. Nothing to do here.
+/// terminated notifications. There is nothing to *display* here — but there is
+/// something to keep.
+///
+/// This runs in its own isolate with none of the app's dependency injection
+/// available, which is why the inbox writes through storage rather than through
+/// an injected service. Without this, any notification that arrived while the
+/// app was closed would be missing from the Notifications screen, and those are
+/// exactly the ones the viewer is most likely to have missed.
+///
+/// [DartPluginRegistrant.ensureInitialized] is what makes plugin channels —
+/// SharedPreferences among them — work in a background isolate. Omitting it
+/// makes this fail silently, which is the worst way for it to fail.
 @pragma('vm:entry-point')
-Future<void> pushBackgroundHandler(RemoteMessage message) async {}
+Future<void> pushBackgroundHandler(RemoteMessage message) async {
+  try {
+    DartPluginRegistrant.ensureInitialized();
+    await recordPushToInbox(message);
+  } catch (e) {
+    debugPrint('pushBackgroundHandler: could not record notification: $e');
+  }
+}
+
+/// Writes an arriving push into the notification inbox.
+///
+/// Top-level rather than a method so the background isolate can reach it too.
+///
+/// The several spellings for the image and the route are not defensiveness for
+/// its own sake: pushes reach this app from three senders — the Voltix admin
+/// Notification Centre, the Moonfin Jellyfin plugin (Seerr requests, library
+/// alerts), and programme reminders — and they do not agree on field names.
+Future<void> recordPushToInbox(RemoteMessage message) async {
+  final notification = message.notification;
+  final data = message.data;
+
+  final title = notification?.title ?? data['title']?.toString() ?? '';
+  final body = notification?.body ?? data['body']?.toString() ?? '';
+  if (title.trim().isEmpty && body.trim().isEmpty) return;
+
+  final route = data['actionUrl']?.toString() ?? data['route']?.toString();
+
+  // messageId is FCM's own and is stable across a redelivery. The fallback is
+  // content-based rather than random, so a message that somehow arrives twice
+  // without one still collapses to a single inbox entry.
+  final id = message.messageId?.trim().isNotEmpty == true
+      ? message.messageId!.trim()
+      : '${title.hashCode}-${body.hashCode}-${route?.hashCode ?? 0}';
+
+  await NotificationInbox.record(
+    id: id,
+    title: title,
+    body: body,
+    imageUrl: notification?.android?.imageUrl ??
+        notification?.apple?.imageUrl ??
+        data['image']?.toString() ??
+        data['imageUrl']?.toString() ??
+        data['posterUrl']?.toString(),
+    route: route,
+    receivedAt: message.sentTime,
+  );
+}
 
 /// Client side of the push notification path.
 ///
@@ -132,32 +194,46 @@ class PushMessagingService {
     // display it ourselves using flutter_local_notifications so admin panel
     // pushes are visible even when the user has the app open.
     FirebaseMessaging.onMessage.listen((message) {
+      // Kept before the display branches below, and deliberately not gated on
+      // the notification block: a data-only push still belongs in the inbox.
+      unawaited(recordPushToInbox(message));
+
       final notification = message.notification;
-      if (notification != null) {
-        try {
-          LocalNotificationBootstrap.instance.plugin.show(
-            id: message.hashCode,
-            title: notification.title,
-            body: notification.body,
-            notificationDetails: const NotificationDetails(
-              android: AndroidNotificationDetails(
-                seerrNotificationChannelId, // 'seerr_notifications'
-                seerrNotificationChannelName, // 'Requests'
-                importance: Importance.high,
-                priority: Priority.high,
-                autoCancel: true,
-                playSound: true,
-              ),
-              iOS: DarwinNotificationDetails(
-                presentAlert: true,
-                presentSound: true,
-                presentBadge: true,
-              ),
-            ),
-            payload: message.data['actionUrl'] ?? message.data['route'],
-          );
-        } catch (_) {}
+      if (notification == null) return;
+
+      // ── Television ────────────────────────────────────────────────────────
+      // Android TV has no notification shade for an app to post into. The
+      // local-notification call below is accepted on a TV box and then simply
+      // never appears, which is why every push the admin panel sent to a
+      // television went unseen. Draw our own banner over the app instead.
+      if (PlatformDetection.isTV) {
+        _showTvBanner(message);
+        return;
       }
+
+      try {
+        LocalNotificationBootstrap.instance.plugin.show(
+          id: message.hashCode,
+          title: notification.title,
+          body: notification.body,
+          notificationDetails: const NotificationDetails(
+            android: AndroidNotificationDetails(
+              seerrNotificationChannelId, // 'seerr_notifications'
+              seerrNotificationChannelName, // 'Requests'
+              importance: Importance.high,
+              priority: Priority.high,
+              autoCancel: true,
+              playSound: true,
+            ),
+            iOS: DarwinNotificationDetails(
+              presentAlert: true,
+              presentSound: true,
+              presentBadge: true,
+            ),
+          ),
+          payload: message.data['actionUrl'] ?? message.data['route'],
+        );
+      } catch (_) {}
     });
 
     FirebaseMessaging.onMessageOpenedApp.listen((message) {
@@ -284,6 +360,22 @@ class PushMessagingService {
         }
       }
 
+      // The Voltix session token, so the server can tie this device to the
+      // Voltix ACCOUNT rather than to whatever the signed-in Jellyfin profile
+      // happens to be called.
+      //
+      // `username` above is a display name — "Shawne Bedford" where the account
+      // is "ShawneBZA2026". Registering under it produced device rows that
+      // nothing keyed on the Voltix user could find, which is why programme
+      // reminders were recorded as having no registered device and no push ever
+      // arrived. The server still accepts a registration without this (older
+      // builds send none), it just has to guess the identity.
+      String? sessionToken;
+      if (GetIt.instance.isRegistered<VoltixSessionStore>()) {
+        final stored = GetIt.instance<VoltixSessionStore>().sessionToken;
+        if (stored != null && stored.isNotEmpty) sessionToken = stored;
+      }
+
       await dio.post(
         'https://www.voltixstudio.com/api/push/register-token',
         data: {
@@ -293,6 +385,9 @@ class PushMessagingService {
           'appVersion': version,
           if (username != null && username.isNotEmpty) 'username': username,
         },
+        options: sessionToken == null
+            ? null
+            : Options(headers: {'Authorization': 'Bearer $sessionToken'}),
       );
       debugPrint('PushMessagingService: Registered with Voltix server '
           '(user: ${username ?? 'anonymous'})');
@@ -330,10 +425,93 @@ class PushMessagingService {
     return (token ?? '').hashCode.toString();
   }
 
+  /// Draws the notification over the app on a television.
+  ///
+  /// The alternative on TV is nothing at all: `flutter_local_notifications`
+  /// posts happily to Android TV and the result is never rendered, so this is
+  /// the only way an admin message reaches a viewer sitting in front of one.
+  ///
+  /// How long it stays up comes from `tvDisplaySeconds` in the payload, which
+  /// the backend stamps on every push from the value set in the admin portal.
+  /// Clamped to a sane band because it arrives from the network: a zero would
+  /// flash the banner out of existence and a very large number would park it
+  /// over the picture indefinitely.
+  void _showTvBanner(RemoteMessage message) {
+    final notification = message.notification;
+    if (notification == null) return;
+
+    final context = appRouter.routerDelegate.navigatorKey.currentContext;
+    if (context == null) {
+      debugPrint('PushMessagingService: no navigator yet; TV banner skipped');
+      return;
+    }
+
+    // Duration, from whichever source has one.
+    //
+    // The Voltix backend stamps `tvDisplaySeconds` on every push it sends, from
+    // the value set in the admin portal. The Moonfin plugin does not — it sends
+    // its own FCM messages for Seerr events straight from the Jellyfin server
+    // and knows nothing about that setting. So the last value seen is
+    // remembered and used for the ones that arrive without it, and every banner
+    // behaves the same however it got here.
+    final prefs = GetIt.instance.isRegistered<UserPreferences>()
+        ? GetIt.instance<UserPreferences>()
+        : null;
+
+    final fromPayload = int.tryParse('${message.data['tvDisplaySeconds'] ?? ''}');
+    if (fromPayload != null && fromPayload > 0 && prefs != null) {
+      unawaited(prefs.set(UserPreferences.tvNotificationSeconds, fromPayload));
+    }
+
+    final seconds = fromPayload ??
+        prefs?.get(UserPreferences.tvNotificationSeconds) ??
+        FloatingNotification.defaultDuration.inSeconds;
+    // Clamped because it arrives over the network: a zero would flash the
+    // banner out of existence, a huge value would park it over the picture.
+    final clamped = seconds.clamp(3, 60);
+
+    final route = message.data['actionUrl'] ?? message.data['route'];
+
+    FloatingNotification.show(
+      context,
+      notification.title ?? '',
+      notification.body ?? '',
+      route is String && route.trim().isNotEmpty
+          ? () => appRouter.go(route.trim())
+          : null,
+      duration: Duration(seconds: clamped),
+      // Several spellings, because several senders. FCM maps a payload
+      // `notification.image` onto the platform-specific field, but the plugin
+      // and the admin panel both also put it in `data`, and Seerr poster art
+      // arrives that way.
+      imageUrl: notification.android?.imageUrl ??
+          notification.apple?.imageUrl ??
+          message.data['image'] ??
+          message.data['imageUrl'] ??
+          message.data['posterUrl'],
+    );
+  }
+
   void _navigateFromMessage(RemoteMessage message) {
+    // A notification the viewer tapped from the system shade was received while
+    // the app was not in the foreground. The background handler usually caught
+    // it, but not on iOS when the app was terminated, so record it here as
+    // well — [NotificationInbox.record] ignores one it already has.
+    unawaited(_recordAndMarkOpened(message));
+
     final route = message.data['actionUrl'] ?? message.data['route'];
     if (route is String && route.trim().isNotEmpty) {
       appRouter.go(route.trim());
+    }
+  }
+
+  /// Stores the tapped notification and marks it read, since tapping it in the
+  /// shade is the viewer reading it.
+  Future<void> _recordAndMarkOpened(RemoteMessage message) async {
+    await recordPushToInbox(message);
+    final id = message.messageId?.trim();
+    if (id != null && id.isNotEmpty) {
+      await NotificationInbox.instance.markRead(id);
     }
   }
 }

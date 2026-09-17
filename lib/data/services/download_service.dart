@@ -2112,7 +2112,10 @@ class DownloadService extends ChangeNotifier {
         posterItemId = item.seriesId;
         posterTag = item.seriesPrimaryImageTag;
       } else if (item.parentPrimaryImageItemId != null &&
-          item.parentPrimaryImageTag != null) {
+          item.parentPrimaryImageTag != null &&
+          (item.type == 'Episode' ||
+              item.type == 'Season' ||
+              item.type == 'Audio')) {
         posterItemId = item.parentPrimaryImageItemId;
         posterTag = item.parentPrimaryImageTag;
       }

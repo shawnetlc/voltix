@@ -18,6 +18,7 @@ import '../../../util/focus/dpad_keys.dart';
 import '../../../util/platform_detection.dart';
 import '../../navigation/destinations.dart';
 import '../../widgets/login_scaffold.dart';
+import '../taste_profile/taste_onboarding_launcher.dart';
 import 'payfast_checkout_screen.dart';
 
 /// Package option model for Voltix subscriptions.
@@ -464,6 +465,23 @@ class _VoltixRegisterScreenState extends State<VoltixRegisterScreen> {
 
       // Brief delay to show the celebratory success checkmark, then go home.
       await Future.delayed(const Duration(milliseconds: 1200));
+
+      // Taste onboarding, before the home screen rather than after it.
+      //
+      // This step was missing here entirely, which is what made taste
+      // recommendations look like a TV-only feature. A television cannot
+      // realistically be used to sign up, so every TV user arrives through
+      // sign-in — where the wizard has always run. A new mobile user registers
+      // here, and went straight past it to a home screen whose recommendations
+      // had no profile behind them.
+      //
+      // Registration is also the best possible moment to ask: it is the one
+      // point where someone has no watch history at all, so their answers are
+      // the only thing recommendations can be built from.
+      if (mounted) {
+        await maybeShowTasteOnboarding(context);
+      }
+
       if (mounted) {
         context.go(Destinations.home);
       }

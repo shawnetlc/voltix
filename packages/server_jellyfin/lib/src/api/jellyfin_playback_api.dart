@@ -78,6 +78,9 @@ class JellyfinPlaybackApi implements PlaybackApi {
       'Static': 'true',
     };
     final query = params.entries.map((e) => '${e.key}=${e.value}').join('&');
-    return '$_baseUrl/Videos/$itemId/stream?$query';
+    final cleanBase = _baseUrl.endsWith('/')
+        ? _baseUrl.substring(0, _baseUrl.length - 1)
+        : _baseUrl;
+    return '$cleanBase/Videos/$itemId/stream?$query';
   }
 }

@@ -148,6 +148,13 @@ class Destinations {
   static const adminAnalytics = '/admin/analytics';
   static const adminMetadataEdit = '/admin/metadata/:itemId';
 
+  // Notifications
+  //
+  // The device's own record of every push it has received. Not a server
+  // resource — the list lives on the device, because a push is not stored
+  // anywhere else once it has been delivered.
+  static const notifications = '/notifications';
+
   // Settings
   static const settings = '/settings';
 
@@ -287,6 +294,21 @@ class Destinations {
 
   static bool isFolderType(String? type) =>
       type == 'Folder' || type == 'CollectionFolder' || type == 'UserView';
+
+  /// Opens the Voltix (IPTV) Live TV player already tuned to a channel.
+  ///
+  /// Distinct from [liveTvChannel], which is the Jellyfin Live TV player and
+  /// takes a Jellyfin item id. A DStv guide channel resolves to an Xtream
+  /// stream id, which only this player understands — sending one to the other
+  /// lands on "Unable to open channel".
+  static String voltixLiveTvChannel(String streamId, {String? channelName}) {
+    final params = <String>[
+      'streamId=${Uri.encodeQueryComponent(streamId)}',
+      if (channelName != null && channelName.isNotEmpty)
+        'channelName=${Uri.encodeQueryComponent(channelName)}',
+    ];
+    return '$voltixLiveTv?${params.join('&')}';
+  }
 
   static String liveTvChannel(String channelId) =>
       '$liveTvPlayer?channelId=${Uri.encodeQueryComponent(channelId)}';

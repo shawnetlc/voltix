@@ -1,0 +1,7 @@
+📺 TV Guide: tap a DStv channel to see what's on, with artwork — set reminders for upcoming programmes and get notified when they start.
+
+🔔 New Notifications screen to view, manage and act on everything you've been sent. TV push notifications now more reliable.
+
+🔗 Shared links now open directly in the app.
+
+⚙️ Faster home screen, TV standby fix, and general bug fixes.

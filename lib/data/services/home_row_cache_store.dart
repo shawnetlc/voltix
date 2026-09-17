@@ -17,7 +17,44 @@ import '../models/home_row.dart';
 class HomeRowCacheStore {
   static const _fileName = 'home_rows_cache.json';
 
-  static const _maxAge = Duration(hours: 6);
+  /// How old a cache may be and still be worth painting.
+  ///
+  /// This was six hours, which meant it almost never hit. Someone watches in
+  /// the evening and comes back the next evening — twenty-four hours later the
+  /// cache is thrown away and they are back to a spinner and a cold network
+  /// round trip. Every single time. Which is exactly what people reported: fast
+  /// once, slow ever after.
+  ///
+  /// Seven days is not a claim that week-old rows are accurate. The cache is
+  /// only ever the FIRST PAINT — HomeViewModel.load() refetches everything
+  /// immediately afterwards and swaps the real rows in a moment later — so all
+  /// a long expiry changes is whether that second or two is spent looking at
+  /// last night's home screen or at nothing at all. Stale rows replaced in
+  /// place beat an empty screen.
+  ///
+  /// The cache is dropped outright whenever the server, user, section layout or
+  /// parental filter changes (see the key check in [read]), so "stale" here only
+  /// ever means "the same shelves, possibly a second behind on new titles".
+  static const _maxAge = Duration(days: 7);
+
+  /// When the cached copy was written, or null if there is none to read.
+  ///
+  /// Drives the once-a-day full resync in [HomeViewModel]: the timestamp is
+  /// already in the file, so scheduling needs no second piece of bookkeeping
+  /// that could disagree with it.
+  Future<DateTime?> savedAt() async {
+    try {
+      final file = await _file();
+      if (!file.existsSync()) return null;
+      final decoded = jsonDecode(await file.readAsString());
+      if (decoded is! Map<String, dynamic>) return null;
+      final saved = decoded['savedAt'];
+      if (saved is! int) return null;
+      return DateTime.fromMillisecondsSinceEpoch(saved);
+    } catch (_) {
+      return null;
+    }
+  }
 
   Future<File> _file() async {
     final dir = PlatformDetection.isAppleTV
