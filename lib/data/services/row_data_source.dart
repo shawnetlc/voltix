@@ -22,6 +22,8 @@ import '../utils/playlist_utils.dart';
 import '../models/taste_profile/taste_profile_models.dart';
 import 'custom_external_lists_service.dart';
 import 'taste_profile/taste_row_builder.dart';
+import '../../auth/store/voltix_session_store.dart';
+import '../../util/parental_rating_severity.dart';
 
 class RowDataSource {
   final MediaServerClient _client;
@@ -1932,6 +1934,7 @@ class RowDataSource {
   ) {
     final rawItems = response['Items'] as List? ?? [];
     final blocked = _blockedParentalRatings();
+    final isKids = _isKidsProfile();
     final items = rawItems.map((item) {
       final data = item as Map<String, dynamic>;
       return AggregatedItem(
@@ -1940,11 +1943,23 @@ class RowDataSource {
         rawData: data,
       );
     });
-    if (blocked.isEmpty) return items.toList();
+    if (blocked.isEmpty && !isKids) return items.toList();
     return items.where((item) {
       final rating = item.officialRating?.trim().toUpperCase();
-      if (rating == null || rating.isEmpty) return true;
-      return !blocked.contains(rating);
+
+      // Kids profile: only allow content rated PG or below (severity ≤ 30).
+      // Unrated items are excluded for safety.
+      if (isKids) {
+        if (rating == null || rating.isEmpty) return false;
+        final severity = _parentalRatingSeverity(rating);
+        if (severity > kRatingGuidance) return false;
+      }
+
+      // Standard blocked-ratings filter
+      if (blocked.isNotEmpty && rating != null && rating.isNotEmpty) {
+        if (blocked.contains(rating)) return false;
+      }
+      return true;
     }).toList();
   }
 
@@ -1960,6 +1975,16 @@ class RowDataSource {
         .where((e) => e.isNotEmpty)
         .toSet();
   }
+
+  /// Returns true when the active Voltix profile is a Kids profile.
+  bool _isKidsProfile() {
+    if (!GetIt.instance.isRegistered<VoltixSessionStore>()) return false;
+    return GetIt.instance<VoltixSessionStore>().isKidsProfile;
+  }
+
+  /// Delegates to the global parental-rating severity utility.
+  int _parentalRatingSeverity(String rating) =>
+      parentalRatingSeverity(rating);
 
   Future<List<AggregatedItem>> _enrichNextUpItemsWithSeriesLastPlayed(
     List<AggregatedItem> items,

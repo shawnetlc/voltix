@@ -105,6 +105,7 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
     }
 
     final hasEmoji = profile.avatarEmoji != null && profile.avatarEmoji!.isNotEmpty;
+    final hasAvatarUrl = profile.avatarUrl != null && profile.avatarUrl!.isNotEmpty;
 
     return GestureDetector(
       onTap: () {
@@ -119,24 +120,49 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
         children: [
           Stack(
             children: [
-              Container(
-                width: 100,
-                height: 100,
-                decoration: BoxDecoration(
-                  color: bgColor,
-                  borderRadius: BorderRadius.circular(16),
-                  border: _isEditMode ? Border.all(color: Colors.white, width: 2) : null,
-                ),
-                alignment: Alignment.center,
-                child: Text(
-                  hasEmoji ? profile.avatarEmoji! : profile.name.substring(0, 1).toUpperCase(),
-                  style: TextStyle(
-                    fontSize: hasEmoji ? 50 : 40,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
+              if (hasAvatarUrl)
+                Container(
+                  width: 100,
+                  height: 100,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(16),
+                    border: _isEditMode ? Border.all(color: Colors.white, width: 2) : Border.all(color: bgColor, width: 2),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(_isEditMode ? 14 : 14),
+                    child: Image.network(
+                      profile.avatarUrl!,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => Container(
+                        color: bgColor,
+                        alignment: Alignment.center,
+                        child: Text(
+                          profile.name.substring(0, 1).toUpperCase(),
+                          style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold, color: Colors.white),
+                        ),
+                      ),
+                    ),
+                  ),
+                )
+              else
+                Container(
+                  width: 100,
+                  height: 100,
+                  decoration: BoxDecoration(
+                    color: bgColor,
+                    borderRadius: BorderRadius.circular(16),
+                    border: _isEditMode ? Border.all(color: Colors.white, width: 2) : null,
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    hasEmoji ? profile.avatarEmoji! : profile.name.substring(0, 1).toUpperCase(),
+                    style: TextStyle(
+                      fontSize: hasEmoji ? 50 : 40,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
                   ),
                 ),
-              ),
               if (_isEditMode)
                 Positioned(
                   top: 0,

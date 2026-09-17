@@ -437,6 +437,7 @@ class VoltixApiService {
     required String name,
     String? avatarColor,
     String? avatarEmoji,
+    String? avatarUrl,
     bool isKids = false,
   }) async {
     final url = '$baseUrl/api/trpc/profiles.create';
@@ -446,6 +447,7 @@ class VoltixApiService {
           'name': name,
           'avatarColor': avatarColor,
           'avatarEmoji': avatarEmoji,
+          'avatarUrl': avatarUrl,
           'isKids': isKids,
         }
       }, options: Options(headers: {
@@ -471,6 +473,7 @@ class VoltixApiService {
     String? name,
     String? avatarColor,
     String? avatarEmoji,
+    String? avatarUrl,
     bool? isKids,
   }) async {
     final url = '$baseUrl/api/trpc/profiles.update';
@@ -481,6 +484,7 @@ class VoltixApiService {
           'name': name,
           'avatarColor': avatarColor,
           'avatarEmoji': avatarEmoji,
+          'avatarUrl': avatarUrl,
           'isKids': isKids,
         }
       }, options: Options(headers: {

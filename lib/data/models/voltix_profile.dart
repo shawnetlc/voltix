@@ -4,6 +4,9 @@ class VoltixProfile {
   final String name;
   final String? avatarColor;
   final String? avatarEmoji;
+  /// URL to a server-hosted avatar image. When set, the profile card
+  /// displays this image instead of the colored initial/emoji circle.
+  final String? avatarUrl;
   final bool isOwner;
   final bool isKids;
 
@@ -13,6 +16,7 @@ class VoltixProfile {
     required this.name,
     this.avatarColor,
     this.avatarEmoji,
+    this.avatarUrl,
     required this.isOwner,
     this.isKids = false,
   });
@@ -24,6 +28,7 @@ class VoltixProfile {
       name: json['name'] as String,
       avatarColor: json['avatarColor'] as String?,
       avatarEmoji: json['avatarEmoji'] as String?,
+      avatarUrl: json['avatarUrl'] as String?,
       isOwner: json['isOwner'] as bool? ?? false,
       isKids: json['isKids'] as bool? ?? false,
     );
@@ -36,6 +41,7 @@ class VoltixProfile {
       'name': name,
       'avatarColor': avatarColor,
       'avatarEmoji': avatarEmoji,
+      'avatarUrl': avatarUrl,
       'isOwner': isOwner,
       'isKids': isKids,
     };
@@ -47,6 +53,7 @@ class VoltixProfile {
     String? name,
     String? avatarColor,
     String? avatarEmoji,
+    String? avatarUrl,
     bool? isOwner,
     bool? isKids,
   }) {
@@ -56,6 +63,7 @@ class VoltixProfile {
       name: name ?? this.name,
       avatarColor: avatarColor ?? this.avatarColor,
       avatarEmoji: avatarEmoji ?? this.avatarEmoji,
+      avatarUrl: avatarUrl ?? this.avatarUrl,
       isOwner: isOwner ?? this.isOwner,
       isKids: isKids ?? this.isKids,
     );

@@ -29,6 +29,7 @@ class VoltixSessionStore {
   static const _keyIsAdmin = 'voltix_is_admin';
   static const _keyActiveProfileId = 'voltix_active_profile_id';
   static const _keyActiveProfileName = 'voltix_active_profile_name';
+  static const _keyIsKidsProfile = 'voltix_is_kids_profile';
 
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
   bool _secureStorageAvailable = true;
@@ -43,6 +44,7 @@ class VoltixSessionStore {
   bool _isAdmin = false;
   int? _activeProfileId;
   String? _activeProfileName;
+  bool _isKidsProfile = false;
 
   String? get sessionToken => _sessionToken;
   int? get userId => _userId;
@@ -54,6 +56,8 @@ class VoltixSessionStore {
   bool get isAdmin => _isAdmin;
   int? get activeProfileId => _activeProfileId;
   String? get activeProfileName => _activeProfileName;
+  /// Whether the currently active profile is a Kids profile.
+  bool get isKidsProfile => _isKidsProfile;
   bool get hasSession => _sessionToken != null && _sessionToken!.isNotEmpty;
 
   Future<void> load() async {
@@ -69,6 +73,7 @@ class VoltixSessionStore {
     _isAdmin = prefs.getBool(_keyIsAdmin) ?? false;
     _activeProfileId = prefs.getInt(_keyActiveProfileId);
     _activeProfileName = prefs.getString(_keyActiveProfileName);
+    _isKidsProfile = prefs.getBool(_keyIsKidsProfile) ?? false;
 
     // Load token from secure storage
     _sessionToken = await _readSecureToken();
@@ -126,17 +131,21 @@ class VoltixSessionStore {
   Future<void> setActiveProfile(VoltixProfile profile) async {
     _activeProfileId = profile.id;
     _activeProfileName = profile.name;
+    _isKidsProfile = profile.isKids;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(_keyActiveProfileId, profile.id);
     await prefs.setString(_keyActiveProfileName, profile.name);
+    await prefs.setBool(_keyIsKidsProfile, profile.isKids);
   }
 
   Future<void> clearActiveProfile() async {
     _activeProfileId = null;
     _activeProfileName = null;
+    _isKidsProfile = false;
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_keyActiveProfileId);
     await prefs.remove(_keyActiveProfileName);
+    await prefs.remove(_keyIsKidsProfile);
   }
 
   Future<void> clear() async {
@@ -150,6 +159,7 @@ class VoltixSessionStore {
     _isAdmin = false;
     _activeProfileId = null;
     _activeProfileName = null;
+    _isKidsProfile = false;
 
     // Clear secure token
     await _deleteSecureToken();
@@ -167,6 +177,7 @@ class VoltixSessionStore {
     await prefs.remove(_keyIsAdmin);
     await prefs.remove(_keyActiveProfileId);
     await prefs.remove(_keyActiveProfileName);
+    await prefs.remove(_keyIsKidsProfile);
   }
 
   // ─── Secure storage helpers ──────────────────────────────────────────────────

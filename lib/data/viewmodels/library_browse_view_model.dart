@@ -1,7 +1,9 @@
 import 'package:flutter/foundation.dart';
 import 'package:dio/dio.dart';
+import 'package:get_it/get_it.dart';
 import 'package:server_core/server_core.dart' hide ImageType;
 
+import '../../auth/store/voltix_session_store.dart';
 import '../../preference/preference_constants.dart';
 import '../../preference/user_preferences.dart';
 import '../models/aggregated_item.dart';
@@ -478,6 +480,12 @@ class LibraryBrowseViewModel extends ChangeNotifier {
     String? nameLessThan,
     bool? isFavorite,
   }) async {
+    // Kids profile: filter at the server level
+    final isKids = GetIt.instance.isRegistered<VoltixSessionStore>() &&
+        GetIt.instance<VoltixSessionStore>().isKidsProfile;
+    final kidsMaxRating = isKids ? 'PG' : null;
+    final kidsRequireRating = isKids ? true : null;
+
     try {
       return await _client.itemsApi.getItems(
         parentId: parentId,
@@ -499,6 +507,8 @@ class LibraryBrowseViewModel extends ChangeNotifier {
         nameStartsWith: nameStartsWith,
         nameLessThan: nameLessThan,
         isFavorite: isFavorite,
+        maxOfficialRating: kidsMaxRating,
+        hasParentalRating: kidsRequireRating,
       );
     } on DioException catch (e) {
       final statusCode = e.response?.statusCode ?? 0;
@@ -532,6 +542,8 @@ class LibraryBrowseViewModel extends ChangeNotifier {
         nameLessThan: nameLessThan,
         isFavorite: isFavorite,
         enableTotalRecordCount: false,
+        maxOfficialRating: kidsMaxRating,
+        hasParentalRating: kidsRequireRating,
       );
     }
   }

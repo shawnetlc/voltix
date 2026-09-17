@@ -1,5 +1,7 @@
+import 'package:get_it/get_it.dart';
 import 'package:server_core/server_core.dart';
 
+import '../../auth/store/voltix_session_store.dart';
 import '../models/aggregated_item.dart';
 
 class SearchRepository {
@@ -11,6 +13,11 @@ class SearchRepository {
       'ParentBackdropImageTags,SeriesId,SeriesPrimaryImageTag';
 
   SearchRepository(this._client);
+
+  /// Whether the active profile is a Kids profile.
+  bool get _isKids =>
+      GetIt.instance.isRegistered<VoltixSessionStore>() &&
+      GetIt.instance<VoltixSessionStore>().isKidsProfile;
 
   Future<List<String>> suggest(
     String query, {
@@ -29,6 +36,8 @@ class SearchRepository {
       limit: limit,
       recursive: true,
       fields: 'Type',
+      maxOfficialRating: _isKids ? 'PG' : null,
+      hasParentalRating: _isKids ? true : null,
     );
 
     final items = response['Items'] as List? ?? const [];
@@ -67,6 +76,8 @@ class SearchRepository {
       recursive: true,
       fields: _searchFields,
       studios: studios,
+      maxOfficialRating: _isKids ? 'PG' : null,
+      hasParentalRating: _isKids ? true : null,
     );
 
     final items = response['Items'] as List? ?? [];

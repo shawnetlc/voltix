@@ -1,8 +1,11 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:get_it/get_it.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import '../../../data/models/voltix_profile.dart';
 import '../../../data/repositories/voltix_profile_repository.dart';
+import '../../../data/services/voltix_api_service.dart';
 
 class ProfileEditScreen extends StatefulWidget {
   final VoltixProfile? profile;
@@ -19,8 +22,13 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
   late TextEditingController _nameController;
   late String _selectedColor;
   String? _selectedEmoji;
+  String? _selectedAvatarUrl;
   late bool _isKids;
   bool _isLoading = false;
+
+  /// Available server-hosted avatars fetched from the API.
+  List<_AvatarEntry> _serverAvatars = [];
+  bool _avatarsLoading = true;
 
   final List<String> _colors = [
     '#E53935', '#D81B60', '#8E24AA', '#5E35B1', 
@@ -40,7 +48,30 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
     _nameController = TextEditingController(text: widget.profile?.name ?? '');
     _selectedColor = widget.profile?.avatarColor ?? _colors.first;
     _selectedEmoji = widget.profile?.avatarEmoji;
+    _selectedAvatarUrl = widget.profile?.avatarUrl;
     _isKids = widget.profile?.isKids ?? false;
+    _loadServerAvatars();
+  }
+
+  Future<void> _loadServerAvatars() async {
+    try {
+      final api = GetIt.instance<VoltixApiService>();
+      final dio = Dio();
+      final response = await dio.get('${api.baseUrl}/api/voltix/profile-avatars');
+      final data = response.data;
+      if (data is Map && data['avatars'] is List) {
+        final avatars = (data['avatars'] as List).map((a) {
+          return _AvatarEntry(
+            name: a['name']?.toString() ?? '',
+            url: a['url']?.toString() ?? '',
+          );
+        }).where((a) => a.url.isNotEmpty).toList();
+        if (mounted) setState(() => _serverAvatars = avatars);
+      }
+    } catch (_) {
+      // Server avatars not available — fall back to emoji/color only
+    }
+    if (mounted) setState(() => _avatarsLoading = false);
   }
 
   @override
@@ -63,7 +94,8 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
         await _profileRepo.createProfile(
           name: name,
           avatarColor: _selectedColor,
-          avatarEmoji: _selectedEmoji,
+          avatarEmoji: _selectedAvatarUrl != null ? null : _selectedEmoji,
+          avatarUrl: _selectedAvatarUrl,
           isKids: _isKids,
         );
       } else {
@@ -71,7 +103,8 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
           widget.profile!.id,
           name: name,
           avatarColor: _selectedColor,
-          avatarEmoji: _selectedEmoji,
+          avatarEmoji: _selectedAvatarUrl != null ? null : _selectedEmoji,
+          avatarUrl: _selectedAvatarUrl,
           isKids: _isKids,
         );
       }
@@ -121,6 +154,52 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
     }
   }
 
+  Widget _buildAvatarPreview(Color parsedColor) {
+    if (_selectedAvatarUrl != null && _selectedAvatarUrl!.isNotEmpty) {
+      return Container(
+        width: 120,
+        height: 120,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: parsedColor, width: 3),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(21),
+          child: CachedNetworkImage(
+            imageUrl: _selectedAvatarUrl!,
+            fit: BoxFit.cover,
+            placeholder: (_, _) => Container(
+              color: parsedColor,
+              child: const Center(child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white54)),
+            ),
+            errorWidget: (_, _, _) => Container(
+              color: parsedColor,
+              child: const Icon(Icons.broken_image, color: Colors.white54, size: 40),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      width: 120,
+      height: 120,
+      decoration: BoxDecoration(
+        color: parsedColor,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        _selectedEmoji ?? (_nameController.text.isNotEmpty ? _nameController.text.substring(0, 1).toUpperCase() : '?'),
+        style: TextStyle(
+          fontSize: _selectedEmoji != null ? 60 : 50,
+          fontWeight: FontWeight.bold,
+          color: Colors.white,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isEditing = widget.profile != null;
@@ -150,29 +229,16 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
             padding: const EdgeInsets.all(24),
             child: Column(
               children: [
-                Container(
-                  width: 120,
-                  height: 120,
-                  decoration: BoxDecoration(
-                    color: parsedColor,
-                    borderRadius: BorderRadius.circular(24),
-                  ),
-                  alignment: Alignment.center,
-                  child: Text(
-                    _selectedEmoji ?? (_nameController.text.isNotEmpty ? _nameController.text.substring(0, 1).toUpperCase() : '?'),
-                    style: TextStyle(
-                      fontSize: _selectedEmoji != null ? 60 : 50,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
+                // ── Avatar preview ──
+                _buildAvatarPreview(parsedColor),
                 const SizedBox(height: 32),
+
+                // ── Name field ──
                 TextField(
                   controller: _nameController,
                   maxLength: 64,
                   style: const TextStyle(color: Colors.white),
-                  onChanged: (v) => setState(() {}), // Update preview
+                  onChanged: (v) => setState(() {}),
                   decoration: const InputDecoration(
                     labelText: 'Name',
                     labelStyle: TextStyle(color: Colors.white54),
@@ -180,6 +246,88 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
                     focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.blue)),
                   ),
                 ),
+
+                // ── Server-hosted Avatars ──
+                if (_serverAvatars.isNotEmpty) ...[
+                  const SizedBox(height: 24),
+                  const Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('Choose Avatar', style: TextStyle(color: Colors.white70, fontSize: 16)),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    height: 80,
+                    child: ListView.separated(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: _serverAvatars.length + 1,
+                      separatorBuilder: (_, _) => const SizedBox(width: 12),
+                      itemBuilder: (context, index) {
+                        // First item: "No avatar" option
+                        if (index == 0) {
+                          final isSelected = _selectedAvatarUrl == null;
+                          return GestureDetector(
+                            onTap: () => setState(() => _selectedAvatarUrl = null),
+                            child: Container(
+                              width: 72,
+                              height: 72,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF1E293B),
+                                borderRadius: BorderRadius.circular(16),
+                                border: isSelected ? Border.all(color: Colors.white, width: 3) : Border.all(color: Colors.white12),
+                              ),
+                              alignment: Alignment.center,
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.text_fields, color: isSelected ? Colors.white : Colors.white38, size: 28),
+                                  const SizedBox(height: 2),
+                                  Text('Default', style: TextStyle(color: isSelected ? Colors.white : Colors.white38, fontSize: 10)),
+                                ],
+                              ),
+                            ),
+                          );
+                        }
+
+                        final avatar = _serverAvatars[index - 1];
+                        final isSelected = avatar.url == _selectedAvatarUrl;
+                        return GestureDetector(
+                          onTap: () => setState(() => _selectedAvatarUrl = avatar.url),
+                          child: Container(
+                            width: 72,
+                            height: 72,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(16),
+                              border: isSelected ? Border.all(color: Colors.white, width: 3) : Border.all(color: Colors.white12),
+                            ),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(isSelected ? 13 : 15),
+                              child: CachedNetworkImage(
+                                imageUrl: avatar.url,
+                                fit: BoxFit.cover,
+                                placeholder: (_, _) => Container(
+                                  color: const Color(0xFF1E293B),
+                                  child: const Center(child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white24)),
+                                ),
+                                errorWidget: (_, _, _) => Container(
+                                  color: const Color(0xFF1E293B),
+                                  child: const Icon(Icons.broken_image, color: Colors.white24),
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ] else if (_avatarsLoading) ...[
+                  const SizedBox(height: 24),
+                  const Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('Loading avatars...', style: TextStyle(color: Colors.white38, fontSize: 14)),
+                  ),
+                ],
+
+                // ── Color picker ──
                 const SizedBox(height: 24),
                 const Align(
                   alignment: Alignment.centerLeft,
@@ -205,49 +353,53 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
                     );
                   }).toList(),
                 ),
-                const SizedBox(height: 24),
-                const Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('Icon (Optional)', style: TextStyle(color: Colors.white70, fontSize: 16)),
-                ),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    GestureDetector(
-                      onTap: () => setState(() => _selectedEmoji = null),
-                      child: Container(
-                        width: 44,
-                        height: 44,
-                        decoration: BoxDecoration(
-                          color: Colors.white12,
-                          shape: BoxShape.circle,
-                          border: _selectedEmoji == null ? Border.all(color: Colors.white, width: 2) : null,
-                        ),
-                        alignment: Alignment.center,
-                        child: const Text('A', style: TextStyle(color: Colors.white, fontSize: 20)),
-                      ),
-                    ),
-                    ..._emojis.map((e) {
-                      final isSelected = e == _selectedEmoji;
-                      return GestureDetector(
-                        onTap: () => setState(() => _selectedEmoji = e),
+
+                // ── Emoji picker (hidden when server avatar is selected) ──
+                if (_selectedAvatarUrl == null) ...[
+                  const SizedBox(height: 24),
+                  const Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('Icon (Optional)', style: TextStyle(color: Colors.white70, fontSize: 16)),
+                  ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      GestureDetector(
+                        onTap: () => setState(() => _selectedEmoji = null),
                         child: Container(
                           width: 44,
                           height: 44,
                           decoration: BoxDecoration(
                             color: Colors.white12,
                             shape: BoxShape.circle,
-                            border: isSelected ? Border.all(color: Colors.white, width: 2) : null,
+                            border: _selectedEmoji == null ? Border.all(color: Colors.white, width: 2) : null,
                           ),
                           alignment: Alignment.center,
-                          child: Text(e, style: const TextStyle(fontSize: 24)),
+                          child: const Text('A', style: TextStyle(color: Colors.white, fontSize: 20)),
                         ),
-                      );
-                    }),
-                  ],
-                ),
+                      ),
+                      ..._emojis.map((e) {
+                        final isSelected = e == _selectedEmoji;
+                        return GestureDetector(
+                          onTap: () => setState(() => _selectedEmoji = e),
+                          child: Container(
+                            width: 44,
+                            height: 44,
+                            decoration: BoxDecoration(
+                              color: Colors.white12,
+                              shape: BoxShape.circle,
+                              border: isSelected ? Border.all(color: Colors.white, width: 2) : null,
+                            ),
+                            alignment: Alignment.center,
+                            child: Text(e, style: const TextStyle(fontSize: 24)),
+                          ),
+                        );
+                      }),
+                    ],
+                  ),
+                ],
                 const SizedBox(height: 32),
                 if (widget.profile?.isOwner != true)
                   SwitchListTile(
@@ -276,4 +428,10 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
           ),
     );
   }
+}
+
+class _AvatarEntry {
+  final String name;
+  final String url;
+  const _AvatarEntry({required this.name, required this.url});
 }

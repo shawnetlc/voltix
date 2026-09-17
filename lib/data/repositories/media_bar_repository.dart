@@ -3,9 +3,12 @@ import 'dart:async';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/widgets.dart';
+import 'package:get_it/get_it.dart';
 import 'package:server_core/server_core.dart';
 
+import '../../auth/store/voltix_session_store.dart';
 import '../../preference/user_preferences.dart';
+import '../../util/parental_rating_severity.dart';
 import '../models/media_bar_slide_item.dart';
 import '../models/media_bar_state.dart';
 
@@ -123,6 +126,17 @@ class MediaBarRepository {
       }
 
       // ── FILTERING & FALLBACK PATHS ──
+      // Kids profile: strip mature content before any other filtering
+      final isKids = GetIt.instance.isRegistered<VoltixSessionStore>() &&
+          GetIt.instance<VoltixSessionStore>().isKidsProfile;
+      if (isKids) {
+        allItems.removeWhere((item) {
+          final rating = (item['OfficialRating'] as String?)?.trim().toUpperCase();
+          if (rating == null || rating.isEmpty) return true; // exclude unrated
+          return parentalRatingSeverity(rating) > kRatingGuidance;
+        });
+      }
+
       // Attempt 1: Strict filtering (has backdrop, not boxset, not excluded genre)
       var filtered = allItems
           .where((item) =>
@@ -291,6 +305,10 @@ class MediaBarRepository {
     int limit, {
     String? parentId,
   }) async {
+    // Kids profile: filter at the server level
+    final isKids = GetIt.instance.isRegistered<VoltixSessionStore>() &&
+        GetIt.instance<VoltixSessionStore>().isKidsProfile;
+
     try {
       final response = await _client.itemsApi
           .getItems(
@@ -303,6 +321,8 @@ class MediaBarRepository {
             fields: _fields,
             enableTotalRecordCount: false,
             enableImageTypes: 'Backdrop,Logo',
+            maxOfficialRating: isKids ? 'PG' : null,
+            hasParentalRating: isKids ? true : null,
           )
           .timeout(const Duration(seconds: 3));
       final rawItems = response['Items'] as List? ?? [];

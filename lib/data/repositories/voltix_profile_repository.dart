@@ -28,6 +28,7 @@ class VoltixProfileRepository {
     required String name,
     String? avatarColor,
     String? avatarEmoji,
+    String? avatarUrl,
     bool isKids = false,
   }) async {
     final result = await _apiService.createProfile(
@@ -35,6 +36,7 @@ class VoltixProfileRepository {
       name: name,
       avatarColor: avatarColor,
       avatarEmoji: avatarEmoji,
+      avatarUrl: avatarUrl,
       isKids: isKids,
     );
     return VoltixProfile.fromJson(result);
@@ -45,6 +47,7 @@ class VoltixProfileRepository {
     String? name,
     String? avatarColor,
     String? avatarEmoji,
+    String? avatarUrl,
     bool? isKids,
   }) async {
     final result = await _apiService.updateProfile(
@@ -53,6 +56,7 @@ class VoltixProfileRepository {
       name: name,
       avatarColor: avatarColor,
       avatarEmoji: avatarEmoji,
+      avatarUrl: avatarUrl,
       isKids: isKids,
     );
     return VoltixProfile.fromJson(result);
