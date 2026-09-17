@@ -1,15 +1,34 @@
 import 'package:server_core/server_core.dart';
-
+import 'package:get_it/get_it.dart';
+import '../models/aggregated_item.dart';
+import '../services/voltix_favorites_registry_service.dart';
 class ItemMutationRepository {
   final MediaServerClient _client;
 
   ItemMutationRepository(this._client);
 
-  Future<void> setFavorite(String itemId, {required bool isFavorite}) async {
+  Future<void> setFavorite(String itemId, {required bool isFavorite, AggregatedItem? item}) async {
     if (isFavorite) {
       await _client.userLibraryApi.markFavorite(itemId);
     } else {
       await _client.userLibraryApi.unmarkFavorite(itemId);
+    }
+
+    try {
+      final registry = GetIt.instance<VoltixFavoritesRegistryService>();
+      final serverId = _client.baseUrl;
+      
+      if (isFavorite) {
+        if (item != null) {
+          await registry.addFavorite(item);
+        } else {
+          await registry.addFavoriteById(itemId, serverId);
+        }
+      } else {
+        await registry.removeFavoriteById(itemId, serverId);
+      }
+    } catch (e) {
+      // Registry service might not be registered or available, fail silently
     }
   }
 

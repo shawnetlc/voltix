@@ -198,8 +198,14 @@ class VoltixWatchRegistryService extends ChangeNotifier {
     try {
       final voltixStore = GetIt.instance<VoltixSessionStore>();
       final username = voltixStore.username ?? voltixStore.displayName;
+      final profileId = voltixStore.activeProfileId;
+      
       if (username != null && username.trim().isNotEmpty) {
-        return username.trim().toLowerCase();
+        final baseUser = username.trim().toLowerCase();
+        if (profileId != null) {
+          return '${baseUser}_profile$profileId';
+        }
+        return baseUser;
       }
     } catch (_) {}
     return 'default_user';

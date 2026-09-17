@@ -311,6 +311,26 @@ class _AccountDialogState extends State<_AccountDialog> {
                 ),
               ),
               const SizedBox(height: 16),
+              // ── Switch Profile ──
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: _ActionButton(
+                    label: 'Switch Profile',
+                    onPressed: _busy
+                        ? null
+                        : () {
+                            Navigator.of(context).pop();
+                            if (context.mounted) {
+                              context.go(Destinations.profileSelect);
+                            }
+                          },
+                    focusColor: focusColor,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 24),
                 // Select Server removed — Voltix users are placed on their

@@ -15,11 +15,14 @@ import 'azure_blob_storage_service.dart';
 import 'media_server_client_factory.dart';
 import 'voltix_api_service.dart';
 import 'voltix_watch_registry_service.dart';
+import 'voltix_favorites_registry_service.dart';
 
 class UserSettingsSyncService {
   final Logger _logger = Logger();
   Timer? _debounceTimer;
+  Timer? _dailySyncTimer;
 
+  static const String _lastDailySyncKeyPrefix = 'pref_last_daily_sync_';
   static const String _hasSyncedKeyPrefix = 'pref_has_synced_user_settings_';
   static const String _lastSyncedTimeKeyPrefix = 'pref_last_synced_time_';
 
@@ -157,6 +160,44 @@ class UserSettingsSyncService {
   /// (Disabled per user requirement: Cloud sync occurs strictly when the user pushes the explicit Sync button).
   void scheduleAutoSync() {
     _debounceTimer?.cancel();
+    _dailySyncTimer?.cancel();
+    _dailySyncTimer = Timer.periodic(
+      const Duration(minutes: 30),
+      (_) => _checkAndRunDailySync(),
+    );
+  }
+
+  void cancelAutoSync() {
+    _dailySyncTimer?.cancel();
+    _dailySyncTimer = null;
+  }
+
+  Future<void> _checkAndRunDailySync() async {
+    final (username, _) = _resolveCredentials(null);
+    final prefStore = GetIt.instance<PreferenceStore>();
+    final lastSyncRaw = prefStore.getString('$_lastDailySyncKeyPrefix${username.toLowerCase()}');
+    if (lastSyncRaw != null) {
+      final lastSync = DateTime.tryParse(lastSyncRaw);
+      if (lastSync != null && DateTime.now().difference(lastSync) < const Duration(hours: 24)) {
+        return; // Less than 24h since last sync
+      }
+    }
+    await syncActiveProfileToCloud();
+  }
+
+  Future<void> syncActiveProfileToCloud() async {
+    final (username, _) = _resolveCredentials(null);
+    final voltixStore = GetIt.instance<VoltixSessionStore>();
+    final activeProfileId = voltixStore.activeProfileId;
+    if (activeProfileId == null) return;
+    
+    final prefStore = GetIt.instance<PreferenceStore>();
+    
+    await backupSettingsToServer(targetUsername: username);
+    await uploadWatchRegistryToServer(targetUsername: username);
+    await uploadFavoritesRegistryToServer(targetUsername: username);
+    
+    await prefStore.setString('$_lastDailySyncKeyPrefix${username.toLowerCase()}', DateTime.now().toIso8601String());
   }
 
   /// Uploads user watch registry to server.
@@ -166,10 +207,12 @@ class UserSettingsSyncService {
       if (GetIt.instance.isRegistered<VoltixWatchRegistryService>()) {
         final registry = GetIt.instance<VoltixWatchRegistryService>();
         final registryData = registry.exportRegistryData();
+        final voltixStore = GetIt.instance<VoltixSessionStore>();
         final azureBlobService = AzureBlobStorageService();
         final success = await azureBlobService.uploadWatchRegistryBlob(
           username: username,
           registryData: registryData,
+          profileId: voltixStore.activeProfileId,
         );
         if (success) {
           _logger.i('[UserSettingsSync] Watch registry blob uploaded for @$username');
@@ -186,8 +229,12 @@ class UserSettingsSyncService {
   Future<bool> restoreWatchRegistryFromServer({String? targetUsername}) async {
     final (username, _) = _resolveCredentials(targetUsername);
     try {
+      final voltixStore = GetIt.instance<VoltixSessionStore>();
       final azureBlobService = AzureBlobStorageService();
-      final remoteData = await azureBlobService.downloadWatchRegistryBlob(username: username);
+      final remoteData = await azureBlobService.downloadWatchRegistryBlob(
+        username: username,
+        profileId: voltixStore.activeProfileId,
+      );
       if (remoteData != null && GetIt.instance.isRegistered<VoltixWatchRegistryService>()) {
         final registry = GetIt.instance<VoltixWatchRegistryService>();
         await registry.importRegistryData(remoteData);
@@ -200,6 +247,54 @@ class UserSettingsSyncService {
     return false;
   }
 
+  Future<bool> uploadFavoritesRegistryToServer({String? targetUsername}) async {
+    final (username, _) = _resolveCredentials(targetUsername);
+    try {
+      if (GetIt.instance.isRegistered<VoltixFavoritesRegistryService>()) {
+        final registry = GetIt.instance<VoltixFavoritesRegistryService>();
+        final registryData = registry.exportRegistryData();
+        final voltixStore = GetIt.instance<VoltixSessionStore>();
+        final azureBlobService = AzureBlobStorageService();
+        final profileId = voltixStore.activeProfileId;
+        if (profileId == null) return false;
+        final success = await azureBlobService.uploadFavoritesRegistryBlob(
+          username: username,
+          registryData: registryData,
+          profileId: profileId,
+        );
+        if (success) {
+          _logger.i('[UserSettingsSync] Favorites registry blob uploaded for @$username');
+        }
+        return success;
+      }
+    } catch (e) {
+      _logger.w('[UserSettingsSync] Failed to upload favorites registry: $e');
+    }
+    return false;
+  }
+
+  Future<bool> restoreFavoritesRegistryFromServer({String? targetUsername}) async {
+    final (username, _) = _resolveCredentials(targetUsername);
+    try {
+      final voltixStore = GetIt.instance<VoltixSessionStore>();
+      final azureBlobService = AzureBlobStorageService();
+      final profileId = voltixStore.activeProfileId;
+      if (profileId == null) return false;
+      final remoteData = await azureBlobService.downloadFavoritesRegistryBlob(
+        username: username,
+        profileId: profileId,
+      );
+      if (remoteData != null && GetIt.instance.isRegistered<VoltixFavoritesRegistryService>()) {
+        final registry = GetIt.instance<VoltixFavoritesRegistryService>();
+        await registry.importRegistryData(remoteData);
+        _logger.i('[UserSettingsSync] Restored remote favorites registry for @$username');
+        return true;
+      }
+    } catch (e) {
+      _logger.w('[UserSettingsSync] Failed to restore favorites registry: $e');
+    }
+    return false;
+  }
   /// Checks if remote settings and/or taste profile exist on the server for a
   /// newly logged-in or fresh install user.
   /// If remote data exists and local hasn't been linked yet, prompts the user
@@ -315,9 +410,15 @@ class UserSettingsSyncService {
           _logger.w('[UserSettingsSync] Watch registry restore timed out for @$username');
           return false;
         });
+        final restoredFavorites = await restoreFavoritesRegistryFromServer(
+          targetUsername: username,
+        ).timeout(const Duration(seconds: 12), onTimeout: () {
+          _logger.w('[UserSettingsSync] Favorites registry restore timed out for @$username');
+          return false;
+        });
         _logger.i(
           '[UserSettingsSync] Startup restore for @$username — '
-          'settings: $restoredSettings, watch registry: $restoredRegistry',
+          'settings: $restoredSettings, watch registry: $restoredRegistry, favorites: $restoredFavorites',
         );
       } catch (e) {
         _logger.w('[UserSettingsSync] Could not restore latest data on startup: $e');
@@ -630,3 +731,4 @@ class UserSettingsSyncService {
 }
 
 enum CloudDataAction { importAll, delete, skip }
+

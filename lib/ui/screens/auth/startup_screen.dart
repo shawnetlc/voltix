@@ -455,8 +455,14 @@ class _StartupScreenState extends State<StartupScreen>
           unawaited(GetIt.instance<UserSettingsSyncService>()
               .checkAndPromptForRemoteSettings(context, resolvedUsername));
         }
+        // Route through profile selection ("Who's watching?") instead of
+        // directly to home. The profile select screen handles:
+        //   - Auto-skip when only one profile exists
+        //   - Restoring the last active profile on cold start
+        context.go(Destinations.profileSelect);
+      } else {
+        context.go(route);
       }
-      context.go(route);
     }
   }
 

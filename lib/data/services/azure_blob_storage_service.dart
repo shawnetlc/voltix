@@ -282,8 +282,11 @@ class AzureBlobStorageService {
   // ── Watch Registry Blob (watch-history/<username>_watch_history.json)
   // ═══════════════════════════════════════════════════════════════════
 
-  String _buildWatchRegistryBlobUrl(String username, String? overrideSasToken) {
-    final blobName = 'watch-history/${username.toLowerCase().trim()}_watch_history.json';
+  String _buildWatchRegistryBlobUrl(String username, String? overrideSasToken, {int? profileId}) {
+    final cleanUser = username.toLowerCase().trim();
+    final blobName = profileId != null 
+        ? 'watch-history/${cleanUser}_profile${profileId}_watch_history.json'
+        : 'watch-history/${cleanUser}_watch_history.json';
     final token = (overrideSasToken != null && overrideSasToken.isNotEmpty)
         ? overrideSasToken
         : envSasToken;
@@ -299,10 +302,13 @@ class AzureBlobStorageService {
     required String username,
     required Map<String, dynamic> registryData,
     String? sasToken,
+    int? profileId,
   }) async {
     final cleanUser = username.toLowerCase().trim();
     if (cleanUser.isEmpty) return false;
-    final blobName = 'watch-history/${cleanUser}_watch_history.json';
+    final blobName = profileId != null 
+        ? 'watch-history/${cleanUser}_profile${profileId}_watch_history.json'
+        : 'watch-history/${cleanUser}_watch_history.json';
 
     final payloadJson = jsonEncode(registryData);
     _logger.i('[AzureBlob] Uploading watch registry for @$cleanUser');
@@ -337,7 +343,7 @@ class AzureBlobStorageService {
 
     // 2. Direct Azure Blob Storage fallback
     try {
-      final url = _buildWatchRegistryBlobUrl(cleanUser, sasToken);
+      final url = _buildWatchRegistryBlobUrl(cleanUser, sasToken, profileId: profileId);
       final response = await _dio.put(
         url,
         data: payloadJson,
@@ -359,10 +365,13 @@ class AzureBlobStorageService {
   Future<Map<String, dynamic>?> downloadWatchRegistryBlob({
     required String username,
     String? sasToken,
+    int? profileId,
   }) async {
     final cleanUser = username.toLowerCase().trim();
     if (cleanUser.isEmpty) return null;
-    final blobName = 'watch-history/${cleanUser}_watch_history.json';
+    final blobName = profileId != null 
+        ? 'watch-history/${cleanUser}_profile${profileId}_watch_history.json'
+        : 'watch-history/${cleanUser}_watch_history.json';
 
     _logger.i('[AzureBlob] Downloading watch registry for @$cleanUser');
 
@@ -390,7 +399,133 @@ class AzureBlobStorageService {
 
     // 2. Direct Azure Blob Storage fallback
     try {
-      final url = _buildWatchRegistryBlobUrl(cleanUser, sasToken);
+      final url = _buildWatchRegistryBlobUrl(cleanUser, sasToken, profileId: profileId);
+      final response = await _dio.get(url);
+      if (response.statusCode == 200) {
+        final decoded = response.data is String
+            ? jsonDecode(response.data as String)
+            : response.data;
+        if (decoded is Map) {
+          return Map<String, dynamic>.from(decoded);
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // ── Favorites Registry Blob (favorites/<username>_profile<profileId>_favorites.json)
+  // ═══════════════════════════════════════════════════════════════════
+
+  String _buildFavoritesRegistryBlobUrl(String username, int profileId, String? overrideSasToken) {
+    final cleanUser = username.toLowerCase().trim();
+    final blobName = 'favorites/${cleanUser}_profile${profileId}_favorites.json';
+    final token = (overrideSasToken != null && overrideSasToken.isNotEmpty)
+        ? overrideSasToken
+        : envSasToken;
+    final tokenQuery = token.isNotEmpty
+        ? (token.startsWith('?') ? token : '?$token')
+        : '';
+    return '$accountUrl/$containerName/$blobName$tokenQuery';
+  }
+
+  Future<bool> uploadFavoritesRegistryBlob({
+    required String username,
+    required int profileId,
+    required Map<String, dynamic> registryData,
+    String? sasToken,
+  }) async {
+    final cleanUser = username.toLowerCase().trim();
+    if (cleanUser.isEmpty) return false;
+    final blobName = 'favorites/${cleanUser}_profile${profileId}_favorites.json';
+
+    final payloadJson = jsonEncode(registryData);
+    _logger.i('[AzureBlob] Uploading favorites registry for @$cleanUser profile $profileId');
+
+    // 1. Production Voltix Sync Proxy endpoint
+    try {
+      final syncDio = Dio(BaseOptions(
+        connectTimeout: const Duration(seconds: 8),
+        receiveTimeout: const Duration(seconds: 12),
+        headers: {'Content-Type': 'application/json'},
+      ));
+      final proxyUrl = '${_voltixBaseUrl()}/api/voltix/azure-sync';
+      final response = await syncDio.post(
+        proxyUrl,
+        data: {
+          'username': cleanUser,
+          'blobName': blobName,
+          'settings': registryData,
+          'updatedAt': DateTime.now().toUtc().toIso8601String(),
+        },
+      );
+      final body = response.data;
+      final reportedSuccess = body is Map ? body['success'] != false : true;
+      if ((response.statusCode == 200 || response.statusCode == 201) &&
+          reportedSuccess) {
+        _logger.i('[AzureBlob] Favorites registry upload succeeded for @$cleanUser');
+        return true;
+      }
+    } catch (e) {
+      _logger.w('[AzureBlob] Proxy favorites registry upload failed ($e), trying direct...');
+    }
+
+    // 2. Direct Azure Blob Storage fallback
+    try {
+      final url = _buildFavoritesRegistryBlobUrl(cleanUser, profileId, sasToken);
+      final response = await _dio.put(
+        url,
+        data: payloadJson,
+        options: Options(
+          headers: {
+            'x-ms-blob-type': 'BlockBlob',
+            'Content-Type': 'application/json; charset=utf-8',
+          },
+        ),
+      );
+      return response.statusCode == 201 || response.statusCode == 200;
+    } catch (e) {
+      _logger.e('[AzureBlob] All favorites registry upload attempts failed', error: e);
+      return false;
+    }
+  }
+
+  Future<Map<String, dynamic>?> downloadFavoritesRegistryBlob({
+    required String username,
+    required int profileId,
+    String? sasToken,
+  }) async {
+    final cleanUser = username.toLowerCase().trim();
+    if (cleanUser.isEmpty) return null;
+    final blobName = 'favorites/${cleanUser}_profile${profileId}_favorites.json';
+
+    _logger.i('[AzureBlob] Downloading favorites registry for @$cleanUser profile $profileId');
+
+    // 1. Production Voltix Sync Proxy endpoint
+    try {
+      final syncDio = Dio(BaseOptions(
+        connectTimeout: const Duration(seconds: 8),
+        receiveTimeout: const Duration(seconds: 12),
+      ));
+      final proxyUrl = '${_voltixBaseUrl()}/api/voltix/azure-sync';
+      final response = await syncDio.get(
+        proxyUrl,
+        queryParameters: {'username': cleanUser, 'blobName': blobName},
+      );
+      final data = response.data;
+      if (data is Map) {
+        if (data['settings'] is Map) {
+          return Map<String, dynamic>.from(data['settings'] as Map);
+        }
+        return Map<String, dynamic>.from(data);
+      }
+    } catch (e) {
+      _logger.w('[AzureBlob] Proxy favorites registry download failed ($e), trying direct...');
+    }
+
+    // 2. Direct Azure Blob Storage fallback
+    try {
+      final url = _buildFavoritesRegistryBlobUrl(cleanUser, profileId, sasToken);
       final response = await _dio.get(url);
       if (response.statusCode == 200) {
         final decoded = response.data is String
@@ -404,3 +539,4 @@ class AzureBlobStorageService {
     return null;
   }
 }
+

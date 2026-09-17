@@ -7,6 +7,7 @@ import '../../auth/repositories/session_repository.dart';
 import '../../auth/store/voltix_session_store.dart';
 import '../../ui/navigation/app_router.dart';
 import '../../ui/navigation/destinations.dart';
+import 'user_settings_sync_service.dart';
 import 'voltix_api_service.dart';
 
 /// Keeps the Voltix session alive by pinging the backend periodically.
@@ -27,6 +28,13 @@ class VoltixSessionService {
     _isRunning = true;
     _logger.i('[VoltixSession] Starting periodic ping (every ${_pingInterval.inMinutes}m)');
     _pingTimer = Timer.periodic(_pingInterval, (_) => _doPing());
+    
+    try {
+      if (GetIt.instance.isRegistered<UserSettingsSyncService>()) {
+        GetIt.instance<UserSettingsSyncService>().scheduleAutoSync();
+      }
+    } catch (_) {}
+    
     // Also do an immediate ping on start
     _doPing();
   }
@@ -36,6 +44,12 @@ class VoltixSessionService {
     _pingTimer?.cancel();
     _pingTimer = null;
     _isRunning = false;
+    
+    try {
+      if (GetIt.instance.isRegistered<UserSettingsSyncService>()) {
+        GetIt.instance<UserSettingsSyncService>().cancelAutoSync();
+      }
+    } catch (_) {}
   }
 
   Future<void> _doPing() async {

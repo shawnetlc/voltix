@@ -35,6 +35,8 @@ class Destinations {
   // Auth
   static const startup = '/';
   static const voltixLogin = '/voltix-login';
+  static const profileSelect = '/profile-select';
+  static const profileEdit = '/profile-edit';
   static const register = '/register';
   static const serverSelect = '/server-select';
   static const embyConnect = '/emby-connect';

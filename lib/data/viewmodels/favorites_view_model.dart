@@ -8,6 +8,8 @@ import '../models/aggregated_item.dart';
 import '../repositories/mdblist_repository.dart';
 import '../repositories/multi_server_repository.dart';
 import '../../util/user_facing_error.dart';
+import 'package:get_it/get_it.dart';
+import '../services/voltix_favorites_registry_service.dart';
 
 enum FavoritesState { loading, ready, error }
 
@@ -236,9 +238,16 @@ class FavoritesViewModel extends ChangeNotifier {
           final totalCount = results.fold<int>(0, (sum, e) => sum + e.$2);
 
           final seen = <String>{};
-          final uniqueItems = allItems
+          var uniqueItems = allItems
               .where((item) => seen.add('${item.serverId}_${item.id}'))
               .toList();
+
+          try {
+            final registry = GetIt.instance<VoltixFavoritesRegistryService>();
+            uniqueItems = uniqueItems.where((item) => registry.isFavoriteByItem(item)).toList();
+          } catch (_) {
+            // Registry might not be available, fall back to unfiltered list
+          }
 
           final sortedItems = _sortItems(
             items: uniqueItems,
@@ -281,7 +290,7 @@ class FavoritesViewModel extends ChangeNotifier {
         );
       }
       final rawItems = (response['Items'] as List?) ?? [];
-      final items = rawItems
+      var items = rawItems
           .cast<Map<String, dynamic>>()
           .map(
             (raw) => AggregatedItem(
@@ -291,7 +300,15 @@ class FavoritesViewModel extends ChangeNotifier {
             ),
           )
           .toList();
-      final totalCount = response['TotalRecordCount'] as int? ?? items.length;
+
+      try {
+        final registry = GetIt.instance<VoltixFavoritesRegistryService>();
+        items = items.where((item) => registry.isFavoriteByItem(item)).toList();
+      } catch (_) {
+        // Registry might not be available, fall back to unfiltered list
+      }
+          
+      final totalCount = items.length;
       return (items, totalCount);
     } catch (_) {
       return (const <AggregatedItem>[], 0);
@@ -368,8 +385,14 @@ class FavoritesViewModel extends ChangeNotifier {
           }),
         );
 
-        final allItems = results.expand((e) => e.$1).toList();
-        final totalCount = results.fold<int>(0, (sum, e) => sum + e.$2);
+        var allItems = results.expand((e) => e.$1).toList();
+        
+        try {
+          final registry = GetIt.instance<VoltixFavoritesRegistryService>();
+          allItems = allItems.where((item) => registry.isFavoriteByItem(item)).toList();
+        } catch (_) {}
+
+        final totalCount = allItems.length;
 
         _gridTotalCount = totalCount;
         final sorted = _sortItems(
@@ -429,7 +452,7 @@ class FavoritesViewModel extends ChangeNotifier {
           startIndex + rawItems.length + (rawItems.length == pageSize ? 1 : 0);
     }
 
-    final mapped = rawItems
+    var mapped = rawItems
         .cast<Map<String, dynamic>>()
         .map(
           (raw) => AggregatedItem(
@@ -439,6 +462,15 @@ class FavoritesViewModel extends ChangeNotifier {
           ),
         )
         .toList();
+
+    try {
+      final registry = GetIt.instance<VoltixFavoritesRegistryService>();
+      mapped = mapped.where((item) => registry.isFavoriteByItem(item)).toList();
+    } catch (_) {}
+
+    if (totalFromServer == null) {
+      _gridTotalCount = startIndex + mapped.length + (mapped.length == pageSize ? 1 : 0);
+    }
 
     if (startIndex == 0) {
       _gridItems = mapped;

@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../../data/models/voltix_profile.dart';
 
 /// Persists the Voltix session state locally so the app can restore
 /// the user's authenticated session across cold starts.
@@ -26,6 +27,8 @@ class VoltixSessionStore {
   static const _keyActiveServerProxyUrl = 'voltix_active_server_proxy_url';
   static const _keyServersJson = 'voltix_servers_json';
   static const _keyIsAdmin = 'voltix_is_admin';
+  static const _keyActiveProfileId = 'voltix_active_profile_id';
+  static const _keyActiveProfileName = 'voltix_active_profile_name';
 
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
   bool _secureStorageAvailable = true;
@@ -38,6 +41,8 @@ class VoltixSessionStore {
   String? _activeServerName;
   String? _activeServerProxyUrl;
   bool _isAdmin = false;
+  int? _activeProfileId;
+  String? _activeProfileName;
 
   String? get sessionToken => _sessionToken;
   int? get userId => _userId;
@@ -47,6 +52,8 @@ class VoltixSessionStore {
   String? get activeServerName => _activeServerName;
   String? get activeServerProxyUrl => _activeServerProxyUrl;
   bool get isAdmin => _isAdmin;
+  int? get activeProfileId => _activeProfileId;
+  String? get activeProfileName => _activeProfileName;
   bool get hasSession => _sessionToken != null && _sessionToken!.isNotEmpty;
 
   Future<void> load() async {
@@ -60,6 +67,8 @@ class VoltixSessionStore {
     _activeServerName = prefs.getString(_keyActiveServerName);
     _activeServerProxyUrl = prefs.getString(_keyActiveServerProxyUrl);
     _isAdmin = prefs.getBool(_keyIsAdmin) ?? false;
+    _activeProfileId = prefs.getInt(_keyActiveProfileId);
+    _activeProfileName = prefs.getString(_keyActiveProfileName);
 
     // Load token from secure storage
     _sessionToken = await _readSecureToken();
@@ -114,6 +123,22 @@ class VoltixSessionStore {
     await prefs.remove(_keyToken);
   }
 
+  Future<void> setActiveProfile(VoltixProfile profile) async {
+    _activeProfileId = profile.id;
+    _activeProfileName = profile.name;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_keyActiveProfileId, profile.id);
+    await prefs.setString(_keyActiveProfileName, profile.name);
+  }
+
+  Future<void> clearActiveProfile() async {
+    _activeProfileId = null;
+    _activeProfileName = null;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_keyActiveProfileId);
+    await prefs.remove(_keyActiveProfileName);
+  }
+
   Future<void> clear() async {
     _sessionToken = null;
     _userId = null;
@@ -123,6 +148,8 @@ class VoltixSessionStore {
     _activeServerName = null;
     _activeServerProxyUrl = null;
     _isAdmin = false;
+    _activeProfileId = null;
+    _activeProfileName = null;
 
     // Clear secure token
     await _deleteSecureToken();
@@ -138,6 +165,8 @@ class VoltixSessionStore {
     await prefs.remove(_keyActiveServerProxyUrl);
     await prefs.remove(_keyServersJson);
     await prefs.remove(_keyIsAdmin);
+    await prefs.remove(_keyActiveProfileId);
+    await prefs.remove(_keyActiveProfileName);
   }
 
   // ─── Secure storage helpers ──────────────────────────────────────────────────

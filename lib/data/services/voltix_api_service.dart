@@ -408,8 +408,139 @@ class VoltixApiService {
     }
   }
 
-  // ────────────────────── User Settings Sync ──────────────────────
+  // ───────────────────────── Profiles ─────────────────────────
 
+  Future<List<Map<String, dynamic>>> listProfiles(String sessionToken) async {
+    final url = '$baseUrl/api/trpc/profiles.list';
+    try {
+      final response = await _dio.get(url, options: Options(headers: {
+        'Authorization': 'Bearer $sessionToken',
+        'Cookie': 'voltix_session=$sessionToken',
+      }));
+      final data = response.data;
+      final result = (data is Map && data.containsKey('result')) ? data['result'] : data;
+      final resultData = (result is Map && result.containsKey('data')) ? result['data'] : result;
+      final json = (resultData is Map && resultData.containsKey('json')) ? resultData['json'] : resultData;
+      
+      if (json is List) {
+        return json.cast<Map<String, dynamic>>();
+      }
+      return [];
+    } on DioException catch (e) {
+      final msg = _extractTrpcError(e) ?? 'Failed to list profiles';
+      throw VoltixApiException(msg);
+    }
+  }
+
+  Future<Map<String, dynamic>> createProfile({
+    required String sessionToken,
+    required String name,
+    String? avatarColor,
+    String? avatarEmoji,
+    bool isKids = false,
+  }) async {
+    final url = '$baseUrl/api/trpc/profiles.create';
+    try {
+      final response = await _dio.post(url, data: {
+        'json': {
+          'name': name,
+          'avatarColor': avatarColor,
+          'avatarEmoji': avatarEmoji,
+          'isKids': isKids,
+        }
+      }, options: Options(headers: {
+        'Authorization': 'Bearer $sessionToken',
+        'Cookie': 'voltix_session=$sessionToken',
+      }));
+      
+      final data = response.data;
+      final result = (data is Map && data.containsKey('result')) ? data['result'] : data;
+      final resultData = (result is Map && result.containsKey('data')) ? result['data'] : result;
+      final json = (resultData is Map && resultData.containsKey('json')) ? resultData['json'] : resultData;
+      
+      return json as Map<String, dynamic>;
+    } on DioException catch (e) {
+      final msg = _extractTrpcError(e) ?? 'Failed to create profile';
+      throw VoltixApiException(msg);
+    }
+  }
+
+  Future<Map<String, dynamic>> updateProfile({
+    required String sessionToken,
+    required int id,
+    String? name,
+    String? avatarColor,
+    String? avatarEmoji,
+    bool? isKids,
+  }) async {
+    final url = '$baseUrl/api/trpc/profiles.update';
+    try {
+      final response = await _dio.post(url, data: {
+        'json': {
+          'id': id,
+          'name': name,
+          'avatarColor': avatarColor,
+          'avatarEmoji': avatarEmoji,
+          'isKids': isKids,
+        }
+      }, options: Options(headers: {
+        'Authorization': 'Bearer $sessionToken',
+        'Cookie': 'voltix_session=$sessionToken',
+      }));
+      
+      final data = response.data;
+      final result = (data is Map && data.containsKey('result')) ? data['result'] : data;
+      final resultData = (result is Map && result.containsKey('data')) ? result['data'] : result;
+      final json = (resultData is Map && resultData.containsKey('json')) ? resultData['json'] : resultData;
+      
+      return json as Map<String, dynamic>;
+    } on DioException catch (e) {
+      final msg = _extractTrpcError(e) ?? 'Failed to update profile';
+      throw VoltixApiException(msg);
+    }
+  }
+
+  Future<void> deleteProfile({
+    required String sessionToken,
+    required int id,
+  }) async {
+    final url = '$baseUrl/api/trpc/profiles.delete';
+    try {
+      await _dio.post(url, data: {
+        'json': {
+          'id': id,
+        }
+      }, options: Options(headers: {
+        'Authorization': 'Bearer $sessionToken',
+        'Cookie': 'voltix_session=$sessionToken',
+      }));
+    } on DioException catch (e) {
+      final msg = _extractTrpcError(e) ?? 'Failed to delete profile';
+      throw VoltixApiException(msg);
+    }
+  }
+
+  Future<void> selectProfile({
+    required String sessionToken,
+    required int id,
+  }) async {
+    final url = '$baseUrl/api/trpc/profiles.select';
+    try {
+      await _dio.post(url, data: {
+        'json': {
+          'id': id,
+        }
+      }, options: Options(headers: {
+        'Authorization': 'Bearer $sessionToken',
+        'Cookie': 'voltix_session=$sessionToken',
+      }));
+    } on DioException catch (e) {
+      final msg = _extractTrpcError(e) ?? 'Failed to select profile';
+      throw VoltixApiException(msg);
+    }
+  }
+
+  // ────────────────────── User Settings Sync ──────────────────────
   Future<bool> saveUserSettings({
     required String sessionToken,
     required String username,

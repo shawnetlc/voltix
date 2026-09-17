@@ -582,7 +582,9 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
 
   Future<void> _navigatePostLogin(String username) async {
     _postLoginWatchdog?.cancel();
-    const target = Destinations.home;
+    // Navigate to profile selection ("Who's watching?") instead of home.
+    // The profile select screen handles auto-skip when only one profile exists.
+    const target = Destinations.profileSelect;
 
     // Show the taste onboarding wizard once, immediately after first login.
     //

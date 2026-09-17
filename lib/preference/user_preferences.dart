@@ -12,6 +12,8 @@ import '../util/idiom/app_ui_idiom.dart';
 import '../util/platform_detection.dart';
 import 'home_section_config.dart';
 import 'preference_constants.dart';
+import 'package:get_it/get_it.dart';
+import '../auth/store/voltix_session_store.dart';
 
 class UserPreferences extends ChangeNotifier {
   static const _lastServerIdPreferenceKey = 'pref_last_server_id';
@@ -356,6 +358,17 @@ class UserPreferences extends ChangeNotifier {
     if (serverId.isEmpty || userId.isEmpty) {
       return null;
     }
+    
+    try {
+      final sessionStore = GetIt.instance<VoltixSessionStore>();
+      final profileId = sessionStore.activeProfileId;
+      if (profileId != null) {
+        return '${serverId}_${userId}_p$profileId';
+      }
+    } catch (_) {
+      // Fallback if session store is not yet registered
+    }
+    
     return '${serverId}_$userId';
   }
 

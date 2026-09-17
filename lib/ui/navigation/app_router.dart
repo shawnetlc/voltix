@@ -21,6 +21,10 @@ import '../screens/auth/server_select_screen.dart';
 import '../screens/auth/startup_screen.dart';
 import '../screens/web_diagnostics_screen.dart';
 import '../screens/auth/voltix_login_screen.dart';
+import '../screens/auth/profile_select_screen.dart';
+import '../screens/auth/profile_edit_screen.dart';
+
+import '../../data/models/voltix_profile.dart';
 import '../screens/auth/voltix_register_screen.dart';
 import '../screens/browse/all_genres_screen.dart';
 import '../screens/browse/collection_screen.dart';
@@ -119,6 +123,8 @@ import 'route_lifecycle_observer.dart';
 const _authRoutes = {
   Destinations.startup,
   Destinations.voltixLogin,
+  Destinations.profileSelect,
+  Destinations.register,
   Destinations.serverSelect,
   Destinations.embyConnect,
   Destinations.webDiagnostics,
@@ -277,6 +283,17 @@ final appRouter = GoRouter(
     GoRoute(
       path: Destinations.voltixLogin,
       builder: (context, state) => const VoltixLoginScreen(),
+    ),
+    GoRoute(
+      path: Destinations.profileSelect,
+      builder: (context, state) => const ProfileSelectScreen(),
+    ),
+    GoRoute(
+      path: Destinations.profileEdit,
+      builder: (context, state) {
+        final profile = state.extra as VoltixProfile?;
+        return ProfileEditScreen(profile: profile);
+      },
     ),
     GoRoute(
       path: Destinations.register,
@@ -1082,3 +1099,4 @@ class RetroArtworkRouteObserver extends NavigatorObserver {
     _sync();
   }
 }
+
