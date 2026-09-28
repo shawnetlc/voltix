@@ -1512,7 +1512,7 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
                   const SizedBox(width: 8),
                   Text(
                     'This window will disappear once your device is linked...',
-                    style: TextStyle(color: AppColorScheme.accent, fontWeight: FontWeight.bold, fontSize: isTV ? 11 : 13),
+                    style: TextStyle(color: backdropAccentText(), fontWeight: FontWeight.bold, fontSize: isTV ? 11 : 13),
                   ),
                 ],
               ),

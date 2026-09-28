@@ -10,6 +10,28 @@ import '../../preference/preference_constants.dart';
 const _kCardRadius = 20.0;
 const _kCardMaxWidth = 700.0;
 const _kVoltixCardColor = Color(0xCC111528);
+// Near-opaque card for the alternate artwork, whose bright neon would
+// otherwise bleed through the translucent card and wash out its text.
+const _kAlternateCardColor = Color(0xF00B0E1C);
+
+/// True when the user picked the alternate (neon) background artwork.
+bool isAlternateBackdrop() {
+  final getIt = GetIt.instance;
+  if (!getIt.isRegistered<UserPreferences>()) return false;
+  return getIt<UserPreferences>().get(UserPreferences.appBackgroundStyle) ==
+      AppBackgroundStyle.alternate;
+}
+
+/// Colour for highlighted / accent *text* drawn over the login backdrop.
+/// The brand blue sinks into the alternate artwork's cyan and purple, so
+/// it switches to white there; the classic artwork keeps the accent.
+Color backdropAccentText() =>
+    isAlternateBackdrop() ? Colors.white : AppColorScheme.accent;
+
+/// Legibility shadow applied to all text over the alternate artwork.
+const List<Shadow> _kAlternateTextShadows = [
+  Shadow(color: Color(0xCC000000), blurRadius: 6, offset: Offset(0, 1)),
+];
 
 class LoginScaffold extends StatefulWidget {
   final double maxWidth;
@@ -33,9 +55,11 @@ class _LoginScaffoldState extends State<LoginScaffold> {
   @override
   Widget build(BuildContext context) {
     final isVoltix = ThemeRegistry.active.id == ThemeRegistry.voltixId;
-    final cardColor = isVoltix
-        ? _kVoltixCardColor
-        : AppColorScheme.surface.withAlpha(0xCC);
+    final cardColor = isAlternateBackdrop()
+        ? _kAlternateCardColor
+        : isVoltix
+            ? _kVoltixCardColor
+            : AppColorScheme.surface.withAlpha(0xCC);
 
     final cardBorder = isVoltix
         ? Border.all(color: const Color(0x33FFFFFF))
@@ -112,6 +136,7 @@ class _WelcomeBackdropState extends State<WelcomeBackdrop> {
     final loginBackgroundAsset = GetIt.instance<UserPreferences>()
         .get(UserPreferences.appBackgroundStyle)
         .loginBackgroundAsset;
+    final alternate = isAlternateBackdrop();
 
     return Container(
       decoration: BoxDecoration(
@@ -124,9 +149,21 @@ class _WelcomeBackdropState extends State<WelcomeBackdrop> {
         image: DecorationImage(
           image: AssetImage(loginBackgroundAsset),
           fit: BoxFit.cover,
+          // Dim the busy neon artwork so text on top of it stays readable.
+          colorFilter: alternate
+              ? ColorFilter.mode(
+                  Colors.black.withValues(alpha: 0.45),
+                  BlendMode.darken,
+                )
+              : null,
         ),
       ),
-      child: widget.child,
+      child: alternate
+          ? DefaultTextStyle.merge(
+              style: const TextStyle(shadows: _kAlternateTextShadows),
+              child: widget.child,
+            )
+          : widget.child,
     );
   }
 }

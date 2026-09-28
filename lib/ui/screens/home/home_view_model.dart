@@ -404,6 +404,15 @@ class HomeViewModel extends ChangeNotifier {
         }
       }
 
+      // The taste rows (personalization + genre rows) read the in-memory
+      // profile synchronously. On a cold start that reaches home without the
+      // login screen (auto-login, profile switch), nothing has loaded it yet,
+      // so those rows came back empty until something else happened to load
+      // it. Load it up front -- local store first, so this is normally a
+      // disk read. Not awaited here: only the taste sections wait on it, so
+      // every other row starts loading immediately.
+      _tastePreload = _ensureTasteProfileLoaded();
+
       final activeConfigs = _prefs.activeHomeSectionConfigs;
       final fallbackUsed = activeConfigs.isEmpty;
       final configs = fallbackUsed
@@ -1324,6 +1333,7 @@ class HomeViewModel extends ChangeNotifier {
         GetIt.instance<VoltixSessionStore>().isKidsProfile) {
       return const [];
     }
+    await _tastePreload;
     final genre = _genreLabelForSection(section);
     if (genre == null) return const [];
 
@@ -1362,6 +1372,44 @@ class HomeViewModel extends ChangeNotifier {
     }
   }
 
+  /// In-flight taste profile preload for the current [load]; the taste
+  /// sections await it before reading the profile.
+  Future<void> _tastePreload = Future<void>.value();
+
+  /// Loads the active user's taste profile into the repository when it is
+  /// not already there. Bounded so a slow server never holds up home.
+  Future<void> _ensureTasteProfileLoaded() async {
+    final getIt = GetIt.instance;
+    if (!getIt.isRegistered<TasteProfileRepository>()) return;
+    if (getIt.isRegistered<VoltixSessionStore>() &&
+        getIt<VoltixSessionStore>().isKidsProfile) {
+      return;
+    }
+    final repo = getIt<TasteProfileRepository>();
+    final userId = _client.userId?.trim() ?? '';
+    if (userId.isEmpty) return;
+    final current = repo.currentProfile;
+    if (current != null &&
+        current.userId == userId &&
+        current.serverId == _serverId) {
+      return;
+    }
+    try {
+      final profileId = getIt.isRegistered<VoltixSessionStore>()
+          ? getIt<VoltixSessionStore>().activeProfileId
+          : null;
+      await repo
+          .loadProfile(
+            userId: userId,
+            serverId: _serverId,
+            profileId: profileId,
+          )
+          .timeout(const Duration(seconds: 4));
+    } catch (e) {
+      debugPrint('[HomeViewModel] Taste profile preload skipped: $e');
+    }
+  }
+
   /// The taste profile block: up to six personalization rows, strongest
   /// first.
   ///
@@ -1379,6 +1427,7 @@ class HomeViewModel extends ChangeNotifier {
       return const [];
     }
 
+    await _tastePreload;
     final profile = GetIt.instance<TasteProfileRepository>().currentProfile;
     if (profile == null || profile.status != TasteProfileStatus.completed) {
       return const [];

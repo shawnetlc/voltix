@@ -407,19 +407,6 @@ class _HomeShellState extends State<_HomeShell>
               ),
               if (seasonalEffect != 'none')
                 Positioned.fill(child: SeasonalEffects(effect: seasonalEffect)),
-              // Voltix brand mark, top-right corner of the home hero.
-              Positioned(
-                top: 20,
-                right: 32,
-                child: Image.asset(
-                  'assets/images/voltix_bolt.png',
-                  width: 32,
-                  height: 32,
-                  fit: BoxFit.contain,
-                  cacheWidth: 64,
-                  errorBuilder: (_, _, _) => const SizedBox.shrink(),
-                ),
-              ),
             ],
           ),
         ),
@@ -515,10 +502,21 @@ class _Backdrop extends StatelessWidget {
 
   Widget _blurredImage(BuildContext context, String imageUrl, double blur) {
     if (imageUrl.startsWith('assets/')) {
-      final assetImage = Image.asset(
+      Widget assetImage = Image.asset(
         imageUrl,
         fit: BoxFit.cover,
       );
+      // The alternate splash is bright neon with its own lettering; dim it so
+      // row titles and the info area on top stay easy to read.
+      if (imageUrl == AppBackgroundStyle.alternate.homeBackgroundAsset) {
+        assetImage = ColorFiltered(
+          colorFilter: ColorFilter.mode(
+            Colors.black.withValues(alpha: 0.5),
+            BlendMode.darken,
+          ),
+          child: assetImage,
+        );
+      }
       if (blur <= 0) return assetImage;
       return ImageFiltered(
         imageFilter: ui.ImageFilter.blur(

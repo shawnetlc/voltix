@@ -171,258 +171,63 @@ class HomeSectionConfig {
   bool get isBuiltin => kind == HomeSectionKind.builtin;
   bool get isPluginDynamic => kind == HomeSectionKind.pluginDynamic;
 
+  /// Default home layout (2.5.0): the tuned Voltix row set and order.
+  /// Enabled, in order: library tiles, Continue Watching, Next Up, taste
+  /// rows, three "More with actor" rows, the two taste genre rows, three
+  /// "Since you watched" rows, Rewatch, then Live TV continue rows.
+  /// Everything else is present but off, so turning it on has somewhere
+  /// to persist.
   static List<HomeSectionConfig> defaults() => const [
-    HomeSectionConfig(
-      type: HomeSectionType.libraryTilesSmall,
-      enabled: true,
-      order: 0,
-    ),
+    HomeSectionConfig(type: HomeSectionType.libraryTilesSmall, enabled: true, order: 0),
     HomeSectionConfig(type: HomeSectionType.resume, enabled: true, order: 1),
-    // Directly below Continue Watching: the taste rows answer "what next",
-    // which is the question someone is already asking at that point on the
-    // page.
-    HomeSectionConfig(
-      type: HomeSectionType.personalization,
-      enabled: true,
-      order: 2,
-    ),
-    // Moonfin Recommends rows. These carry a toggle preference too, but they
-    // still need a section entry: without one there is nowhere for turning the
-    // row off to persist, so the next sync brings it back.
-    HomeSectionConfig(
-      type: HomeSectionType.sinceYouWatched1,
-      enabled: false,
-      order: 40,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.sinceYouWatched2,
-      enabled: false,
-      order: 41,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.sinceYouWatched3,
-      enabled: false,
-      order: 42,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.sinceYouWatched4,
-      enabled: false,
-      order: 43,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.sinceYouWatched5,
-      enabled: false,
-      order: 44,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.rewatch,
-      enabled: false,
-      order: 45,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.moreWithActor1,
-      enabled: true,
-      order: 46,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.moreWithActor2,
-      enabled: true,
-      order: 47,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.moreWithActor3,
-      enabled: false,
-      order: 48,
-    ),
-    HomeSectionConfig(type: HomeSectionType.nextUp, enabled: true, order: 3),
-    HomeSectionConfig(
-      type: HomeSectionType.latestMedia,
-      enabled: false,
-      order: 6,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.recentlyReleased,
-      enabled: false,
-      order: 8,
-    ),
-    HomeSectionConfig(type: HomeSectionType.liveTv, enabled: false, order: 8),
-    HomeSectionConfig(
-      type: HomeSectionType.libraryButtons,
-      enabled: false,
-      order: 9,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.resumeAudio,
-      enabled: false,
-      order: 10,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.resumeBook,
-      enabled: false,
-      order: 11,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.activeRecordings,
-      enabled: false,
-      order: 12,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.collections,
-      enabled: false,
-      order: 13,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.favoriteMovies,
-      enabled: false,
-      order: 14,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.favoriteSeries,
-      enabled: false,
-      order: 15,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.favoriteEpisodes,
-      enabled: false,
-      order: 16,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.favoritePeople,
-      enabled: false,
-      order: 17,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.favoriteArtists,
-      enabled: false,
-      order: 18,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.favoriteMusicVideos,
-      enabled: false,
-      order: 19,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.favoriteAlbums,
-      enabled: false,
-      order: 20,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.favoriteSongs,
-      enabled: false,
-      order: 21,
-    ),
-    HomeSectionConfig(type: HomeSectionType.genres, enabled: false, order: 22),
-    HomeSectionConfig(
-      type: HomeSectionType.playlists,
-      enabled: false,
-      order: 23,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.seerrRecentRequests,
-      enabled: false,
-      order: 24,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.seerrRecentlyAdded,
-      enabled: false,
-      order: 25,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.seerrPopularMovies,
-      enabled: false,
-      order: 26,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.seerrUpcomingMovies,
-      enabled: false,
-      order: 27,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.seerrPopularSeries,
-      enabled: false,
-      order: 28,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.seerrUpcomingSeries,
-      enabled: false,
-      order: 29,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.seerrTrending,
-      enabled: false,
-      order: 30,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.seerrMovieGenres,
-      enabled: false,
-      order: 31,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.seerrStudios,
-      enabled: false,
-      order: 32,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.seerrSeriesGenres,
-      enabled: false,
-      order: 33,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.seerrNetworks,
-      enabled: false,
-      order: 34,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.iptvRecentChannels,
-      enabled: true,
-      order: 35,
-    ),
-    HomeSectionConfig(
-      // Replaced by the taste-profile genre rows (genreFanFavorite /
-      // genreMoreTitles). Off by default; users can still re-enable it.
-      type: HomeSectionType.iptvFavoriteChannels,
-      enabled: false,
-      order: 5,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.iptvFavoriteMovies,
-      enabled: true,
-      order: 37,
-    ),
-    HomeSectionConfig(
-      // Replaced by the taste-profile genre rows (genreFanFavorite /
-      // genreMoreTitles). Off by default; users can still re-enable it.
-      type: HomeSectionType.iptvFavoriteSeries,
-      enabled: false,
-      order: 38,
-    ),
-    // New taste-profile genre rows that take the place of the two IPTV
-    // favorites rows above. They only render once the user has a completed
-    // taste profile with at least one positively-rated genre.
-    HomeSectionConfig(
-      type: HomeSectionType.genreFanFavorite,
-      enabled: true,
-      order: 5,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.genreMoreTitles,
-      enabled: true,
-      order: 6,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.iptvContinueSeries,
-      // Off by default: these items are merged into the main Continue Watching
-      // row. Enable to show Live TV progress as its own separate row instead.
-      enabled: true,
-      order: 4,
-    ),
-    HomeSectionConfig(
-      type: HomeSectionType.iptvContinueMovies,
-      // Off by default: these items are merged into the main Continue Watching
-      // row. Enable to show Live TV progress as its own separate row instead.
-      enabled: true,
-      order: 5,
-    ),
+    HomeSectionConfig(type: HomeSectionType.nextUp, enabled: true, order: 2),
+    HomeSectionConfig(type: HomeSectionType.personalization, enabled: true, order: 3),
+    HomeSectionConfig(type: HomeSectionType.moreWithActor1, enabled: true, order: 4),
+    HomeSectionConfig(type: HomeSectionType.moreWithActor2, enabled: true, order: 5),
+    HomeSectionConfig(type: HomeSectionType.moreWithActor3, enabled: true, order: 6),
+    HomeSectionConfig(type: HomeSectionType.genreFanFavorite, enabled: true, order: 7),
+    HomeSectionConfig(type: HomeSectionType.genreMoreTitles, enabled: true, order: 8),
+    HomeSectionConfig(type: HomeSectionType.sinceYouWatched1, enabled: true, order: 9),
+    HomeSectionConfig(type: HomeSectionType.sinceYouWatched2, enabled: true, order: 10),
+    HomeSectionConfig(type: HomeSectionType.sinceYouWatched3, enabled: true, order: 11),
+    HomeSectionConfig(type: HomeSectionType.rewatch, enabled: true, order: 12),
+    HomeSectionConfig(type: HomeSectionType.iptvRecentChannels, enabled: false, order: 13),
+    HomeSectionConfig(type: HomeSectionType.iptvFavoriteChannels, enabled: false, order: 14),
+    HomeSectionConfig(type: HomeSectionType.iptvFavoriteMovies, enabled: false, order: 15),
+    HomeSectionConfig(type: HomeSectionType.iptvFavoriteSeries, enabled: false, order: 16),
+    HomeSectionConfig(type: HomeSectionType.iptvContinueSeries, enabled: true, order: 17),
+    HomeSectionConfig(type: HomeSectionType.iptvContinueMovies, enabled: true, order: 18),
+    HomeSectionConfig(type: HomeSectionType.latestMedia, enabled: false, order: 19),
+    HomeSectionConfig(type: HomeSectionType.recentlyReleased, enabled: false, order: 20),
+    HomeSectionConfig(type: HomeSectionType.libraryButtons, enabled: false, order: 21),
+    HomeSectionConfig(type: HomeSectionType.resumeBook, enabled: false, order: 22),
+    HomeSectionConfig(type: HomeSectionType.resumeAudio, enabled: false, order: 23),
+    HomeSectionConfig(type: HomeSectionType.activeRecordings, enabled: false, order: 24),
+    HomeSectionConfig(type: HomeSectionType.playlists, enabled: false, order: 25),
+    HomeSectionConfig(type: HomeSectionType.favoriteMovies, enabled: false, order: 29),
+    HomeSectionConfig(type: HomeSectionType.favoriteSeries, enabled: false, order: 30),
+    HomeSectionConfig(type: HomeSectionType.favoriteEpisodes, enabled: false, order: 31),
+    HomeSectionConfig(type: HomeSectionType.favoritePeople, enabled: false, order: 32),
+    HomeSectionConfig(type: HomeSectionType.favoriteArtists, enabled: false, order: 33),
+    HomeSectionConfig(type: HomeSectionType.favoriteMusicVideos, enabled: false, order: 34),
+    HomeSectionConfig(type: HomeSectionType.favoriteAlbums, enabled: false, order: 35),
+    HomeSectionConfig(type: HomeSectionType.favoriteSongs, enabled: false, order: 36),
+    HomeSectionConfig(type: HomeSectionType.collections, enabled: false, order: 37),
+    HomeSectionConfig(type: HomeSectionType.genres, enabled: false, order: 38),
+    HomeSectionConfig(type: HomeSectionType.liveTv, enabled: false, order: 40),
+    HomeSectionConfig(type: HomeSectionType.seerrRecentRequests, enabled: false, order: 42),
+    HomeSectionConfig(type: HomeSectionType.seerrRecentlyAdded, enabled: false, order: 44),
+    HomeSectionConfig(type: HomeSectionType.seerrPopularMovies, enabled: false, order: 45),
+    HomeSectionConfig(type: HomeSectionType.seerrUpcomingMovies, enabled: false, order: 46),
+    HomeSectionConfig(type: HomeSectionType.seerrPopularSeries, enabled: false, order: 47),
+    HomeSectionConfig(type: HomeSectionType.seerrUpcomingSeries, enabled: false, order: 48),
+    HomeSectionConfig(type: HomeSectionType.seerrTrending, enabled: false, order: 49),
+    HomeSectionConfig(type: HomeSectionType.seerrMovieGenres, enabled: false, order: 50),
+    HomeSectionConfig(type: HomeSectionType.seerrStudios, enabled: false, order: 51),
+    HomeSectionConfig(type: HomeSectionType.seerrSeriesGenres, enabled: false, order: 52),
+    HomeSectionConfig(type: HomeSectionType.seerrNetworks, enabled: false, order: 53),
+    HomeSectionConfig(type: HomeSectionType.sinceYouWatched4, enabled: false, order: 54),
+    HomeSectionConfig(type: HomeSectionType.sinceYouWatched5, enabled: false, order: 55),
   ];
 
   static List<HomeSectionConfig> fromJsonString(String jsonString) {

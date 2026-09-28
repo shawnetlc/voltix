@@ -23,7 +23,7 @@ void main() {
 
       expect(actor1.enabled, isTrue);
       expect(actor2.enabled, isTrue);
-      expect(actor3.enabled, isFalse);
+      expect(actor3.enabled, isTrue);
       expect(actor1.isBuiltin, isTrue);
     });
 
@@ -59,8 +59,8 @@ void main() {
       expect(UserPreferences.displayMoreWithActorRows.defaultValue, isTrue);
       expect(UserPreferences.moreWithActor1Enabled.defaultValue, isTrue);
       expect(UserPreferences.moreWithActor2Enabled.defaultValue, isTrue);
-      expect(UserPreferences.moreWithActor3Enabled.defaultValue, isFalse);
-      expect(UserPreferences.moreWithActorNumRows.defaultValue, MoreWithActorNumRows.two);
+      expect(UserPreferences.moreWithActor3Enabled.defaultValue, isTrue);
+      expect(UserPreferences.moreWithActorNumRows.defaultValue, MoreWithActorNumRows.three);
       expect(UserPreferences.moreWithActorIncludeWatched.defaultValue, isFalse);
     });
   });

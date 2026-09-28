@@ -1031,17 +1031,17 @@ class UserPreferences extends ChangeNotifier {
 
   static final sinceYouWatched1Enabled = Preference(
     key: 'since_you_watched_1_enabled',
-    defaultValue: false,
+    defaultValue: true,
   );
 
   static final sinceYouWatched2Enabled = Preference(
     key: 'since_you_watched_2_enabled',
-    defaultValue: false,
+    defaultValue: true,
   );
 
   static final sinceYouWatched3Enabled = Preference(
     key: 'since_you_watched_3_enabled',
-    defaultValue: false,
+    defaultValue: true,
   );
 
   static final sinceYouWatched4Enabled = Preference(
@@ -1074,7 +1074,7 @@ class UserPreferences extends ChangeNotifier {
 
   static final sinceYouWatchedNumRows = EnumPreference(
     key: 'pref_since_you_watched_num_rows',
-    defaultValue: SinceYouWatchedNumRows.one,
+    defaultValue: SinceYouWatchedNumRows.three,
     values: SinceYouWatchedNumRows.values,
   );
 
@@ -1100,12 +1100,12 @@ class UserPreferences extends ChangeNotifier {
 
   static final moreWithActor3Enabled = Preference(
     key: 'more_with_actor_3_enabled',
-    defaultValue: false,
+    defaultValue: true,
   );
 
   static final moreWithActorNumRows = EnumPreference(
     key: 'pref_more_with_actor_num_rows',
-    defaultValue: MoreWithActorNumRows.two,
+    defaultValue: MoreWithActorNumRows.three,
     values: MoreWithActorNumRows.values,
   );
 
