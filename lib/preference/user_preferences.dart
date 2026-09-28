@@ -2770,10 +2770,10 @@ class UserPreferences extends ChangeNotifier {
   );
 
   /// Deepens chrome toward pure black and enriches artwork, on top of the
-  /// selected theme. Off by default so no existing install changes look.
+  /// selected theme. Defaults to Vivid.
   static final oledMode = EnumPreference(
     key: 'pref_oled_mode',
-    defaultValue: OledMode.off,
+    defaultValue: OledMode.vivid,
     values: OledMode.values,
   );
 

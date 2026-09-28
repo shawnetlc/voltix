@@ -753,10 +753,13 @@ class _LeftSidebarState extends State<LeftSidebar> {
 
   Widget _buildContent() {
     final l10n = AppLocalizations.of(context);
-    final showShuffle = _prefs.get(UserPreferences.showShuffleButton);
+    // Shuffle and Libraries are intentionally removed from the sidebar menu.
+    // Forced off here so neither the persisted preference nor a server-pushed
+    // override (PluginSyncService) can bring them back.
+    const showShuffle = false;
     final showGenres = _prefs.get(UserPreferences.showGenresButton);
     final showFavorites = _prefs.get(UserPreferences.showFavoritesButton);
-    final showLibraries = _prefs.get(UserPreferences.showLibrariesInToolbar);
+    const showLibraries = false;
     final showFolders = _prefs.get(UserPreferences.enableFolderView);
     final showSyncPlay =
         _prefs.get(UserPreferences.syncPlayEnabled) &&
