@@ -63,6 +63,7 @@ import '../../widgets/bounded_network_image.dart';
 import '../../widgets/fullscreen_backdrop_switcher.dart';
 import '../../navigation/route_lifecycle_observer.dart';
 import '../../util/home_row_title_localizer.dart';
+import '../taste_profile/taste_onboarding_launcher.dart';
 import 'home_view_model.dart';
 
 Color get _homeBackground => AppColorScheme.background;
@@ -151,6 +152,22 @@ class _HomeShellState extends State<_HomeShell>
     _userPrefs.addListener(_onPrefsChanged);
     _maybeRegisterThemeMusic();
     _viewModel.load(preserveExisting: _viewModel.rows.isNotEmpty);
+    _scheduleTasteProfilePrompt();
+  }
+
+  /// Asks a user with no completed taste profile to create one. Deferred a
+  /// moment so home has painted and focus has settled (TV), and skipped if the
+  /// user has already moved off the home screen.
+  void _scheduleTasteProfilePrompt() {
+    Future<void>.delayed(const Duration(seconds: 2), () async {
+      if (!mounted) return;
+      final path = appRouter.routerDelegate.currentConfiguration.uri.path;
+      if (path != Destinations.home) return;
+      final shown = await maybePromptMissingTasteProfile(context);
+      if (shown && mounted) {
+        _viewModel.refresh(preserveExisting: true);
+      }
+    });
   }
 
   @override

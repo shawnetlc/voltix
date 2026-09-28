@@ -4,10 +4,22 @@ import 'package:get_it/get_it.dart';
 import '../../../auth/store/voltix_session_store.dart';
 import '../../../data/models/voltix_profile.dart';
 import '../../../data/repositories/voltix_profile_repository.dart';
+import 'package:voltix_design/voltix_design.dart';
 import '../../navigation/destinations.dart';
+import '../../widgets/login_scaffold.dart';
+import '../../widgets/profile_avatar_view.dart';
+import '../../widgets/focus/request_initial_focus.dart';
+import '../../../util/focus/dpad_keys.dart';
 
 class ProfileSelectScreen extends StatefulWidget {
-  const ProfileSelectScreen({super.key});
+  final bool forceSelect;
+  final bool initialEditMode;
+
+  const ProfileSelectScreen({
+    super.key,
+    this.forceSelect = false,
+    this.initialEditMode = false,
+  });
 
   @override
   State<ProfileSelectScreen> createState() => _ProfileSelectScreenState();
@@ -16,33 +28,38 @@ class ProfileSelectScreen extends StatefulWidget {
 class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
   final _profileRepo = GetIt.instance<VoltixProfileRepository>();
   final _sessionStore = GetIt.instance<VoltixSessionStore>();
-
+  
   bool _isLoading = true;
-  bool _isEditMode = false;
+  late bool _isEditMode;
   List<VoltixProfile> _profiles = [];
   String? _error;
+  VoltixProfile? _selectedProfileTransition;
+  bool _showWelcome = false;
 
   @override
   void initState() {
     super.initState();
+    _isEditMode = widget.initialEditMode;
     _loadProfiles();
   }
 
   Future<void> _loadProfiles() async {
+    if (!_sessionStore.hasSession || _sessionStore.sessionToken == null) {
+      if (mounted) context.go(Destinations.home);
+      return;
+    }
     setState(() {
       _isLoading = true;
       _error = null;
     });
-
     try {
-      final profiles = await _profileRepo.listProfiles();
-      
-      // Auto-skip if exactly 1 profile
-      if (profiles.length == 1 && mounted) {
-        await _selectProfile(profiles.first);
+      final allProfiles = await _profileRepo.listProfiles();
+      final profiles = allProfiles.where((p) => !p.isOwner).toList();
+      if (profiles.isEmpty && mounted) {
+        setState(() => _isLoading = false);
+        context.push(Destinations.profileEdit, extra: {'isFirstProfile': true}).then((_) => _loadProfiles());
         return;
       }
-      
       setState(() {
         _profiles = profiles;
         _isLoading = false;
@@ -56,13 +73,24 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
   }
 
   Future<void> _selectProfile(VoltixProfile profile) async {
-    await _sessionStore.setActiveProfile(profile);
-    if (mounted) {
-      context.go(Destinations.home);
-    }
+    if (_selectedProfileTransition != null) return;
+    setState(() => _selectedProfileTransition = profile);
+    final saveFuture = _sessionStore.setActiveProfile(profile);
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (!mounted) return;
+    setState(() => _showWelcome = true);
+    await Future.delayed(const Duration(milliseconds: 1200));
+    await saveFuture;
+    if (mounted) context.go(Destinations.home);
   }
 
   Future<void> _deleteProfile(int id) async {
+    if (_profiles.length <= 1) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Cannot delete the only profile. At least one profile must exist.')),
+      );
+      return;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -82,164 +110,338 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
         ],
       ),
     );
-
     if (confirmed == true) {
       setState(() => _isLoading = true);
       try {
+        final wasActive = _sessionStore.activeProfileId == id;
         await _profileRepo.deleteProfile(id);
+        if (wasActive) {
+          await _sessionStore.clearActiveProfile();
+        }
         await _loadProfiles();
       } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to delete: $e')));
-        }
+        final errorMsg = e.toString().replaceAll('VoltixApiException:', '').replaceAll('Exception:', '').trim();
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(errorMsg.isNotEmpty ? errorMsg : 'Failed to delete profile')));
         setState(() => _isLoading = false);
       }
     }
   }
 
-  Widget _buildProfileCard(VoltixProfile profile) {
-    Color bgColor = const Color(0xFF3B82F6);
-    if (profile.avatarColor != null && profile.avatarColor!.isNotEmpty) {
-      final hex = profile.avatarColor!.replaceAll('#', 'FF');
-      bgColor = Color(int.parse(hex, radix: 16));
+  void _onProfileCardActivated(VoltixProfile profile) {
+    if (_isEditMode) {
+      context.push(Destinations.profileEdit, extra: {
+        'profile': profile,
+        'isFirstProfile': _profiles.length <= 1,
+      }).then((_) => _loadProfiles());
+    } else {
+      _selectProfile(profile);
     }
+  }
 
-    final hasEmoji = profile.avatarEmoji != null && profile.avatarEmoji!.isNotEmpty;
-    final hasAvatarUrl = profile.avatarUrl != null && profile.avatarUrl!.isNotEmpty;
+  void _onAddProfileActivated() {
+    context.push(Destinations.profileEdit).then((_) => _loadProfiles());
+  }
 
-    return GestureDetector(
-      onTap: () {
-        if (_isEditMode) {
-          context.push(Destinations.profileEdit, extra: profile).then((_) => _loadProfiles());
-        } else {
-          _selectProfile(profile);
+  void _toggleEditMode() {
+    setState(() => _isEditMode = !_isEditMode);
+  }
+
+  Color _parseColor(String? colorString) {
+    if (colorString == null || colorString.isEmpty) return const Color(0xFF3B82F6);
+    try {
+      if (colorString.startsWith('#')) {
+        return Color(int.parse(colorString.substring(1), radix: 16) + 0xFF000000);
+      }
+      return Color(int.parse(colorString));
+    } catch (_) {
+      return const Color(0xFF3B82F6);
+    }
+  }
+
+  Widget _buildProfileCard(VoltixProfile profile) {
+    return Focus(
+      onKeyEvent: (node, event) {
+        if (isActivateKey(event)) {
+          _onProfileCardActivated(profile);
+          return KeyEventResult.handled;
         }
+        return KeyEventResult.ignored;
       },
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Stack(
-            children: [
-              if (hasAvatarUrl)
-                Container(
-                  width: 100,
-                  height: 100,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(16),
-                    border: _isEditMode ? Border.all(color: Colors.white, width: 2) : Border.all(color: bgColor, width: 2),
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(_isEditMode ? 14 : 14),
-                    child: Image.network(
-                      profile.avatarUrl!,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, _, _) => Container(
-                        color: bgColor,
-                        alignment: Alignment.center,
-                        child: Text(
-                          profile.name.substring(0, 1).toUpperCase(),
-                          style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold, color: Colors.white),
+      child: Builder(
+        builder: (ctx) {
+          final isFocused = Focus.of(ctx).hasFocus;
+          return GestureDetector(
+            onTap: () => _onProfileCardActivated(profile),
+            child: AnimatedScale(
+              scale: isFocused ? 1.12 : 1.0,
+              duration: const Duration(milliseconds: 200),
+              child: Container(
+                width: 140,
+                padding: const EdgeInsets.all(8),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: isFocused ? AppColorScheme.accent : Colors.transparent,
+                              width: 3,
+                            ),
+                            boxShadow: isFocused
+                                ? [
+                                    BoxShadow(
+                                      color: AppColorScheme.accent.withValues(alpha: 0.5),
+                                      blurRadius: 16,
+                                      spreadRadius: 4,
+                                    )
+                                  ]
+                                : [],
+                          ),
+                          child: ProfileAvatarView(
+                            fallbackText: profile.name,
+                            avatarUrl: profile.avatarUrl,
+                            backgroundColor: _parseColor(profile.avatarColor),
+                            size: 100,
+                          ),
+                        ),
+                        if (_isEditMode)
+                          Positioned.fill(
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.5),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(Icons.edit, color: Colors.white, size: 32),
+                            ),
+                          ),
+                        if (_isEditMode && _profiles.length > 1)
+                          Positioned(
+                            bottom: -4,
+                            right: -4,
+                            child: Focus(
+                              onKeyEvent: (node, event) {
+                                if (isActivateKey(event)) {
+                                  _deleteProfile(profile.id);
+                                  return KeyEventResult.handled;
+                                }
+                                return KeyEventResult.ignored;
+                              },
+                              child: GestureDetector(
+                                onTap: () => _deleteProfile(profile.id),
+                                child: Container(
+                                  padding: const EdgeInsets.all(4),
+                                  decoration: const BoxDecoration(
+                                    color: Colors.red,
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Icon(Icons.delete, color: Colors.white, size: 18),
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      profile.name,
+                      style: TextStyle(
+                        color: isFocused ? backdropAccentText() : Colors.white,
+                        fontSize: 18,
+                        fontWeight: isFocused ? FontWeight.bold : FontWeight.normal,
+                      ),
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if (profile.isKids) ...[
+                      const SizedBox(height: 4),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: const Text(
+                          'KIDS',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
-                    ),
-                  ),
-                )
-              else
-                Container(
-                  width: 100,
-                  height: 100,
-                  decoration: BoxDecoration(
-                    color: bgColor,
-                    borderRadius: BorderRadius.circular(16),
-                    border: _isEditMode ? Border.all(color: Colors.white, width: 2) : null,
-                  ),
-                  alignment: Alignment.center,
-                  child: Text(
-                    hasEmoji ? profile.avatarEmoji! : profile.name.substring(0, 1).toUpperCase(),
-                    style: TextStyle(
-                      fontSize: hasEmoji ? 50 : 40,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
-              if (_isEditMode)
-                Positioned(
-                  top: 0,
-                  right: 0,
-                  child: Container(
-                    decoration: const BoxDecoration(
-                      color: Colors.black54,
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(Icons.edit, color: Colors.white, size: 24),
-                  ),
-                ),
-              if (_isEditMode && !profile.isOwner)
-                Positioned(
-                  bottom: 0,
-                  right: 0,
-                  child: GestureDetector(
-                    onTap: () => _deleteProfile(profile.id),
-                    child: Container(
-                      decoration: const BoxDecoration(
-                        color: Colors.red,
-                        shape: BoxShape.circle,
+                    ],
+                    if (_isEditMode) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        'Select to Edit',
+                        style: TextStyle(
+                          color: isFocused ? backdropAccentText() : Colors.white70,
+                          fontSize: 12,
+                        ),
                       ),
-                      child: const Icon(Icons.delete, color: Colors.white, size: 24),
-                    ),
-                  ),
+                    ]
+                  ],
                 ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Text(
-            profile.name,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 16,
-              fontWeight: FontWeight.w500,
+              ),
             ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          if (profile.isKids)
-            const Text(
-              'Kids',
-              style: TextStyle(color: Colors.white54, fontSize: 12),
-            ),
-        ],
+          );
+        },
       ),
     );
   }
 
   Widget _buildAddProfileCard() {
-    return GestureDetector(
-      onTap: () {
-        context.push(Destinations.profileEdit).then((_) => _loadProfiles());
+    return Focus(
+      onKeyEvent: (node, event) {
+        if (isActivateKey(event)) {
+          _onAddProfileActivated();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
       },
+      child: Builder(
+        builder: (ctx) {
+          final isFocused = Focus.of(ctx).hasFocus;
+          return GestureDetector(
+            onTap: _onAddProfileActivated,
+            child: AnimatedScale(
+              scale: isFocused ? 1.12 : 1.0,
+              duration: const Duration(milliseconds: 200),
+              child: Container(
+                width: 140,
+                padding: const EdgeInsets.all(8),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      width: 100,
+                      height: 100,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: isFocused ? Colors.white.withValues(alpha: 0.2) : Colors.white.withValues(alpha: 0.1),
+                        border: Border.all(
+                          color: isFocused ? AppColorScheme.accent : Colors.transparent,
+                          width: 3,
+                        ),
+                        boxShadow: isFocused
+                            ? [
+                                BoxShadow(
+                                  color: AppColorScheme.accent.withValues(alpha: 0.5),
+                                  blurRadius: 16,
+                                  spreadRadius: 4,
+                                )
+                              ]
+                            : [],
+                      ),
+                      child: Icon(
+                        Icons.add,
+                        size: 48,
+                        color: isFocused ? backdropAccentText() : Colors.white70,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Add Profile',
+                      style: TextStyle(
+                        color: isFocused ? backdropAccentText() : Colors.white70,
+                        fontSize: 18,
+                        fontWeight: isFocused ? FontWeight.bold : FontWeight.normal,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildManageProfilesButton() {
+    return Focus(
+      onKeyEvent: (node, event) {
+        if (isActivateKey(event)) {
+          _toggleEditMode();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: Builder(
+        builder: (ctx) {
+          final isFocused = Focus.of(ctx).hasFocus;
+          return GestureDetector(
+            onTap: _toggleEditMode,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 150),
+              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
+              decoration: BoxDecoration(
+                color: isFocused ? Colors.white.withValues(alpha: 0.1) : Colors.transparent,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: isFocused ? Colors.white : Colors.white24,
+                  width: isFocused ? 2 : 1,
+                ),
+                boxShadow: isFocused
+                    ? [BoxShadow(color: Colors.white.withValues(alpha: 0.15), blurRadius: 8, spreadRadius: 1)]
+                    : null,
+              ),
+              child: Text(
+                _isEditMode ? 'Done' : 'Manage Profiles',
+                style: TextStyle(
+                  color: isFocused ? Colors.white : Colors.white54,
+                  fontSize: 16,
+                  fontWeight: isFocused ? FontWeight.bold : FontWeight.w500,
+                  letterSpacing: 1.2,
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildWelcomeView(VoltixProfile profile) {
+    return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            width: 100,
-            height: 100,
-            decoration: BoxDecoration(
-              color: Colors.transparent,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: Colors.white54, width: 2),
-            ),
-            alignment: Alignment.center,
-            child: const Icon(Icons.add, color: Colors.white, size: 40),
+          ProfileAvatarView(
+            fallbackText: profile.name,
+            avatarUrl: profile.avatarUrl,
+            backgroundColor: _parseColor(profile.avatarColor),
+            size: 130,
+            showNeonBorder: true,
+            borderColor: AppColorScheme.accent,
           ),
-          const SizedBox(height: 12),
-          const Text(
-            'Add Profile',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 16,
-              fontWeight: FontWeight.w500,
+          const SizedBox(height: 32),
+          RichText(
+            text: TextSpan(
+              style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white),
+              children: [
+                const TextSpan(text: 'Welcome, '),
+                TextSpan(
+                  text: profile.name,
+                  style: TextStyle(color: backdropAccentText()),
+                ),
+              ],
             ),
+          ),
+          const SizedBox(height: 48),
+          CircularProgressIndicator(color: AppColorScheme.accent),
+          const SizedBox(height: 16),
+          const Text(
+            'Starting your session...',
+            style: TextStyle(color: Colors.white70, fontSize: 16),
           ),
         ],
       ),
@@ -249,77 +451,104 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
-      return const Scaffold(
-        backgroundColor: Color(0xFF0A0E17),
-        body: Center(child: CircularProgressIndicator()),
-      );
-    }
-
-    if (_error != null) {
       return Scaffold(
-        backgroundColor: const Color(0xFF0A0E17),
-        body: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(_error!, style: const TextStyle(color: Colors.red)),
-              const SizedBox(height: 16),
-              ElevatedButton(
-                onPressed: _loadProfiles,
-                child: const Text('Retry'),
-              ),
-            ],
+        backgroundColor: Colors.transparent,
+        body: WelcomeBackdrop(
+          child: Center(
+            child: CircularProgressIndicator(color: AppColorScheme.accent),
           ),
         ),
       );
     }
 
-    return Scaffold(
-      backgroundColor: const Color(0xFF0A0E17),
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
+    if (_error != null) {
+      return Scaffold(
+        backgroundColor: Colors.transparent,
+        body: LoginScaffold(
+          child: Center(
             child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  _isEditMode ? 'Manage Profiles' : 'Who\'s watching?',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 32,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 48),
-                Wrap(
-                  spacing: 24,
-                  runSpacing: 24,
-                  alignment: WrapAlignment.center,
-                  children: [
-                    ..._profiles.map(_buildProfileCard),
-                    if (_profiles.length < 3 && !_isEditMode) _buildAddProfileCard(),
-                  ],
-                ),
-                const SizedBox(height: 48),
-                TextButton(
-                  onPressed: () => setState(() => _isEditMode = !_isEditMode),
-                  style: TextButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                    side: const BorderSide(color: Colors.white54),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                  ),
-                  child: Text(
-                    _isEditMode ? 'Done' : 'Manage Profiles',
-                    style: const TextStyle(
-                      color: Colors.white54,
-                      fontSize: 16,
-                      letterSpacing: 1.2,
-                    ),
+                const Icon(Icons.error_outline, color: Colors.red, size: 64),
+                const SizedBox(height: 16),
+                Text(_error!, style: const TextStyle(color: Colors.white, fontSize: 18)),
+                const SizedBox(height: 24),
+                Focus(
+                  onKeyEvent: (node, event) {
+                    if (isActivateKey(event)) {
+                      _loadProfiles();
+                      return KeyEventResult.handled;
+                    }
+                    return KeyEventResult.ignored;
+                  },
+                  child: Builder(
+                    builder: (ctx) {
+                      final isFocused = Focus.of(ctx).hasFocus;
+                      return GestureDetector(
+                        onTap: _loadProfiles,
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 150),
+                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                          decoration: BoxDecoration(
+                            color: isFocused ? Colors.white.withValues(alpha: 0.1) : Colors.transparent,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: isFocused ? Colors.white : Colors.white54),
+                          ),
+                          child: const Text('Retry', style: TextStyle(color: Colors.white)),
+                        ),
+                      );
+                    },
                   ),
                 ),
               ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return RequestInitialFocus(
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: LoginScaffold(
+          child: SafeArea(
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 800),
+              child: _showWelcome && _selectedProfileTransition != null
+                  ? _buildWelcomeView(_selectedProfileTransition!)
+                  : AnimatedOpacity(
+                      opacity: _selectedProfileTransition != null ? 0.0 : 1.0,
+                      duration: const Duration(milliseconds: 400),
+                      child: Center(
+                        child: SingleChildScrollView(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                _isEditMode ? 'Manage Profiles' : "Who's watching?",
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 32,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 48),
+                              Wrap(
+                                spacing: 24,
+                                runSpacing: 24,
+                                alignment: WrapAlignment.center,
+                                children: [
+                                  for (final profile in _profiles) _buildProfileCard(profile),
+                                  if (_profiles.length < 3 && !_isEditMode) _buildAddProfileCard(),
+                                ],
+                              ),
+                              const SizedBox(height: 48),
+                              _buildManageProfilesButton(),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
             ),
           ),
         ),

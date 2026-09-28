@@ -6,6 +6,8 @@ import 'package:flutter/services.dart';
 import 'package:get_it/get_it.dart';
 import 'package:server_core/server_core.dart';
 import 'package:voltix_design/voltix_design.dart';
+import '../../../auth/store/voltix_session_store.dart';
+import '../../../preference/user_preferences.dart';
 import '../../../data/models/aggregated_item.dart';
 import '../../../data/models/taste_profile/taste_profile_models.dart';
 import '../../../data/repositories/taste_profile_repository.dart';
@@ -35,22 +37,42 @@ class TasteOnboardingWizard extends StatefulWidget {
     this.onSkip,
   });
 
+  /// Server-user/profile keys the wizard has been shown to during this app
+  /// run. Lets the home-screen prompt ask a user without a taste profile once
+  /// per launch, without re-asking straight after login/setup showed it.
+  static final Set<String> _shownThisSession = <String>{};
+
+  static String _sessionKey() {
+    final getIt = GetIt.instance;
+    final client =
+        getIt.isRegistered<MediaServerClient>() ? getIt<MediaServerClient>() : null;
+    final profileId = getIt.isRegistered<VoltixSessionStore>()
+        ? getIt<VoltixSessionStore>().activeProfileId
+        : null;
+    return '${client?.baseUrl ?? ''}|${client?.userId ?? ''}|${profileId ?? ''}';
+  }
+
+  /// Whether the wizard was already shown to the active user/profile during
+  /// this app run.
+  static bool wasShownThisSession() => _shownThisSession.contains(_sessionKey());
+
   static Future<void> showAsDialog(
     BuildContext context, {
     VoidCallback? onComplete,
     VoidCallback? onSkip,
   }) async {
+    _shownThisSession.add(_sessionKey());
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) => Dialog.fullscreen(
         child: TasteOnboardingWizard(
           onComplete: () {
-            Navigator.of(ctx).maybePop();
+            if (ctx.mounted) Navigator.of(ctx).pop();
             onComplete?.call();
           },
           onSkip: () {
-            Navigator.of(ctx).maybePop();
+            if (ctx.mounted) Navigator.of(ctx).pop();
             onSkip?.call();
           },
         ),
@@ -553,8 +575,15 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
       }
 
       final profile = draft.copyWith(enabledHomeRows: initialEnabledRows);
-      await _tasteRepo.saveProfile(profile);
+      final activeProfileId = GetIt.instance.isRegistered<VoltixSessionStore>()
+          ? GetIt.instance<VoltixSessionStore>().activeProfileId
+          : null;
+      await _tasteRepo.saveProfile(profile, profileId: activeProfileId);
       _tasteRepo.startSilentBackgroundPopulation();
+      if (GetIt.instance.isRegistered<UserPreferences>()) {
+        await GetIt.instance<UserPreferences>()
+            .set(UserPreferences.tasteOnboardingSeen, true);
+      }
     } catch (e) {
       debugPrint('[TasteOnboarding] Failed to save profile: $e');
       if (mounted) {
@@ -578,6 +607,10 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
   Future<void> _skip() async {
     HapticFeedback.lightImpact();
     await _tasteRepo.skipOnboarding();
+    if (GetIt.instance.isRegistered<UserPreferences>()) {
+      await GetIt.instance<UserPreferences>()
+          .set(UserPreferences.tasteOnboardingSeen, true);
+    }
     if (mounted) {
       if (widget.onSkip != null) {
         widget.onSkip!();

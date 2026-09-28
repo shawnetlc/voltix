@@ -1,3 +1,4 @@
+import '../../../auth/store/voltix_session_store.dart';
 import 'package:flutter/widgets.dart';
 import 'package:get_it/get_it.dart';
 import 'package:logger/logger.dart';
@@ -37,6 +38,12 @@ const _restoreTimeout = Duration(seconds: 6);
 ///
 /// Returns true if the wizard was displayed.
 Future<bool> maybeShowTasteOnboarding(BuildContext context) async {
+  if (GetIt.instance.isRegistered<VoltixSessionStore>() &&
+      GetIt.instance<VoltixSessionStore>().isKidsProfile) {
+    _logger.i('[TasteOnboarding] Kids profile active; skipping taste onboarding.');
+    return false;
+  }
+
   final userPrefs = GetIt.instance<UserPreferences>();
   var hasSeenWizard = userPrefs.get(UserPreferences.tasteOnboardingSeen);
   if (hasSeenWizard) return false;
@@ -68,8 +75,15 @@ Future<bool> maybeShowTasteOnboarding(BuildContext context) async {
   // install or a second device re-runs the wizard even though the answers are
   // already in the cloud, because nothing ever asked.
   try {
+    final activeProfileId = GetIt.instance.isRegistered<VoltixSessionStore>()
+        ? GetIt.instance<VoltixSessionStore>().activeProfileId
+        : null;
     final restored = await GetIt.instance<TasteProfileRepository>()
-        .loadProfile(userId: userId, serverId: client.baseUrl)
+        .loadProfile(
+          userId: userId,
+          serverId: client.baseUrl,
+          profileId: activeProfileId,
+        )
         .timeout(_restoreTimeout);
     if (restored.isCompleted) {
       await userPrefs.set(UserPreferences.tasteOnboardingSeen, true);
@@ -89,5 +103,68 @@ Future<bool> maybeShowTasteOnboarding(BuildContext context) async {
   // the single shot even when the wizard never managed to load, which is how a
   // taste profile could be lost for good after one bad launch.
   await userPrefs.set(UserPreferences.tasteOnboardingSeen, true);
+  return true;
+}
+
+/// Prompts the active user with the taste wizard when they have no completed
+/// taste profile. Called from the home screen on every platform (mobile, TV,
+/// desktop), so it covers the paths [maybeShowTasteOnboarding] never sees:
+/// auto-login straight to home, switching to a profile that was never set up,
+/// and users who skipped the wizard earlier ("remind me").
+///
+/// Unlike [maybeShowTasteOnboarding] this does not stop at the one-shot
+/// `tasteOnboardingSeen` flag, because that flag is app-wide and is spent the
+/// first time any profile sees the wizard. It asks at most once per app run
+/// per user/profile, so skipping never nags within a session.
+///
+/// Returns true if the wizard was displayed.
+Future<bool> maybePromptMissingTasteProfile(BuildContext context) async {
+  final getIt = GetIt.instance;
+  if (getIt.isRegistered<VoltixSessionStore>() &&
+      getIt<VoltixSessionStore>().isKidsProfile) {
+    return false;
+  }
+  if (!getIt.isRegistered<TasteProfileRepository>() ||
+      !getIt.isRegistered<MediaServerClient>()) {
+    return false;
+  }
+  if (TasteOnboardingWizard.wasShownThisSession()) return false;
+
+  final client = getIt<MediaServerClient>();
+  final userId = client.userId?.trim() ?? '';
+  if (userId.isEmpty) return false;
+
+  final repo = getIt<TasteProfileRepository>();
+  final current = repo.currentProfile;
+  if (current != null &&
+      current.userId == userId &&
+      current.isCompleted) {
+    return false;
+  }
+
+  try {
+    final activeProfileId = getIt.isRegistered<VoltixSessionStore>()
+        ? getIt<VoltixSessionStore>().activeProfileId
+        : null;
+    final restored = await repo
+        .loadProfile(
+          userId: userId,
+          serverId: client.baseUrl,
+          profileId: activeProfileId,
+        )
+        .timeout(_restoreTimeout);
+    if (restored.isCompleted) return false;
+  } catch (e) {
+    // Could not confirm either way (offline, slow server). Do not interrupt
+    // the user on a guess; the next launch will check again.
+    _logger.w('[TasteOnboarding] Missing-profile check failed: $e');
+    return false;
+  }
+
+  if (!context.mounted || TasteOnboardingWizard.wasShownThisSession()) {
+    return false;
+  }
+  _logger.i('[TasteOnboarding] No completed taste profile; prompting wizard.');
+  await TasteOnboardingWizard.showAsDialog(context);
   return true;
 }
