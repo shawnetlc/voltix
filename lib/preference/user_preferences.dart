@@ -961,6 +961,21 @@ class UserPreferences extends ChangeNotifier {
     defaultValue: true,
   );
 
+  static final backgroundParticlesEnabled = Preference(
+    key: 'pref_background_particles_enabled',
+    defaultValue: false,
+  );
+
+  static final backgroundParticlesNoticeShown = Preference(
+    key: 'pref_background_particles_notice_shown',
+    defaultValue: false,
+  );
+
+  static final backgroundParticlesManuallySet = Preference(
+    key: 'pref_background_particles_manually_set',
+    defaultValue: false,
+  );
+
   static final seriesThumbnailsEnabled = Preference(
     key: 'pref_enable_series_thumbnails',
     defaultValue: false,

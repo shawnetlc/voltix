@@ -80,12 +80,14 @@ class AzureTasteSyncService extends ChangeNotifier {
     required String serverId,
     required String userId,
     String? username,
+    int? profileId,
   }) {
     final user = _resolveUsername(username);
+    final profileSuffix = profileId != null ? '/profile-$profileId' : '';
     if (user != null && user.isNotEmpty) {
-      return 'profiles/$user/taste-profile.json';
+      return 'profiles/$user$profileSuffix/taste-profile.json';
     }
-    final profileKey = TasteServerContext.computeProfileKey(serverId, userId);
+    final profileKey = TasteServerContext.computeProfileKey(serverId, userId, profileId);
     return 'profiles/$_tenantId/$profileKey/taste-profile.json';
   }
 
@@ -103,6 +105,7 @@ class AzureTasteSyncService extends ChangeNotifier {
     required TasteProfile profile,
     String? username,
     String? authToken,
+    int? profileId,
   }) async {
     if (!profile.azureBackupEnabled) {
       debugPrint('[AzureTasteSyncService] Cloud backup is disabled by user');
@@ -114,11 +117,12 @@ class AzureTasteSyncService extends ChangeNotifier {
     notifyListeners();
 
     final profileKey =
-        TasteServerContext.computeProfileKey(profile.serverId, profile.userId);
+        TasteServerContext.computeProfileKey(profile.serverId, profile.userId, profileId);
     final blobPath = getBlobPath(
       serverId: profile.serverId,
       userId: profile.userId,
       username: username,
+      profileId: profileId,
     );
 
     int attempt = 0;
@@ -230,14 +234,16 @@ class AzureTasteSyncService extends ChangeNotifier {
     required String userId,
     String? username,
     String? authToken,
+    int? profileId,
   }) async {
     final userBlobPath = getBlobPath(
       serverId: serverId,
       userId: userId,
       username: username,
+      profileId: profileId,
     );
     final legacyBlobPath = getLegacyBlobPath(serverId: serverId, userId: userId);
-    final profileKey = TasteServerContext.computeProfileKey(serverId, userId);
+    final profileKey = TasteServerContext.computeProfileKey(serverId, userId, profileId);
 
     try {
       if (_storageClient.isConfigured) {
@@ -283,14 +289,16 @@ class AzureTasteSyncService extends ChangeNotifier {
     required String userId,
     String? username,
     String? authToken,
+    int? profileId,
   }) async {
     final userBlobPath = getBlobPath(
       serverId: serverId,
       userId: userId,
       username: username,
+      profileId: profileId,
     );
     final legacyBlobPath = getLegacyBlobPath(serverId: serverId, userId: userId);
-    final profileKey = TasteServerContext.computeProfileKey(serverId, userId);
+    final profileKey = TasteServerContext.computeProfileKey(serverId, userId, profileId);
 
     try {
       if (_storageClient.isConfigured) {

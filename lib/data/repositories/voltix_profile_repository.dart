@@ -63,6 +63,11 @@ class VoltixProfileRepository {
   }
 
   Future<void> deleteProfile(int id) async {
+    final profiles = await listProfiles();
+    final nonOwner = profiles.where((p) => !p.isOwner).toList();
+    if (nonOwner.length <= 1) {
+      throw Exception('Cannot delete the only profile. At least one profile must exist.');
+    }
     await _apiService.deleteProfile(
       sessionToken: _sessionToken,
       id: id,

@@ -404,8 +404,8 @@ class TasteServerContext extends ChangeNotifier {
     notifyListeners();
   }
 
-  static String computeProfileKey(String serverId, String userId) {
-    final raw = '$serverId:$userId';
+  static String computeProfileKey(String serverId, String userId, [int? profileId]) {
+    final raw = profileId != null ? '$serverId:$userId:$profileId' : '$serverId:$userId';
     final bytes = utf8.encode(raw);
     return sha256.convert(bytes).toString();
   }

@@ -151,6 +151,7 @@ class TasteProfileRepository extends ChangeNotifier {
     required String userId,
     required String serverId,
     bool forceReanalyze = false,
+    int? profileId,
   }) async {
     // 1. Verify primary server connection
     _serverContext.setAuthenticatedSession(
@@ -164,6 +165,7 @@ class TasteProfileRepository extends ChangeNotifier {
     final local = await _localStore.loadProfile(
       serverId: serverId,
       userId: userId,
+      profileId: profileId,
     );
 
     if (local != null && !forceReanalyze) {
@@ -172,7 +174,7 @@ class TasteProfileRepository extends ChangeNotifier {
 
       // Silent background sync check if enabled
       if (local.azureBackupEnabled) {
-        _azureSync.uploadProfileSilently(profile: local);
+        _azureSync.uploadProfileSilently(profile: local, profileId: profileId);
       }
       return _currentProfile!;
     }
@@ -187,7 +189,7 @@ class TasteProfileRepository extends ChangeNotifier {
       if (custom.containsKey('profile_json')) {
         final map = jsonDecode(custom['profile_json']!) as Map<String, dynamic>;
         _currentProfile = TasteProfile.fromJson(map);
-        await _localStore.saveProfileAtomic(_currentProfile!);
+        await _localStore.saveProfileAtomic(_currentProfile!, profileId: profileId);
         notifyListeners();
         return _currentProfile!;
       }
@@ -198,11 +200,11 @@ class TasteProfileRepository extends ChangeNotifier {
     // 4. Fallback check: Azure Cloud Storage backup (for fresh installs / new devices)
     try {
       final remote = await _azureSync
-          .fetchRemoteBackup(serverId: serverId, userId: userId)
+          .fetchRemoteBackup(serverId: serverId, userId: userId, profileId: profileId)
           .timeout(const Duration(seconds: 4));
       if (remote != null) {
         _currentProfile = remote;
-        await _localStore.saveProfileAtomic(remote);
+        await _localStore.saveProfileAtomic(remote, profileId: profileId);
         notifyListeners();
         return _currentProfile!;
       }
@@ -226,7 +228,7 @@ class TasteProfileRepository extends ChangeNotifier {
       lastUpdated: now,
     );
 
-    await _localStore.saveProfileAtomic(_currentProfile!);
+    await _localStore.saveProfileAtomic(_currentProfile!, profileId: profileId);
     notifyListeners();
 
     // 5. Ingest watch history in the background (or synchronously if forceReanalyze is requested)
@@ -252,7 +254,7 @@ class TasteProfileRepository extends ChangeNotifier {
   }
 
   /// Saves the profile locally (atomic) and queues silent cloud backup.
-  Future<void> saveProfile(TasteProfile profile) async {
+  Future<void> saveProfile(TasteProfile profile, {int? profileId}) async {
     final now = DateTime.now().toUtc();
     _currentProfile = profile.copyWith(
       profileRevision: const Uuid().v4(),
@@ -262,18 +264,18 @@ class TasteProfileRepository extends ChangeNotifier {
       syncStatus: SyncStatus.pendingUpload,
     );
 
-    await _localStore.saveProfileAtomic(_currentProfile!);
+    await _localStore.saveProfileAtomic(_currentProfile!, profileId: profileId);
     await _syncRoamingPreferences(_currentProfile!);
 
     // Silent background Azure sync
     if (_currentProfile!.azureBackupEnabled) {
-      unawaited(_azureSync.uploadProfileSilently(profile: _currentProfile!).then((ok) async {
+      unawaited(_azureSync.uploadProfileSilently(profile: _currentProfile!, profileId: profileId).then((ok) async {
         if (ok && _currentProfile != null) {
           _currentProfile = _currentProfile!.copyWith(
             syncStatus: SyncStatus.synced,
             lastSyncedAtUtc: DateTime.now().toUtc(),
           );
-          await _localStore.saveProfileAtomic(_currentProfile!);
+          await _localStore.saveProfileAtomic(_currentProfile!, profileId: profileId);
           notifyListeners();
         }
       }));
@@ -527,7 +529,7 @@ class TasteProfileRepository extends ChangeNotifier {
   }
 
   /// Loads cached movies from independent local store.
-  Future<List<AggregatedItem>> loadCachedMovies() async {
+  Future<List<AggregatedItem>> loadCachedMovies({int? profileId}) async {
     final serverId =
         _currentProfile?.serverId ?? _serverContext.primaryServerId ?? '';
     final userId =
@@ -536,11 +538,12 @@ class TasteProfileRepository extends ChangeNotifier {
     return _localStore.loadCachedMovies(
       serverId: serverId,
       userId: userId,
+      profileId: profileId,
     );
   }
 
   /// Loads cached series from independent local store.
-  Future<List<AggregatedItem>> loadCachedSeries() async {
+  Future<List<AggregatedItem>> loadCachedSeries({int? profileId}) async {
     final serverId =
         _currentProfile?.serverId ?? _serverContext.primaryServerId ?? '';
     final userId =
@@ -549,6 +552,7 @@ class TasteProfileRepository extends ChangeNotifier {
     return _localStore.loadCachedSeries(
       serverId: serverId,
       userId: userId,
+      profileId: profileId,
     );
   }
 

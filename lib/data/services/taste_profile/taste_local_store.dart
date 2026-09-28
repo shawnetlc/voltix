@@ -18,23 +18,23 @@ class TasteLocalStore {
 
   TasteLocalStore(this._prefs);
 
-  String _buildKey(String serverId, String userId) {
-    final hash = TasteServerContext.computeProfileKey(serverId, userId);
+  String _buildKey(String serverId, String userId, [int? profileId]) {
+    final hash = TasteServerContext.computeProfileKey(serverId, userId, profileId);
     return 'voltix_profile_$hash';
   }
 
-  String _buildMoviesKey(String serverId, String userId) {
-    final hash = TasteServerContext.computeProfileKey(serverId, userId);
+  String _buildMoviesKey(String serverId, String userId, [int? profileId]) {
+    final hash = TasteServerContext.computeProfileKey(serverId, userId, profileId);
     return 'voltix_movies_$hash';
   }
 
-  String _buildSeriesKey(String serverId, String userId) {
-    final hash = TasteServerContext.computeProfileKey(serverId, userId);
+  String _buildSeriesKey(String serverId, String userId, [int? profileId]) {
+    final hash = TasteServerContext.computeProfileKey(serverId, userId, profileId);
     return 'voltix_series_$hash';
   }
 
-  String _buildSyncKey(String serverId, String userId) {
-    final hash = TasteServerContext.computeProfileKey(serverId, userId);
+  String _buildSyncKey(String serverId, String userId, [int? profileId]) {
+    final hash = TasteServerContext.computeProfileKey(serverId, userId, profileId);
     return 'voltix_sync_$hash';
   }
 
@@ -42,8 +42,9 @@ class TasteLocalStore {
   Future<TasteProfile?> loadProfile({
     required String serverId,
     required String userId,
+    int? profileId,
   }) async {
-    final key = _buildKey(serverId, userId);
+    final key = _buildKey(serverId, userId, profileId);
     try {
       final raw = _prefs.getString(key);
       if (raw == null || raw.isEmpty) {
@@ -67,8 +68,8 @@ class TasteLocalStore {
   }
 
   /// Saves the profile locally using two-phase atomic validation.
-  Future<bool> saveProfileAtomic(TasteProfile profile) async {
-    final key = _buildKey(profile.serverId, profile.userId);
+  Future<bool> saveProfileAtomic(TasteProfile profile, {int? profileId}) async {
+    final key = _buildKey(profile.serverId, profile.userId, profileId);
     final tmpKey = '${key}_tmp';
 
     try {
@@ -111,8 +112,9 @@ class TasteLocalStore {
     required String serverId,
     required String userId,
     required List<AggregatedItem> movies,
+    int? profileId,
   }) async {
-    final key = _buildMoviesKey(serverId, userId);
+    final key = _buildMoviesKey(serverId, userId, profileId);
     _inMemoryMovieCache[key] = List.from(movies);
     try {
       final listJson = movies.map((m) => m.rawData).toList();
@@ -125,8 +127,9 @@ class TasteLocalStore {
   Future<List<AggregatedItem>> loadCachedMovies({
     required String serverId,
     required String userId,
+    int? profileId,
   }) async {
-    final key = _buildMoviesKey(serverId, userId);
+    final key = _buildMoviesKey(serverId, userId, profileId);
     if (_inMemoryMovieCache.containsKey(key)) {
       return _inMemoryMovieCache[key]!;
     }
@@ -156,8 +159,9 @@ class TasteLocalStore {
     required String serverId,
     required String userId,
     required List<AggregatedItem> series,
+    int? profileId,
   }) async {
-    final key = _buildSeriesKey(serverId, userId);
+    final key = _buildSeriesKey(serverId, userId, profileId);
     _inMemorySeriesCache[key] = List.from(series);
     try {
       final listJson = series.map((s) => s.rawData).toList();
@@ -170,8 +174,9 @@ class TasteLocalStore {
   Future<List<AggregatedItem>> loadCachedSeries({
     required String serverId,
     required String userId,
+    int? profileId,
   }) async {
-    final key = _buildSeriesKey(serverId, userId);
+    final key = _buildSeriesKey(serverId, userId, profileId);
     if (_inMemorySeriesCache.containsKey(key)) {
       return _inMemorySeriesCache[key]!;
     }
@@ -205,8 +210,9 @@ class TasteLocalStore {
     required String serverId,
     required String userId,
     required SyncProgressState state,
+    int? profileId,
   }) async {
-    final key = _buildSyncKey(serverId, userId);
+    final key = _buildSyncKey(serverId, userId, profileId);
     _inMemorySyncState[key] = state;
     try {
       await _prefs.setString(key, jsonEncode(state.toJson()));
@@ -218,8 +224,9 @@ class TasteLocalStore {
   Future<SyncProgressState?> loadSyncProgress({
     required String serverId,
     required String userId,
+    int? profileId,
   }) async {
-    final key = _buildSyncKey(serverId, userId);
+    final key = _buildSyncKey(serverId, userId, profileId);
     if (_inMemorySyncState.containsKey(key)) {
       return _inMemorySyncState[key];
     }
@@ -241,13 +248,14 @@ class TasteLocalStore {
   Future<void> deleteProfile({
     required String serverId,
     required String userId,
+    int? profileId,
   }) async {
-    final key = _buildKey(serverId, userId);
+    final key = _buildKey(serverId, userId, profileId);
     await _prefs.remove(key);
     await _prefs.remove('${key}_tmp');
-    await _prefs.remove(_buildMoviesKey(serverId, userId));
-    await _prefs.remove(_buildSeriesKey(serverId, userId));
-    await _prefs.remove(_buildSyncKey(serverId, userId));
+    await _prefs.remove(_buildMoviesKey(serverId, userId, profileId));
+    await _prefs.remove(_buildSeriesKey(serverId, userId, profileId));
+    await _prefs.remove(_buildSyncKey(serverId, userId, profileId));
     _inMemoryFallback = null;
     _inMemoryMovieCache.clear();
     _inMemorySeriesCache.clear();
