@@ -175,6 +175,19 @@ class _GeneralStyleScreenState extends State<_GeneralStyleScreen> {
                     },
                     onChanged: _pushPersonalizationSync,
                   ),
+                  EnumPreferenceTile<AppBackgroundStyle>(
+                    preference: UserPreferences.appBackgroundStyle,
+                    // Not yet in app_en.arb -- see note above.
+                    title: 'Background Images',
+                    description:
+                        'Choose the home and login background artwork',
+                    icon: Icons.wallpaper,
+                    labelOf: (v) => switch (v) {
+                      AppBackgroundStyle.classic => 'Default',
+                      AppBackgroundStyle.alternate => 'Alternate',
+                    },
+                    onChanged: _pushPersonalizationSync,
+                  ),
                   SliderPreferenceTile(
                     preference: UserPreferences.browsingBackgroundBlurAmount,
                     title: l10n.browsingBackgroundBlur,

@@ -2320,6 +2320,16 @@ Widget detailStylePreview({required bool modern}) => _liveOrFallback(
   fallback: _fallbackDetail(modern: modern),
 );
 
+/// Preview for the background-artwork step: shows the actual background image
+/// asset at the platform design aspect ratio so each option looks like what
+/// the home/login screens will use.
+Widget backgroundPreview(String asset) {
+  return AspectRatio(
+    aspectRatio: _designSize().aspectRatio,
+    child: Image.asset(asset, fit: BoxFit.cover),
+  );
+}
+
 Widget _detailActionTile(
   IconData icon,
   String label, {

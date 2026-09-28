@@ -88,6 +88,7 @@ final List<SyncedField> syncedFields = <SyncedField>[
   SyncedField('visualTheme', UserPreferences.visualTheme, SyncCodec.enumName, enumValues: prefs.VisualThemeId.values),
   SyncedField('customThemeId', UserPreferences.customThemeId, SyncCodec.text),
   SyncedField('oledMode', UserPreferences.oledMode, SyncCodec.enumName, enumValues: prefs.OledMode.values),
+  SyncedField('appBackgroundStyle', UserPreferences.appBackgroundStyle, SyncCodec.enumName, enumValues: prefs.AppBackgroundStyle.values),
   SyncedField('navbarPosition', UserPreferences.navbarPosition, SyncCodec.enumName, enumValues: NavigationLayout.availableNavbarPositions),
   SyncedField('focusColor', UserPreferences.focusColor, SyncCodec.enumName, enumValues: prefs.AppTheme.values),
   SyncedField('watchedIndicator', UserPreferences.watchedIndicatorBehavior, SyncCodec.enumName, enumValues: prefs.WatchedIndicatorBehavior.values),

@@ -2777,6 +2777,15 @@ class UserPreferences extends ChangeNotifier {
     values: OledMode.values,
   );
 
+  /// Which background image set the app uses for the home splash and login
+  /// screen (see [AppBackgroundStyle]). Defaults to the classic artwork so
+  /// existing installs are unchanged.
+  static final appBackgroundStyle = EnumPreference(
+    key: 'pref_app_background_style',
+    defaultValue: AppBackgroundStyle.classic,
+    values: AppBackgroundStyle.values,
+  );
+
   // --- Library and navigation UI ---
   static final showAlphabeticalFilters = Preference(
     key: 'pref_show_alphabetical_filters',

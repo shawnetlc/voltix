@@ -726,6 +726,26 @@ enum GlassSettledQuality { unset, minimal, standard, premium }
 /// saturation/contrast. `off` leaves every theme exactly as authored.
 enum OledMode { off, subtle, vivid }
 
+/// Which background image set the app uses for the home splash and the login
+/// screen. [classic] keeps the original artwork (home_bg / login_bg);
+/// [alternate] uses the newer variants (home_bg_1 / login_bg_1). Selectable
+/// under Personalization -> General Style.
+enum AppBackgroundStyle { classic, alternate }
+
+extension AppBackgroundStyleAssets on AppBackgroundStyle {
+  /// Asset path for the home screen splash background.
+  String get homeBackgroundAsset => switch (this) {
+        AppBackgroundStyle.classic => 'assets/images/home_bg.jpg',
+        AppBackgroundStyle.alternate => 'assets/images/home_bg_1.jpg',
+      };
+
+  /// Asset path for the login / welcome background.
+  String get loginBackgroundAsset => switch (this) {
+        AppBackgroundStyle.classic => 'assets/images/login_bg.png',
+        AppBackgroundStyle.alternate => 'assets/images/login_bg_1.jpg',
+      };
+}
+
 /// Selectable structural style for the media detail screen.
 ///
 /// [moonfin] is the original centered-stack layout (default). [modern] is the

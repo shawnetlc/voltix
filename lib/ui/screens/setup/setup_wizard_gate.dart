@@ -14,7 +14,7 @@ import '../../../preference/user_preferences.dart';
 /// [cloudSync] is never returned by [remainingSteps]: whether it applies
 /// depends on a network probe, and the router calls into this class on every
 /// navigation. The wizard appends it itself once the probe comes back.
-enum SetupStep { navbar, mediaBar, homeRows, detailStyle, tour, cloudSync, taste }
+enum SetupStep { navbar, mediaBar, homeRows, detailStyle, background, tour, cloudSync, taste }
 
 /// Decides whether the wizard runs, and for which steps.
 ///
@@ -103,6 +103,7 @@ class SetupWizardGate {
       SetupStep.mediaBar,
       SetupStep.homeRows,
       SetupStep.detailStyle,
+      SetupStep.background,
       SetupStep.tour,
     ];
   }

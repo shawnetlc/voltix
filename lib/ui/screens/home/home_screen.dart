@@ -357,6 +357,9 @@ class _HomeShellState extends State<_HomeShell>
   @override
   Widget build(BuildContext context) {
     final backdropEnabled = _userPrefs.get(UserPreferences.backdropEnabled);
+    final homeBackgroundAsset = _userPrefs
+        .get(UserPreferences.appBackgroundStyle)
+        .homeBackgroundAsset;
     final blurAmount = _userPrefs
         .get(UserPreferences.browsingBackgroundBlurAmount)
         .toDouble();
@@ -382,7 +385,7 @@ class _HomeShellState extends State<_HomeShell>
             fit: StackFit.expand,
             children: [
               _Backdrop(
-                url: (backdropEnabled ? _backdropUrl : null) ?? 'assets/images/home_bg.jpg',
+                url: (backdropEnabled ? _backdropUrl : null) ?? homeBackgroundAsset,
                 blurAmount: (backdropEnabled && _backdropUrl != null) ? blurAmount : 0.0,
                 useMakdBackdropFx: useMakdBackdropFx,
               ),

@@ -73,6 +73,7 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
   String? _mediaBar;
   HomeRowsStyle? _homeRows;
   DetailScreenStyle? _detailStyle;
+  AppBackgroundStyle? _background;
 
   MediaServerClient? get _client {
     try {
@@ -265,6 +266,10 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
       final detailStyle = _detailStyle;
       if (detailStyle != null) {
         await _prefs.set(UserPreferences.detailScreenStyle, detailStyle);
+      }
+      final background = _background;
+      if (background != null) {
+        await _prefs.set(UserPreferences.appBackgroundStyle, background);
       }
     });
 
@@ -525,6 +530,8 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
     SetupStep.mediaBar => l10n.setupMediaBarQuestion,
     SetupStep.homeRows => l10n.setupHomeRowsQuestion,
     SetupStep.detailStyle => l10n.setupDetailQuestion,
+    // Not yet in app_en.arb -- ported as a literal (see notes elsewhere).
+    SetupStep.background => 'Which background artwork do you prefer?',
     SetupStep.tour => l10n.setupTourQuestion,
     SetupStep.cloudSync => 'We found saved settings in your Voltix cloud.',
     SetupStep.taste => 'Want recommendations picked for your taste?',
@@ -539,6 +546,7 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
     SetupStep.mediaBar => _buildMediaBarStep(l10n),
     SetupStep.homeRows => _buildHomeRowsStep(l10n),
     SetupStep.detailStyle => _buildDetailStyleStep(l10n),
+    SetupStep.background => _buildBackgroundStep(l10n),
     SetupStep.tour => _SetupTourStep(
       prefs: _prefs,
       focusNode: _stepDefaultFocusNode,
@@ -677,6 +685,51 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
           preview: SetupPreview(child: detailStylePreview(modern: true)),
           onPressed: () =>
               setState(() => _detailStyle = DetailScreenStyle.modern),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildBackgroundStep(AppLocalizations l10n) {
+    final selected =
+        _background ?? _prefs.get(UserPreferences.appBackgroundStyle);
+    return _OptionLayout(
+      columns: 2,
+      children: [
+        _OptionCard(
+          order: 0,
+          // Not yet in app_en.arb -- ported as literals (see notes elsewhere).
+          label: 'Default',
+          hint: 'The original Voltix artwork',
+          selected: selected == AppBackgroundStyle.classic,
+          autofocus: selected == AppBackgroundStyle.classic,
+          focusNode: selected == AppBackgroundStyle.classic
+              ? _stepDefaultFocusNode
+              : null,
+          preview: SetupPreview(
+            child: backgroundPreview(
+              AppBackgroundStyle.classic.homeBackgroundAsset,
+            ),
+          ),
+          onPressed: () =>
+              setState(() => _background = AppBackgroundStyle.classic),
+        ),
+        _OptionCard(
+          order: 1,
+          label: 'Alternate',
+          hint: 'The newer background artwork',
+          selected: selected == AppBackgroundStyle.alternate,
+          autofocus: selected == AppBackgroundStyle.alternate,
+          focusNode: selected == AppBackgroundStyle.alternate
+              ? _stepDefaultFocusNode
+              : null,
+          preview: SetupPreview(
+            child: backgroundPreview(
+              AppBackgroundStyle.alternate.homeBackgroundAsset,
+            ),
+          ),
+          onPressed: () =>
+              setState(() => _background = AppBackgroundStyle.alternate),
         ),
       ],
     );
