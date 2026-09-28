@@ -1176,6 +1176,75 @@ class MultiServerRepository {
     );
   }
 
+  /// Aggregates library titles for a genre identified by NAME across every
+  /// logged-in server. Mirrors [_getAggregatedSortedItemsRow] but adds a genre
+  /// name filter; used by the taste-profile genre rows.
+  Future<HomeRow> getAggregatedGenreByName({
+    required String id,
+    required String title,
+    required String genreName,
+    required HomeRowType rowType,
+    List<String>? includeItemTypes,
+    int limit = _defaultLimit,
+    String sortBy = _defaultSortBy,
+    String sortOrder = _defaultSortOrder,
+  }) async {
+    final sessions = await getLoggedInServers();
+    final perServer = (limit * 3).clamp(1, 100);
+
+    final results = await Future.wait(
+      sessions.map(
+        (session) async {
+          try {
+            return await _withTimeout(() async {
+              final response = await session.client.itemsApi.getItems(
+                genres: [genreName],
+                includeItemTypes: includeItemTypes,
+                excludeItemTypes: const ['Episode'],
+                sortBy: sortBy,
+                sortOrder: sortOrder,
+                recursive: true,
+                limit: perServer,
+                fields: _fields,
+                enableImageTypes: _imageTypes,
+                imageTypeLimit: _imageTypeLimit,
+              );
+              final items = _parseItems(response, session.server.id);
+              _rowTotals['${id}_${session.server.id}'] =
+                  response['TotalRecordCount'] as int? ?? items.length;
+              return items;
+            }, label: 'genre "$genreName" from ${session.server.name}');
+          } catch (e) {
+            _logger.w(
+              'MultiServer: genre "$genreName" failed for '
+              '${session.server.name}: $e',
+            );
+            return const <AggregatedItem>[];
+          }
+        },
+      ),
+    );
+
+    final all = _sortAggregatedItems(
+      results.expand((e) => e).toList(growable: false),
+      sortBy: sortBy,
+      sortOrder: sortOrder,
+    );
+
+    final takenItems = all.take(limit).toList();
+    final totalCount = sessions.fold<int>(0, (sum, session) {
+      return sum + (_rowTotals['${id}_${session.server.id}'] ?? 0);
+    });
+
+    return HomeRow(
+      id: id,
+      title: title,
+      items: takenItems,
+      rowType: rowType,
+      totalCount: totalCount,
+    );
+  }
+
   Future<HomeRow> getAggregatedLibraryTiles({
     HomeRowType rowType = HomeRowType.libraryTiles,
   }) async {

@@ -627,6 +627,39 @@ class RowDataSource {
     );
   }
 
+  /// Loads a row of library titles that belong to a genre identified by its
+  /// NAME (as the server labels it) rather than a genre item id. Used by the
+  /// taste-profile genre rows, whose genre comes from the taste profile and is
+  /// matched against the server's own genre names.
+  Future<HomeRow> loadGenreByNameRow(
+    String serverId, {
+    required String genreName,
+    required String title,
+    required String rowId,
+    required HomeRowType rowType,
+    String sortBy = _defaultSortBy,
+    String sortOrder = _defaultSortOrder,
+    List<String>? includeItemTypes,
+    int limit = _defaultLimit,
+  }) async {
+    final response = await _getItemsWithFallback(
+      genres: [genreName],
+      sortBy: sortBy,
+      sortOrder: sortOrder,
+      recursive: true,
+      limit: limit,
+      includeItemTypes: includeItemTypes,
+      excludeItemTypes: const ['Episode'],
+    );
+    return _buildRow(
+      id: rowId,
+      title: title,
+      response: response,
+      serverId: serverId,
+      rowType: rowType,
+    );
+  }
+
   Future<HomeRow> _loadSortedItemsRow({
     required String serverId,
     required String id,
@@ -1280,6 +1313,8 @@ class RowDataSource {
       case HomeRowType.iptvContinueSeries:
       case HomeRowType.iptvContinueMovies:
       case HomeRowType.personalization:
+      case HomeRowType.genreFanFavorite:
+      case HomeRowType.genreMoreTitles:
         // Not server-paged: these rows carry their full contents already.
         // A taste row is scored client-side from a fixed candidate pool, so
         // there is no next page to ask the server for.

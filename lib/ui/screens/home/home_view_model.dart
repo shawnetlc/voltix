@@ -75,7 +75,9 @@ class HomeViewModel extends ChangeNotifier {
     final multiServer = _prefs.get(UserPreferences.enableMultiServerLibraries);
     final merge = _prefs.get(UserPreferences.mergeContinueWatchingNextUp);
     final blocked = _prefs.get(UserPreferences.blockedParentalRatings);
-    return '$_serverId|$userId|$sections|$multiServer|$merge|$blocked';
+    final isKids = GetIt.instance.isRegistered<VoltixSessionStore>() &&
+        GetIt.instance<VoltixSessionStore>().isKidsProfile;
+    return '$_serverId|$userId|$sections|$multiServer|$merge|$blocked|kids:$isKids';
   }
 
   static bool _isFavoriteSectionType(HomeSectionType type) {
@@ -109,6 +111,17 @@ class HomeViewModel extends ChangeNotifier {
       HomeSectionType.audioArtists ||
       HomeSectionType.audioAlbums ||
       HomeSectionType.audioPlaylists => true,
+      _ => false,
+    };
+  }
+
+  static bool _isAudioFavoriteSectionType(HomeSectionType type) {
+    return switch (type) {
+      HomeSectionType.favoriteArtists ||
+      HomeSectionType.favoriteMusicVideos ||
+      HomeSectionType.favoriteAlbums ||
+      HomeSectionType.favoriteSongs ||
+      HomeSectionType.resumeAudio => true,
       _ => false,
     };
   }
@@ -439,14 +452,24 @@ class HomeViewModel extends ChangeNotifier {
       final moreWithActorNum =
           _prefs.get(UserPreferences.moreWithActorNumRows).value;
 
+      final isKids = GetIt.instance.isRegistered<VoltixSessionStore>() &&
+          GetIt.instance<VoltixSessionStore>().isKidsProfile;
       final jellyfinEnabled = _prefs.get(UserPreferences.voltixJellyfinEnabled);
-      final liveTvEnabled = _prefs.get(UserPreferences.voltixLiveTvEnabled);
+      final liveTvEnabled = !isKids && _prefs.get(UserPreferences.voltixLiveTvEnabled);
       // Plugin-dynamic sections only make sense on the active server.
       final visibleConfigsRaw = configs
           .where(
             (c) =>
                 (c.isBuiltin ||
                     (c.serverId != null && c.serverId == _serverId)) &&
+                (!isKids || (
+                    c.type != HomeSectionType.personalization &&
+                    !_isAudioSectionType(c.type) &&
+                    !_isAudioFavoriteSectionType(c.type) &&
+                    c.type != HomeSectionType.playlists &&
+                    c.type != HomeSectionType.radarrCalendar &&
+                    c.type != HomeSectionType.sonarrCalendar
+                )) &&
                 (showFavoritesRows || !_isFavoriteSectionType(c.type)) &&
                 (showCollectionsRows ||
                     !((c.isBuiltin && _isCollectionsSectionType(c.type)) ||
@@ -882,6 +905,10 @@ class HomeViewModel extends ChangeNotifier {
         return row.rowType == HomeRowType.iptvFavoriteMovies;
       case HomeSectionType.iptvFavoriteSeries:
         return row.rowType == HomeRowType.iptvFavoriteSeries;
+      case HomeSectionType.genreFanFavorite:
+        return row.rowType == HomeRowType.genreFanFavorite;
+      case HomeSectionType.genreMoreTitles:
+        return row.rowType == HomeRowType.genreMoreTitles;
       case HomeSectionType.iptvContinueSeries:
         return row.rowType == HomeRowType.iptvContinueSeries;
       case HomeSectionType.iptvContinueMovies:
@@ -1192,6 +1219,10 @@ class HomeViewModel extends ChangeNotifier {
         return const {'iptvFavoriteMovies'};
       case HomeSectionType.iptvFavoriteSeries:
         return const {'iptvFavoriteSeries'};
+      case HomeSectionType.genreFanFavorite:
+        return const {'genreFanFavorite'};
+      case HomeSectionType.genreMoreTitles:
+        return const {'genreMoreTitles'};
       case HomeSectionType.iptvContinueSeries:
         return const {'iptvContinueSeries'};
       case HomeSectionType.iptvContinueMovies:
@@ -1203,6 +1234,134 @@ class HomeViewModel extends ChangeNotifier {
   }
 
 
+  /// Genre labels the user rated positively in the taste profile, strongest
+  /// first. Returns the server's own display label for each genre (so it can be
+  /// used both in the row heading and as the genre-name filter against the
+  /// library), resolved from the discovered server genres where possible.
+  List<String> _tasteTopGenreLabels() {
+    if (!GetIt.instance.isRegistered<TasteProfileRepository>()) {
+      return const [];
+    }
+    final repo = GetIt.instance<TasteProfileRepository>();
+    final profile = repo.currentProfile;
+    if (profile == null || profile.status != TasteProfileStatus.completed) {
+      return const [];
+    }
+
+    int weight(TasteRating r) => switch (r) {
+          TasteRating.love => 3,
+          TasteRating.like => 2,
+          TasteRating.neutral => 0,
+          TasteRating.dislike => -1,
+          TasteRating.unseen => 0,
+        };
+
+    final rated = profile.explicit.genreRatings.entries
+        .where((e) => weight(e.value) > 0)
+        .toList()
+      ..sort((a, b) => weight(b.value).compareTo(weight(a.value)));
+    if (rated.isEmpty) return const [];
+
+    // key -> label from the discovered server genres, so the heading and the
+    // library filter use the genre's real display name.
+    final labelByKey = <String, String>{};
+    for (final g in repo.syncManager.cachedServerGenres) {
+      if (g.key.isNotEmpty && g.label.isNotEmpty) {
+        labelByKey[g.key] = g.label;
+      }
+    }
+
+    String labelFor(String key) {
+      final mapped = labelByKey[key];
+      if (mapped != null && mapped.isNotEmpty) return mapped;
+      // Fallback: title-case the stored key.
+      return key
+          .split(RegExp(r'[\s_]+'))
+          .where((w) => w.isNotEmpty)
+          .map((w) => w[0].toUpperCase() + w.substring(1))
+          .join(' ');
+    }
+
+    final seen = <String>{};
+    final labels = <String>[];
+    for (final e in rated) {
+      final label = labelFor(e.key);
+      if (label.isNotEmpty && seen.add(label.toLowerCase())) {
+        labels.add(label);
+      }
+    }
+    return labels;
+  }
+
+  /// The genre a taste genre row is built from. [second] picks the user's
+  /// second-strongest genre (falling back to the first) so the two rows can
+  /// surface different genres when the user rated more than one.
+  String? _genreLabelForSection(HomeSectionType section) {
+    final genres = _tasteTopGenreLabels();
+    if (genres.isEmpty) return null;
+    if (section == HomeSectionType.genreMoreTitles) {
+      return genres.length > 1 ? genres[1] : genres[0];
+    }
+    return genres[0];
+  }
+
+  String _genreRowTitle(HomeSectionType section, String genre) =>
+      section == HomeSectionType.genreMoreTitles
+          ? 'More titles from $genre'
+          : 'A fan favorite of $genre';
+
+  String _genreRowId(HomeSectionType section) =>
+      section == HomeSectionType.genreMoreTitles
+          ? 'genreMoreTitles'
+          : 'genreFanFavorite';
+
+  /// Builds one taste-profile genre row: library titles for the chosen genre.
+  /// "A fan favorite of X" is ordered by community rating; "More titles from X"
+  /// is randomised so it surfaces a different slice of the same or a second
+  /// genre. Returns an empty list (row omitted) when there is no taste genre.
+  Future<List<HomeRow>> _loadGenreTasteRows(HomeSectionType section) async {
+    if (GetIt.instance.isRegistered<VoltixSessionStore>() &&
+        GetIt.instance<VoltixSessionStore>().isKidsProfile) {
+      return const [];
+    }
+    final genre = _genreLabelForSection(section);
+    if (genre == null) return const [];
+
+    final rowId = _genreRowId(section);
+    final title = _genreRowTitle(section, genre);
+    final isMoreTitles = section == HomeSectionType.genreMoreTitles;
+    final sortBy = isMoreTitles ? 'Random' : 'CommunityRating';
+    final sortOrder = isMoreTitles ? 'Ascending' : 'Descending';
+
+    try {
+      final row = _multiServerEnabled
+          ? await _multiServerRepo.getAggregatedGenreByName(
+              id: rowId,
+              title: title,
+              genreName: genre,
+              rowType: section == HomeSectionType.genreMoreTitles
+                  ? HomeRowType.genreMoreTitles
+                  : HomeRowType.genreFanFavorite,
+              sortBy: sortBy,
+              sortOrder: sortOrder,
+            )
+          : await _dataSource.loadGenreByNameRow(
+              _serverId,
+              genreName: genre,
+              title: title,
+              rowId: rowId,
+              rowType: section == HomeSectionType.genreMoreTitles
+                  ? HomeRowType.genreMoreTitles
+                  : HomeRowType.genreFanFavorite,
+              sortBy: sortBy,
+              sortOrder: sortOrder,
+            );
+      return [row];
+    } catch (_) {
+      return const [];
+    }
+  }
+
   /// The taste profile block: up to six personalization rows, strongest
   /// first.
   ///
@@ -1210,6 +1369,11 @@ class HomeViewModel extends ChangeNotifier {
   /// the wizard should see the home screen they had before, not a gap where
   /// personalized rows would go.
   Future<List<HomeRow>> _loadPersonalizationRows() async {
+    if (GetIt.instance.isRegistered<VoltixSessionStore>() &&
+        GetIt.instance<VoltixSessionStore>().isKidsProfile) {
+      return const [];
+    }
+
     if (!GetIt.instance.isRegistered<TasteProfileRepository>() ||
         !GetIt.instance.isRegistered<TasteRowBuilder>()) {
       return const [];
@@ -1538,6 +1702,9 @@ class HomeViewModel extends ChangeNotifier {
         return [await _loadIptvHomeRow(HomeRowType.iptvFavoriteMovies)];
       case HomeSectionType.iptvFavoriteSeries:
         return [await _loadIptvHomeRow(HomeRowType.iptvFavoriteSeries)];
+      case HomeSectionType.genreFanFavorite:
+      case HomeSectionType.genreMoreTitles:
+        return _loadGenreTasteRows(section);
       case HomeSectionType.iptvContinueSeries:
         return [
           await _loadIptvContinueRow(HomeRowType.iptvContinueSeries),
@@ -2088,6 +2255,20 @@ class HomeViewModel extends ChangeNotifier {
         return HomeRow(
           id: 'iptvFavoriteSeries', title: 'IPTV - Series Favorites',
           rowType: HomeRowType.iptvFavoriteSeries, isLoading: true,
+        );
+      case HomeSectionType.genreFanFavorite:
+      case HomeSectionType.genreMoreTitles:
+        // No placeholder unless a taste genre is available -- the row is
+        // otherwise omitted entirely (empty rows are filtered out on load).
+        final genre = _genreLabelForSection(section);
+        if (genre == null) return null;
+        return HomeRow(
+          id: _genreRowId(section),
+          title: _genreRowTitle(section, genre),
+          rowType: section == HomeSectionType.genreMoreTitles
+              ? HomeRowType.genreMoreTitles
+              : HomeRowType.genreFanFavorite,
+          isLoading: true,
         );
       case HomeSectionType.iptvContinueSeries:
         return HomeRow(

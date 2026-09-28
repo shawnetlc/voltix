@@ -178,12 +178,13 @@ class TasteSyncManager extends ChangeNotifier {
     final completed = Set<SyncStep>.from(_progressState.completedSteps);
 
     try {
-      // All four are independent: three are separate server queries and the
-      // fourth analyses watch history, which needs none of the other three.
-      // They used to run strictly one after another with an artificial pause
-      // between each, which is most of why this screen felt slow. Whichever
-      // are still outstanding now go out together, and each reports as it
-      // lands so the bar still moves in steps.
+      // The four work steps are independent, but the onboarding checklist lists
+      // them in a fixed order (Movies, Series, Genres, Viewing History) and the
+      // sync is expected to run through them strictly top-to-bottom so each row
+      // ticks over in that order rather than completing whenever its network
+      // call happens to return. They are therefore awaited one after another in
+      // the same order as _workSteps / the checklist. Each step reports as it
+      // lands so the bar still moves in discrete steps.
       final outstanding =
           _workSteps.where((s) => !completed.contains(s)).toList();
 
@@ -196,38 +197,40 @@ class TasteSyncManager extends ChangeNotifier {
           completed: completed,
         );
 
-        await Future.wait([
-          if (outstanding.contains(SyncStep.movies))
-            _stepMovies(
-              serverId: serverId,
-              userId: userId,
-              languageSettings: languageSettings,
-              token: token,
-              completed: completed,
-            ),
-          if (outstanding.contains(SyncStep.series))
-            _stepSeries(
-              serverId: serverId,
-              userId: userId,
-              languageSettings: languageSettings,
-              token: token,
-              completed: completed,
-            ),
-          if (outstanding.contains(SyncStep.genres))
-            _stepGenres(
-              serverId: serverId,
-              userId: userId,
-              token: token,
-              completed: completed,
-            ),
-          if (outstanding.contains(SyncStep.viewingLab))
-            _stepViewingLab(
-              serverId: serverId,
-              userId: userId,
-              token: token,
-              completed: completed,
-            ),
-        ]);
+        if (!token.isCancelled && outstanding.contains(SyncStep.movies)) {
+          await _stepMovies(
+            serverId: serverId,
+            userId: userId,
+            languageSettings: languageSettings,
+            token: token,
+            completed: completed,
+          );
+        }
+        if (!token.isCancelled && outstanding.contains(SyncStep.series)) {
+          await _stepSeries(
+            serverId: serverId,
+            userId: userId,
+            languageSettings: languageSettings,
+            token: token,
+            completed: completed,
+          );
+        }
+        if (!token.isCancelled && outstanding.contains(SyncStep.genres)) {
+          await _stepGenres(
+            serverId: serverId,
+            userId: userId,
+            token: token,
+            completed: completed,
+          );
+        }
+        if (!token.isCancelled && outstanding.contains(SyncStep.viewingLab)) {
+          await _stepViewingLab(
+            serverId: serverId,
+            userId: userId,
+            token: token,
+            completed: completed,
+          );
+        }
       }
 
       if (token.isCancelled) return;

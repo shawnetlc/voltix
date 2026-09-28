@@ -378,8 +378,10 @@ class HomeSectionConfig {
       order: 35,
     ),
     HomeSectionConfig(
+      // Replaced by the taste-profile genre rows (genreFanFavorite /
+      // genreMoreTitles). Off by default; users can still re-enable it.
       type: HomeSectionType.iptvFavoriteChannels,
-      enabled: true,
+      enabled: false,
       order: 5,
     ),
     HomeSectionConfig(
@@ -388,9 +390,24 @@ class HomeSectionConfig {
       order: 37,
     ),
     HomeSectionConfig(
+      // Replaced by the taste-profile genre rows (genreFanFavorite /
+      // genreMoreTitles). Off by default; users can still re-enable it.
       type: HomeSectionType.iptvFavoriteSeries,
-      enabled: true,
+      enabled: false,
       order: 38,
+    ),
+    // New taste-profile genre rows that take the place of the two IPTV
+    // favorites rows above. They only render once the user has a completed
+    // taste profile with at least one positively-rated genre.
+    HomeSectionConfig(
+      type: HomeSectionType.genreFanFavorite,
+      enabled: true,
+      order: 5,
+    ),
+    HomeSectionConfig(
+      type: HomeSectionType.genreMoreTitles,
+      enabled: true,
+      order: 6,
     ),
     HomeSectionConfig(
       type: HomeSectionType.iptvContinueSeries,

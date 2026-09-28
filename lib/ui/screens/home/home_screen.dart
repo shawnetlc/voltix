@@ -4588,6 +4588,8 @@ class _ContentRowsState extends State<_ContentRows>
       HomeRowType.iptvFavoriteSeries => HomeSectionType.iptvFavoriteSeries,
       HomeRowType.iptvContinueSeries => HomeSectionType.iptvContinueSeries,
       HomeRowType.iptvContinueMovies => HomeSectionType.iptvContinueMovies,
+      HomeRowType.genreFanFavorite => HomeSectionType.genreFanFavorite,
+      HomeRowType.genreMoreTitles => HomeSectionType.genreMoreTitles,
       // Hiding any taste row hides the block: they are one section, and the
       // per-row switches live in the taste profile settings instead.
       HomeRowType.personalization => HomeSectionType.personalization,

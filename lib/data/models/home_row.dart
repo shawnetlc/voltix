@@ -28,6 +28,12 @@ enum HomeRowType {
   recentlyReleased,
   studios,
 
+  /// Taste-profile genre rows: "A fan favorite of [Genre]" and
+  /// "More titles from [Genre]". Titles are derived from the taste profile;
+  /// items are library titles filtered by that genre.
+  genreFanFavorite,
+  genreMoreTitles,
+
   /// Taste profile personalization rows (Recommended for You, Hidden Gems,
   /// Genre Deep Cuts and the rest). One row type covers all of them: they are
   /// distinguished by row id and title, and they render identically.

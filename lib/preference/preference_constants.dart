@@ -280,6 +280,11 @@ enum HomeSectionType {
   iptvFavoriteSeries('iptvfavoriteseries'),
   iptvContinueSeries('iptvcontinueseries'),
   iptvContinueMovies('iptvcontinuemovies'),
+  // Taste-profile genre rows that replace the old default IPTV favorites
+  // rows. Their titles are filled in at build time from the user's taste
+  // profile genres (see home_view_model).
+  genreFanFavorite('genrefanfavorite'),
+  genreMoreTitles('genremoretitles'),
   sinceYouWatched1('sinceyouwatched1'),
   sinceYouWatched2('sinceyouwatched2'),
   sinceYouWatched3('sinceyouwatched3'),

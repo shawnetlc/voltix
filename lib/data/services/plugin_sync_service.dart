@@ -1372,9 +1372,11 @@ class PluginSyncService extends ChangeNotifier {
       prefs.HomeSectionType.nextUp,
       prefs.HomeSectionType.latestMedia,
       prefs.HomeSectionType.iptvRecentChannels,
-      prefs.HomeSectionType.iptvFavoriteChannels,
+      // The two IPTV favorites rows were replaced by the taste-profile genre
+      // rows; keep the fallback layout consistent with the shipped defaults.
+      prefs.HomeSectionType.genreFanFavorite,
+      prefs.HomeSectionType.genreMoreTitles,
       prefs.HomeSectionType.iptvFavoriteMovies,
-      prefs.HomeSectionType.iptvFavoriteSeries,
       prefs.HomeSectionType.iptvContinueSeries,
       prefs.HomeSectionType.iptvContinueMovies,
     ];

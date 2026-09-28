@@ -127,6 +127,8 @@ class _HomeRowsImageTypeScreenState extends State<HomeRowsImageTypeScreen> {
     HomeSectionType.iptvFavoriteSeries => 'IPTV - Series Favorites',
     HomeSectionType.iptvContinueSeries => 'IPTV Continue Watching - Series',
     HomeSectionType.iptvContinueMovies => 'IPTV Continue Watching - Movies',
+    HomeSectionType.genreFanFavorite => 'A Fan Favorite Of [Genre]',
+    HomeSectionType.genreMoreTitles => 'More Titles From [Genre]',
     HomeSectionType.none => l10n.none,
   };
 
