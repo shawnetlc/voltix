@@ -236,7 +236,13 @@ class SessionRepository {
     try {
       final serverUser = await client.usersApi.getCurrentUser();
       final nameLower = (serverUser.name ?? user.name).toLowerCase();
+      // With direct streaming the server user is the shared Lumistream login,
+      // whose name says nothing about Voltix admin rights - so also honour the
+      // Voltix account's own admin flag.
+      final isVoltixAdmin = GetIt.instance.isRegistered<VoltixSessionStore>() &&
+          GetIt.instance<VoltixSessionStore>().isAdmin;
       final isAdmin = (serverUser.policy?.isAdministrator ?? false) ||
+          isVoltixAdmin ||
           nameLower == 'voltixadmin' ||
           nameLower == 'admin' ||
           nameLower.contains('admin');

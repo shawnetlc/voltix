@@ -324,6 +324,49 @@ class VoltixApiService {
     }
   }
 
+  // ─────────────────── getDirectCredentials ───────────────────
+
+  /// Lumistream addresses and assigned logins for direct streaming, so the app
+  /// can log in to Lumistream itself (traffic then comes from the viewer's own
+  /// IP). Returns an empty list when the backend has direct streaming switched
+  /// off or the user has nothing assigned. Never throws.
+  Future<List<DirectServerCredentials>> getDirectCredentials(
+    String sessionToken,
+  ) async {
+    final url = '$baseUrl/api/trpc/voltix.getDirectCredentials';
+    try {
+      final response = await _dio.get(url,
+          queryParameters: {
+            'input': jsonEncode({
+              'json': {'sessionToken': sessionToken},
+            }),
+          },
+          options: Options(headers: {
+            'Authorization': 'Bearer $sessionToken',
+          }));
+      final data = response.data;
+      final result =
+          (data is Map && data.containsKey('result')) ? data['result'] : data;
+      final resultData = (result is Map && result.containsKey('data'))
+          ? result['data']
+          : result;
+      final json = (resultData is Map && resultData.containsKey('json'))
+          ? resultData['json']
+          : resultData;
+      if (json is! Map || json['enabled'] != true) return const [];
+      final servers = json['servers'];
+      if (servers is! List) return const [];
+      return servers
+          .whereType<Map>()
+          .map((m) => DirectServerCredentials.tryParse(m))
+          .whereType<DirectServerCredentials>()
+          .toList();
+    } catch (e) {
+      _logger.w('[VoltixApi] getDirectCredentials failed (using proxy): $e');
+      return const [];
+    }
+  }
+
   // ─────────────────────── connectServer ───────────────────────
 
   /// Switches the active Lumistream server for an existing session.
@@ -480,7 +523,7 @@ class VoltixApiService {
     try {
       final response = await _dio.post(url, data: {
         'json': {
-          'id': id,
+          'profileId': id,
           'name': name,
           'avatarColor': avatarColor,
           'avatarEmoji': avatarEmoji,
@@ -512,7 +555,7 @@ class VoltixApiService {
     try {
       await _dio.post(url, data: {
         'json': {
-          'id': id,
+          'profileId': id,
         }
       }, options: Options(headers: {
         'Authorization': 'Bearer $sessionToken',
@@ -532,7 +575,7 @@ class VoltixApiService {
     try {
       await _dio.post(url, data: {
         'json': {
-          'id': id,
+          'profileId': id,
         }
       }, options: Options(headers: {
         'Authorization': 'Bearer $sessionToken',
@@ -985,5 +1028,41 @@ class VoltixServer {
     if (proxyUrl.startsWith('http')) return proxyUrl;
     final base = baseUrl.replaceAll(RegExp(r'/+$'), '');
     return '$base$proxyUrl';
+  }
+}
+
+/// One Lumistream server the app may log in to directly.
+class DirectServerCredentials {
+  /// The Voltix server id (matches [VoltixServer.id]).
+  final int voltixServerId;
+  final String displayName;
+  final String url;
+  final String username;
+  final String password;
+
+  const DirectServerCredentials({
+    required this.voltixServerId,
+    required this.displayName,
+    required this.url,
+    required this.username,
+    required this.password,
+  });
+
+  static DirectServerCredentials? tryParse(Map m) {
+    final id = m['id'];
+    final url = m['url'];
+    final username = m['username'];
+    final password = m['password'];
+    if (id is! num || url is! String || url.isEmpty) return null;
+    if (username is! String || username.isEmpty || password is! String) {
+      return null;
+    }
+    return DirectServerCredentials(
+      voltixServerId: id.toInt(),
+      displayName: (m['displayName'] as String?) ?? (m['name'] as String?) ?? url,
+      url: url,
+      username: username,
+      password: password,
+    );
   }
 }

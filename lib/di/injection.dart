@@ -12,6 +12,7 @@ import '../auth/store/voltix_session_store.dart';
 import '../data/database/database_connection.dart';
 import '../data/database/offline_database.dart';
 import '../data/repositories/offline_repository.dart';
+import '../data/repositories/voltix_profile_repository.dart';
 import '../data/offline/offline_catalog.dart';
 import '../data/services/connectivity_service.dart';
 import '../data/services/device_id_service.dart';
@@ -172,13 +173,13 @@ Future<String> _resolveAppVersion() async {
 }
 
 Future<void> _migrateLegacyBitrateCap(PreferenceStore store) async {
-  const migrationKey = 'pref_max_bitrate_migrated_v3';
+  const migrationKey = 'pref_max_bitrate_migrated_v4';
   if (store.getBool(migrationKey) == true) {
     return;
   }
 
   final current = store.getString(UserPreferences.maxBitrate.key) ?? '';
-  if (current == '100') {
+  if (current == '100' || current == '10' || current.isEmpty) {
     await store.setString(
       UserPreferences.maxBitrate.key,
       UserPreferences.maxBitrate.defaultValue,
@@ -191,6 +192,14 @@ Future<void> _migrateLegacyBitrateCap(PreferenceStore store) async {
         '${parsed ~/ 1000000}',
       );
     }
+  }
+
+  final currentRes = store.getString(UserPreferences.maxVideoResolution.key);
+  if (currentRes == null || currentRes == 'res720p' || currentRes.isEmpty) {
+    await store.setString(
+      UserPreferences.maxVideoResolution.key,
+      MaxVideoResolution.res1080p.name,
+    );
   }
 
   await store.setBool(migrationKey, true);
@@ -467,6 +476,12 @@ Future<void> configureDependencies() async {
   getIt.registerSingleton<VoltixSessionStore>(voltixSessionStore);
   getIt.registerSingleton<DeviceIdService>(DeviceIdService());
   getIt.registerSingleton<VoltixSessionService>(VoltixSessionService());
+  getIt.registerLazySingleton<VoltixProfileRepository>(
+    () => VoltixProfileRepository(
+      getIt<VoltixApiService>(),
+      getIt<VoltixSessionStore>(),
+    ),
+  );
 
   registerServerModule();
   registerAuthModule();
@@ -537,9 +552,30 @@ void _installServerAuthRecovery() {
     }
     if (client == null) return null;
 
+    // Direct streaming: a Lumistream server reached without the proxy doesn't
+    // accept the Voltix JWT, so ask the backend for the current assigned login
+    // and sign in with that instead.
+    var loginName = username;
+    var loginSecret = jwt;
+    if (!normalized.contains('/api/jellyfin/') &&
+        getIt.isRegistered<VoltixApiService>()) {
+      final creds = await getIt<VoltixApiService>().getDirectCredentials(jwt);
+      DirectServerCredentials? match;
+      for (final c in creds) {
+        if (c.url.trim().toLowerCase().replaceAll(RegExp(r'/+$'), '') ==
+            normalized) {
+          match = c;
+          break;
+        }
+      }
+      if (match == null) return null;
+      loginName = match.username;
+      loginSecret = match.password;
+    }
+
     try {
       final result = await client.authApi
-          .authenticateByName(username, jwt)
+          .authenticateByName(loginName, loginSecret)
           .timeout(const Duration(seconds: 15));
       final token = result['AccessToken'] as String?;
       if (token == null || token.isEmpty) return null;

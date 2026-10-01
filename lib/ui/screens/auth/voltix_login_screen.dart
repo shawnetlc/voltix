@@ -20,6 +20,7 @@ import '../../../data/services/device_id_service.dart';
 import '../../../data/services/media_server_client_factory.dart';
 import '../../../data/services/user_settings_sync_service.dart';
 import '../../../data/services/voltix_api_service.dart';
+import '../../../data/services/voltix_direct_streaming.dart';
 import '../../../data/services/voltix_session_service.dart';
 import '../../../preference/user_preferences.dart';
 import '../../../util/platform_detection.dart';
@@ -811,9 +812,30 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
     final preferredActive =
         preferPrimaryServer(result.servers, fallback: result.activeServer) ??
             result.activeServer;
+
+    // Direct streaming: log in to Lumistream itself with the assigned login,
+    // so traffic comes from this device's IP. Servers that can't be reached
+    // directly (or when the backend has it switched off) use the proxy below.
+    final direct = await VoltixDirectStreaming.connect(
+      api: voltixApi,
+      sessionToken: result.sessionToken,
+      voltixServers: result.servers,
+      serverRepo: serverRepo,
+      authStore: authStore,
+      clientFactory: clientFactory,
+      voltixUsername: result.user.username,
+      isVoltixAdmin: result.user.isAdmin,
+    );
+
     Server? server;
     final addedServersMap = <int, Server>{};
     final addFutures = result.servers.map((vServer) async {
+      final directConnection = direct[vServer.id];
+      if (directConnection != null) {
+        addedServersMap[vServer.id] = directConnection.server;
+        if (vServer.id == preferredActive.id) server = directConnection.server;
+        return;
+      }
       try {
         final serverUrl = vServer.absoluteProxyUrl(voltixApi.baseUrl);
         // Bounded per server, exactly as the startup screen's restore branch
@@ -869,12 +891,15 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
     try {
       Map<String, dynamic> authResult;
       try {
-        authResult = await client.authApi
-            .authenticateByName(
-              result.user.username,
-              authPassword,
-            )
-            .timeout(const Duration(seconds: 10));
+        final directActive = direct[preferredActive.id];
+        authResult = directActive != null
+            ? directActive.toAuthResult()
+            : await client.authApi
+                .authenticateByName(
+                  result.user.username,
+                  authPassword,
+                )
+                .timeout(const Duration(seconds: 10));
       } catch (e) {
         // If authenticateByName failed (e.g. authPassword is a JWT session token from link code pairing),
         // validate authPassword directly as a proxy access token via getCurrentUser()!
@@ -951,6 +976,8 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
         await Future.wait(
           otherServers.map((vServer) async {
             try {
+              // Already signed in directly (user stored by VoltixDirectStreaming).
+              if (direct.containsKey(vServer.id)) return;
               final addedServer = addedServersMap[vServer.id];
               if (addedServer == null) {
                 logger.w('[VoltixLogin] Server ${vServer.name} not found in addedServersMap, skipping');

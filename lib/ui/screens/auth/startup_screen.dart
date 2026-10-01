@@ -18,6 +18,7 @@ import '../../../auth/store/voltix_session_store.dart';
 import '../../../data/services/media_server_client_factory.dart';
 import '../../../data/services/user_settings_sync_service.dart';
 import '../../../data/services/voltix_api_service.dart';
+import '../../../data/services/voltix_direct_streaming.dart';
 import '../../../data/services/voltix_session_service.dart';
 import '../../../l10n/app_localizations.dart';
 import '../../../util/pin_code_util.dart';
@@ -161,7 +162,17 @@ class _StartupScreenState extends State<StartupScreen>
       if (!mounted) return;
     }
 
-    if (restored && session.activeUserId != null) {
+    // A linked device still connected through the Voltix proxy goes through
+    // the Voltix restore below instead, which signs in to Lumistream directly
+    // when the backend allows it - so existing installs move to direct
+    // streaming without signing out and back in. If direct isn't available it
+    // re-authenticates through the proxy exactly as before.
+    final activeAddress = serverRepo.getServer(session.activeServerId ?? '')?.address ?? '';
+    final onVoltixProxy = restored &&
+        voltixStore.hasSession &&
+        activeAddress.contains('/api/jellyfin/');
+
+    if (restored && session.activeUserId != null && !onVoltixProxy) {
       final store = GetIt.instance<PreferenceStore>();
       final pinUtil = PinCodeUtil(store, session.activeUserId!);
 
@@ -210,9 +221,29 @@ class _StartupScreenState extends State<StartupScreen>
             return;
           }
 
+          // Direct streaming: sign in to Lumistream itself (from this device's
+          // IP). Servers that can't be reached directly use the proxy below.
+          final direct = sessionResult.jellyfinReady
+              ? await VoltixDirectStreaming.connect(
+                  api: voltixApi,
+                  sessionToken: voltixStore.sessionToken!,
+                  voltixServers: sessionResult.servers,
+                  serverRepo: serverRepo,
+                  authStore: authStore,
+                  clientFactory: clientFactory,
+                  voltixUsername: sessionResult.user.username,
+                  isVoltixAdmin: sessionResult.user.isAdmin,
+                )
+              : const <int, DirectConnection>{};
+
           // Add any missing assigned servers in parallel
           final addedServersMap = <int, dynamic>{};
           final addFutures = sessionResult.servers.map((vServer) async {
+            final directConnection = direct[vServer.id];
+            if (directConnection != null) {
+              addedServersMap[vServer.id] = directConnection.server;
+              return;
+            }
             try {
               final serverUrl = vServer.absoluteProxyUrl(voltixApi.baseUrl);
               final exists = serverRepo.servers.any((s) => s.address == serverUrl);
@@ -276,12 +307,15 @@ class _StartupScreenState extends State<StartupScreen>
 
                   Map<String, dynamic> authResult;
                   try {
-                    authResult = await client.authApi
-                        .authenticateByName(
-                          sessionResult.user.username,
-                          voltixStore.sessionToken!,
-                        )
-                        .timeout(const Duration(seconds: 10));
+                    final directActive = direct[activeServerData.id];
+                    authResult = directActive != null
+                        ? directActive.toAuthResult()
+                        : await client.authApi
+                            .authenticateByName(
+                              sessionResult.user.username,
+                              voltixStore.sessionToken!,
+                            )
+                            .timeout(const Duration(seconds: 10));
                   } catch (_) {
                     client.accessToken = voltixStore.sessionToken!;
                     final serverUser = await client.usersApi
@@ -349,6 +383,7 @@ class _StartupScreenState extends State<StartupScreen>
                       if (otherServers.isNotEmpty) {
                         unawaited(Future.wait(otherServers.map((vServer) async {
                           try {
+                            if (direct.containsKey(vServer.id)) return;
                             final otherLocal = addedServersMap[vServer.id];
                             if (otherLocal == null) return;
                             final otherClient = clientFactory.getClient(
@@ -456,10 +491,15 @@ class _StartupScreenState extends State<StartupScreen>
               .checkAndPromptForRemoteSettings(context, resolvedUsername));
         }
         // Route through profile selection ("Who's watching?") instead of
-        // directly to home. The profile select screen handles:
+        // directly to home when a Voltix backend session exists. The profile
+        // select screen handles:
         //   - Auto-skip when only one profile exists
         //   - Restoring the last active profile on cold start
-        context.go(Destinations.profileSelect);
+        if (voltixStore.hasSession) {
+          context.go(Destinations.profileSelect);
+        } else {
+          context.go(Destinations.home);
+        }
       } else {
         context.go(route);
       }
