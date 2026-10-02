@@ -33,6 +33,9 @@ if (Test-Path $sasConfig) {
 }
 if (Get-Command Write-AzureSasStatus -ErrorAction SilentlyContinue) { Write-AzureSasStatus }
 
+$publishScript = Join-Path $PSScriptRoot 'publish-release.ps1'
+if (Test-Path $publishScript) { . $publishScript }
+
 $flutterBin = Resolve-FlutterBin
 # Resolved from this script's own location so the checkout can live anywhere.
 # Previously hardcoded to C:\VoltixNew-2.2.0-upgrade\merge, which broke as soon
@@ -44,9 +47,9 @@ $outputsRoots = @(
 )
 
 # -- Versions for this build ------------------------------------------------
-$sharedVersionName = "2.0.38"
-$mobileVersionCode = "40000372"
-$tvVersionCode     = "40000373"
+$sharedVersionName = "2.0.62"
+$mobileVersionCode = "40000420"
+$tvVersionCode     = "40000421"
 
 function Assert-VersionsMatchPubspec {
     $pubspec = Get-Content "$repoRoot\pubspec.yaml" -Raw
@@ -241,6 +244,12 @@ try {
         "$repoRoot\..\Voltix-Streaming-Mobile.apk"
     )) {
         Copy-Item $mobileApk $d -Force
+    }
+
+    if (Get-Command Publish-VoltixRelease -ErrorAction SilentlyContinue) {
+        Write-Host "5. Publishing to release storage..."
+        Publish-VoltixRelease -FilePath $mobileApk -Version $sharedVersionName | Out-Null
+        Publish-VoltixRelease -FilePath $tvApk -Version $sharedVersionName -Variant 'TV' | Out-Null
     }
 
     Write-Host "SUCCESS! APK files built and copied successfully." -ForegroundColor Green

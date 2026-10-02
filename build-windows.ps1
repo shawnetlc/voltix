@@ -18,9 +18,9 @@ $vcpkgTriplet = "$Architecture-windows"
 # Rewritten in place by Step-BuildNumbers below, and by deploy-app.ps1. Still
 # asserted against pubspec.yaml before building, so a hand-edit that desyncs
 # them fails loudly rather than stamping one version while checking another.
-$sharedVersionName = "2.0.38"
-$mobileVersionCode = "40000372"
-$tvVersionCode     = "40000373"
+$sharedVersionName = "2.0.62"
+$mobileVersionCode = "40000420"
+$tvVersionCode     = "40000421"
 
 function Read-Utf8([string] $Path) { Get-Content -LiteralPath $Path -Raw }
 
@@ -650,6 +650,16 @@ try {
   }
 
   Copy-Item -Path $outputExe -Destination $rootExe -Force
+
+  $publishScript = Join-Path $repoRoot 'publish-release.ps1'
+  $secretsScript = Join-Path $repoRoot 'build-secrets.ps1'
+  if (Test-Path $secretsScript) { . $secretsScript }
+  if (Test-Path $publishScript) {
+    . $publishScript
+    Write-Host "Publishing to release storage..."
+    $variant = if ($Architecture -eq 'arm64') { 'ARM64' } else { '' }
+    Publish-VoltixRelease -FilePath $outputExe -Version $appVersion -Variant $variant | Out-Null
+  }
 
   Write-Host "Installer created:" $outputExe
   Write-Host "Installer copied to root:" $rootExe

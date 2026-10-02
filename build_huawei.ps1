@@ -23,6 +23,8 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # Build-time secrets, shared with the other Android build scripts.
+$publishScript = Join-Path $PSScriptRoot 'publish-release.ps1'
+if (Test-Path $publishScript) { . $publishScript }
 $sasConfig = Join-Path $PSScriptRoot 'build-secrets.ps1'
 if (Test-Path $sasConfig) { . $sasConfig }
 if (Get-Command Write-AzureSasStatus -ErrorAction SilentlyContinue) { Write-AzureSasStatus }
@@ -119,17 +121,29 @@ try {
     # Platform.isAndroid and re-enables self-update - grounds for rejection, and
     # if it slipped through, AppGallery's record of the installed version would
     # drift from reality.
-    $dartDefines = @("--dart-define=DISTRIBUTION_CHANNEL=huawei")
-    if ($AppGalleryAppId) {
-        $dartDefines += "--dart-define=APPGALLERY_APP_ID=$AppGalleryAppId"
+    # All defines go through --dart-define-from-file. Passed on the command line,
+    # the Azure SAS tokens' '&' characters reached cmd.exe (flutter is a .bat)
+    # and were run as commands - "'st' is not recognized..." - failing the build
+    # after the APK had already compiled.
+    $defineMap = [ordered]@{ DISTRIBUTION_CHANNEL = 'huawei' }
+    if ($AppGalleryAppId) { $defineMap['APPGALLERY_APP_ID'] = $AppGalleryAppId }
+    if (Get-Command Get-BuildSecretDefinePairs -ErrorAction SilentlyContinue) {
+        foreach ($pair in Get-BuildSecretDefinePairs) {
+            $idx = $pair.IndexOf('=')
+            if ($idx -gt 0) { $defineMap[$pair.Substring(0, $idx)] = $pair.Substring($idx + 1) }
+        }
     }
-    if (Get-Command Get-AzureSasDartDefines -ErrorAction SilentlyContinue) {
-        $dartDefines += Get-AzureSasDartDefines
-    }
+    $defineFile = Join-Path ([IO.Path]::GetTempPath()) "voltix-huawei-defines-$PID.json"
+    # No BOM: Windows PowerShell's -Encoding UTF8 writes one, which the JSON
+    # reader rejects.
+    [IO.File]::WriteAllText($defineFile, ($defineMap | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false))
+    $dartDefines = @("--dart-define-from-file=$defineFile")
 
     Write-Host "3. Building AppGallery APK..."
     & $flutterBin build apk --flavor mobile --release @dartDefines
-    if ($LASTEXITCODE -ne 0) { throw "flutter build apk failed (exit $LASTEXITCODE)" }
+    $buildExit = $LASTEXITCODE
+    Remove-Item -LiteralPath $defineFile -Force -ErrorAction SilentlyContinue
+    if ($buildExit -ne 0) { throw "flutter build apk failed (exit $buildExit)" }
 
     $built = Get-ChildItem -Path (Join-Path $repoRoot 'build\app\outputs') -Recurse -File `
         -Filter "app-mobile-release.apk" -ErrorAction SilentlyContinue |
@@ -141,6 +155,11 @@ try {
     $outName = "Voltix-AppGallery-v$($v.Name).apk"
     foreach ($d in @((Join-Path $repoRoot $outName), (Join-Path $repoRoot "..\$outName"))) {
         Copy-Item $built.FullName $d -Force
+    }
+
+    if (Get-Command Publish-VoltixRelease -ErrorAction SilentlyContinue) {
+        Write-Host "4. Publishing to release storage..."
+        Publish-VoltixRelease -FilePath $built.FullName -Version $v.Name -Variant 'Huawei' | Out-Null
     }
 
     Write-Host ""
