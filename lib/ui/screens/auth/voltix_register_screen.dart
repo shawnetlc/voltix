@@ -204,6 +204,8 @@ class _VoltixRegisterScreenState extends State<VoltixRegisterScreen> {
   String _billingMode = 'recurring'; // 'recurring' (Monthly Auto-Renewing) vs 'once_off' (Once-off Month)
   String _paymentMethod = 'payfast'; // 'payfast' vs 'eft'
   bool _isPendingPayment = false;
+  bool _isPendingTrial = false;
+  String _pendingTrialMessage = '';
 
   // Focus Nodes for TV & Keyboard navigation
   final _trialOptionFocus = FocusNode(debugLabel: 'TrialOptionFocus');
@@ -358,7 +360,197 @@ class _VoltixRegisterScreenState extends State<VoltixRegisterScreen> {
     }
   }
 
+  /// Free trial, the same way the website does it: details → emailed 6-digit
+  /// code → the server creates the account, assigns a library account and a
+  /// Live TV line for this device, and activates it (or queues it for an admin
+  /// when nothing is free). Then this device signs in with the chosen login.
+  Future<void> _submitTrial() async {
+    final username = _usernameController.text.trim();
+    final email = _emailController.text.trim().toLowerCase();
+    final password = _passwordController.text;
+    final voltixApi = GetIt.instance<VoltixApiService>();
+
+    if (_deviceMac == '...' || _deviceMac.isEmpty) {
+      await _loadDeviceMac();
+    }
+
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final requested = await voltixApi.requestTrialOtp(
+        email: email,
+        username: username,
+        password: password,
+        deviceId: _deviceMac,
+      );
+      if (!mounted) return;
+      if (!requested.success) {
+        setState(() {
+          _isLoading = false;
+          _errorMessage = requested.message.isNotEmpty
+              ? requested.message
+              : 'Could not start your trial. Please try again.';
+        });
+        return;
+      }
+
+      TrialStepResult? verified;
+      String? codeError;
+      while (mounted) {
+        final code = await _askForTrialCode(email, error: codeError);
+        if (code == null) {
+          // Cancelled: back to the form.
+          if (mounted) setState(() => _isLoading = false);
+          return;
+        }
+        final result = await voltixApi.verifyTrialOtp(email: email, otp: code);
+        if (result.success) {
+          verified = result;
+          break;
+        }
+        codeError = result.message.isNotEmpty
+            ? result.message
+            : 'That code didn\'t work. Please check it and try again.';
+      }
+      if (!mounted || verified == null) return;
+
+      if (!verified.activated) {
+        setState(() {
+          _isLoading = false;
+          _isPendingTrial = true;
+          _pendingTrialMessage = verified!.message;
+          _currentStep = 3;
+        });
+        return;
+      }
+
+      // Active: sign this device in with the login the customer just chose.
+      final deviceInfo = GetIt.instance<DeviceInfo>();
+      final deviceType = PlatformDetection.isTV
+          ? 'tv'
+          : (PlatformDetection.isAndroid || PlatformDetection.isIOS)
+              ? 'mobile'
+              : 'desktop';
+      final login = await voltixApi.directLogin(
+        username: username,
+        password: password,
+        deviceName: deviceInfo.name,
+        deviceType: deviceType,
+        macAddress: _deviceMac != '...' ? _deviceMac : null,
+      );
+      if (!mounted) return;
+
+      final sessionStore = GetIt.instance<VoltixSessionStore>();
+      await sessionStore.save(
+        sessionToken: login.sessionToken,
+        userId: login.user.id,
+        username: login.user.username,
+        displayName: login.user.displayName,
+        activeServerId: login.activeServer.id,
+        activeServerName: login.activeServer.name,
+        activeServerProxyUrl: login.activeServer.proxyUrl,
+      );
+      await _configureJellyfinServer(login);
+    } catch (e) {
+      _logger.e('[VoltixRegister] Trial error: $e');
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _errorMessage = e.toString().replaceAll('VoltixApiException: ', '');
+      });
+    }
+  }
+
+  /// Asks for the emailed code. Returns null when the user cancels.
+  Future<String?> _askForTrialCode(String email, {String? error}) {
+    final controller = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        String? localError = error;
+        var resending = false;
+        return StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            backgroundColor: const Color(0xFF141A26),
+            title: const Text('Check your email', style: TextStyle(color: Colors.white)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'We sent a 6-digit code to $email. Enter it to start your free trial.',
+                  style: TextStyle(color: Colors.white.withValues(alpha: 0.8), fontSize: 13.5),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: controller,
+                  autofocus: true,
+                  keyboardType: TextInputType.number,
+                  maxLength: 6,
+                  style: const TextStyle(color: Colors.white, fontSize: 22, letterSpacing: 6),
+                  decoration: const InputDecoration(
+                    counterText: '',
+                    hintText: '000000',
+                    hintStyle: TextStyle(color: Colors.white24),
+                  ),
+                  onSubmitted: (v) {
+                    final code = v.replaceAll(RegExp(r'\s+'), '');
+                    if (code.length == 6) Navigator.of(dialogContext).pop(code);
+                  },
+                ),
+                if (localError != null) ...[
+                  const SizedBox(height: 8),
+                  Text(localError!, style: const TextStyle(color: Colors.redAccent, fontSize: 12.5)),
+                ],
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(null),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: resending
+                    ? null
+                    : () async {
+                        setDialogState(() => resending = true);
+                        final r = await GetIt.instance<VoltixApiService>().resendTrialOtp(email);
+                        setDialogState(() {
+                          resending = false;
+                          localError = r.success
+                              ? null
+                              : (r.message.isNotEmpty ? r.message : 'Could not resend the code.');
+                        });
+                      },
+                child: Text(resending ? 'Sending…' : 'Resend code'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  final code = controller.text.replaceAll(RegExp(r'\s+'), '');
+                  if (code.length != 6) {
+                    setDialogState(() => localError = 'Enter the 6-digit code from the email.');
+                    return;
+                  }
+                  Navigator.of(dialogContext).pop(code);
+                },
+                child: const Text('Verify'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   Future<void> _submitRegistration() async {
+    if (_isTrial) {
+      await _submitTrial();
+      return;
+    }
     final username = _usernameController.text.trim();
     final email = _emailController.text.trim();
     final password = _passwordController.text;
@@ -1701,6 +1893,54 @@ class _VoltixRegisterScreenState extends State<VoltixRegisterScreen> {
   // ──────────────── STEP 4: SUCCESS ────────────────
 
   Widget _buildStep4Success() {
+    if (_isPendingTrial) {
+      return Column(
+        key: const ValueKey(4),
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          const SizedBox(height: 16),
+          Container(
+            width: 76,
+            height: 76,
+            decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.amber.shade400),
+            child: const Icon(Icons.hourglass_top_rounded, size: 44, color: Colors.black),
+          ),
+          const SizedBox(height: 20),
+          const Text(
+            'Trial Request Received',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _pendingTrialMessage.isNotEmpty
+                ? _pendingTrialMessage
+                : 'All trial slots are in use right now, so our team will activate your trial shortly. We will email your login details as soon as it is active.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.white.withValues(alpha: 0.8), fontSize: 13.5),
+          ),
+          const SizedBox(height: 20),
+          ElevatedButton(
+            onPressed: () {
+              if (widget.onBackToLogin != null) {
+                widget.onBackToLogin!();
+              } else {
+                context.go(Destinations.voltixLogin);
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColorScheme.accent,
+              foregroundColor: Colors.black,
+              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('Return to Login', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+          ),
+          const SizedBox(height: 16),
+        ],
+      );
+    }
     if (_isPendingPayment) {
       final username = _usernameController.text.trim().toUpperCase();
       return Column(

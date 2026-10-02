@@ -14,6 +14,7 @@ import '../../../data/services/user_settings_sync_service.dart';
 import '../taste_profile/taste_onboarding_wizard.dart';
 import '../../../l10n/app_localizations.dart';
 import '../../../preference/preference_constants.dart';
+import '../../../util/device_performance_profile.dart';
 import '../../../preference/user_preferences.dart';
 import '../../../util/focus/dpad_keys.dart';
 import '../../../util/platform_detection.dart';
@@ -74,6 +75,8 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
   HomeRowsStyle? _homeRows;
   DetailScreenStyle? _detailStyle;
   AppBackgroundStyle? _background;
+  String? _deviceTier;
+  String? _network;
 
   MediaServerClient? get _client {
     try {
@@ -138,23 +141,34 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
 
     var tastePromptPending = !_prefs.get(UserPreferences.tasteOnboardingSeen);
 
-    // Same restore-before-asking check as the login screen: a profile
-    // already completed elsewhere (roaming DisplayPreferences, or an Azure
-    // backup from a previous device) should skip this step rather than make
-    // the user answer it again just because it is a fresh install here.
+    // If taste profile is already completed or marked seen, never prompt again
     if (tastePromptPending &&
         GetIt.instance.isRegistered<TasteProfileRepository>() &&
         GetIt.instance.isRegistered<MediaServerClient>()) {
       try {
-        final tasteClient = GetIt.instance<MediaServerClient>();
-        final userId = tasteClient.userId?.trim() ?? '';
-        if (userId.isNotEmpty) {
-          final restored = await GetIt.instance<TasteProfileRepository>()
-              .loadProfile(userId: userId, serverId: tasteClient.baseUrl)
-              .timeout(const Duration(seconds: 6));
-          if (restored.isCompleted) {
-            tastePromptPending = false;
-            await _prefs.set(UserPreferences.tasteOnboardingSeen, true);
+        final tasteRepo = GetIt.instance<TasteProfileRepository>();
+        final current = tasteRepo.currentProfile;
+        if (current != null && current.isCompleted) {
+          tastePromptPending = false;
+          await _prefs.set(UserPreferences.tasteOnboardingSeen, true);
+        } else {
+          final tasteClient = GetIt.instance<MediaServerClient>();
+          final userId = tasteClient.userId?.trim() ?? '';
+          if (userId.isNotEmpty) {
+            final activeProfileId = GetIt.instance.isRegistered<VoltixSessionStore>()
+                ? GetIt.instance<VoltixSessionStore>().activeProfileId
+                : null;
+            final restored = await tasteRepo
+                .loadProfile(
+                  profileId: activeProfileId,
+                  userId: userId,
+                  serverId: tasteClient.baseUrl,
+                )
+                .timeout(const Duration(seconds: 4));
+            if (restored.isCompleted) {
+              tastePromptPending = false;
+              await _prefs.set(UserPreferences.tasteOnboardingSeen, true);
+            }
           }
         }
       } catch (_) {
@@ -270,6 +284,20 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
       final background = _background;
       if (background != null) {
         await _prefs.set(UserPreferences.appBackgroundStyle, background);
+      }
+      // Media box and connection: applied only if those steps were shown, so
+      // a user who never saw them keeps their current settings untouched.
+      if (_steps.contains(SetupStep.deviceTier)) {
+        await DevicePerformanceProfile.applyTier(
+          _prefs,
+          _deviceTier ?? _prefs.get(UserPreferences.deviceTier),
+        );
+      }
+      if (_steps.contains(SetupStep.network)) {
+        await DevicePerformanceProfile.applyNetwork(
+          _prefs,
+          _network ?? _prefs.get(UserPreferences.networkType),
+        );
       }
     });
 
@@ -532,6 +560,8 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
     SetupStep.detailStyle => l10n.setupDetailQuestion,
     // Not yet in app_en.arb -- ported as a literal (see notes elsewhere).
     SetupStep.background => 'Which background artwork do you prefer?',
+    SetupStep.deviceTier => 'What kind of media box is this?',
+    SetupStep.network => 'How is this device connected to the internet?',
     SetupStep.tour => l10n.setupTourQuestion,
     SetupStep.cloudSync => 'We found saved settings in your Voltix cloud.',
     SetupStep.taste => 'Want recommendations picked for your taste?',
@@ -547,6 +577,8 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
     SetupStep.homeRows => _buildHomeRowsStep(l10n),
     SetupStep.detailStyle => _buildDetailStyleStep(l10n),
     SetupStep.background => _buildBackgroundStep(l10n),
+    SetupStep.deviceTier => _buildDeviceTierStep(),
+    SetupStep.network => _buildNetworkStep(),
     SetupStep.tour => _SetupTourStep(
       prefs: _prefs,
       focusNode: _stepDefaultFocusNode,
@@ -730,6 +762,105 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
           ),
           onPressed: () =>
               setState(() => _background = AppBackgroundStyle.alternate),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDeviceTierStep() {
+    final selected = _deviceTier ?? _prefs.get(UserPreferences.deviceTier);
+    final isEntry = selected != DevicePerformanceProfile.tierPerformance;
+    return _OptionLayout(
+      columns: 2,
+      children: [
+        _OptionCard(
+          order: 0,
+          label: 'Entry Level',
+          hint: 'Most TVs and budget boxes (e.g. Skyworth, 1-1.5 GB RAM). '
+              'Keeps memory use low so playback stays smooth.',
+          selected: isEntry,
+          autofocus: isEntry,
+          focusNode: isEntry ? _stepDefaultFocusNode : null,
+          preview: _buildStepCardPreview(
+            icon: Icons.tv_rounded,
+            accentColor: const Color(0xFF38BDF8),
+            tag: 'Entry Level',
+            subtitle: 'Light and stable',
+            badgeText: 'Recommended',
+            featurePills: const ['Low memory', 'No trailer previews'],
+          ),
+          onPressed: () => setState(
+            () => _deviceTier = DevicePerformanceProfile.tierEntry,
+          ),
+        ),
+        _OptionCard(
+          order: 1,
+          label: 'Performance',
+          hint: 'Shield, Fire TV Cube, Chromecast with Google TV 4K and '
+              'boxes with 2 GB+ RAM. Bigger image cache and trailer previews.',
+          selected: !isEntry,
+          autofocus: !isEntry,
+          focusNode: !isEntry ? _stepDefaultFocusNode : null,
+          preview: _buildStepCardPreview(
+            icon: Icons.bolt_rounded,
+            accentColor: const Color(0xFFF59E0B),
+            tag: 'Performance',
+            subtitle: 'Faster browsing',
+            badgeText: '2 GB+ RAM',
+            featurePills: const ['Larger image cache', 'Trailer previews', 'Animated background'],
+          ),
+          onPressed: () => setState(
+            () => _deviceTier = DevicePerformanceProfile.tierPerformance,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildNetworkStep() {
+    final selected = _network ?? _prefs.get(UserPreferences.networkType);
+    final isWifi = selected != DevicePerformanceProfile.networkFibre;
+    return _OptionLayout(
+      columns: 2,
+      children: [
+        _OptionCard(
+          order: 0,
+          label: 'Wi-Fi',
+          hint: 'Keeps your current streaming quality and transcoding limits.',
+          selected: isWifi,
+          autofocus: isWifi,
+          focusNode: isWifi ? _stepDefaultFocusNode : null,
+          preview: _buildStepCardPreview(
+            icon: Icons.wifi_rounded,
+            accentColor: const Color(0xFF38BDF8),
+            tag: 'Wi-Fi',
+            subtitle: 'Reliable everywhere',
+            badgeText: 'Current settings',
+            featurePills: const ['Limits unchanged'],
+          ),
+          onPressed: () => setState(
+            () => _network = DevicePerformanceProfile.networkWifi,
+          ),
+        ),
+        _OptionCard(
+          order: 1,
+          label: 'Fibre (cable)',
+          hint: 'Wired fibre connection. Streams up to 200 Mbps and 4K '
+              '(2160p), with trailer sound on the home banner.',
+          selected: !isWifi,
+          autofocus: !isWifi,
+          focusNode: !isWifi ? _stepDefaultFocusNode : null,
+          preview: _buildStepCardPreview(
+            icon: Icons.cable_rounded,
+            accentColor: const Color(0xFF10B981),
+            tag: 'Fibre',
+            subtitle: 'Maximum quality',
+            badgeText: '4K ready',
+            featurePills: const ['200 Mbps', '2160p', 'Trailer audio'],
+          ),
+          onPressed: () => setState(
+            () => _network = DevicePerformanceProfile.networkFibre,
+          ),
         ),
       ],
     );
@@ -1373,14 +1504,40 @@ class _SetupTourStep extends StatefulWidget {
 }
 
 class _SetupTourStepState extends State<_SetupTourStep> {
+  /// Determine the currently-active theme registry id so we can highlight it.
+  String _activeThemeId(UserPreferences prefs) {
+    final customId = prefs.get(UserPreferences.customThemeId);
+    if (customId.isNotEmpty) return customId;
+    return AppThemeController.builtInThemeIdFor(
+      prefs.get(UserPreferences.visualTheme),
+    );
+  }
+
+  /// Sort rank mirrors the settings appearance screen: built-ins first in a
+  /// fixed order, then custom/store alphabetically.
+  static int _themeSortRank(String id) {
+    if (id == ThemeRegistry.voltixId) return 0;
+    if (id == ThemeRegistry.neonPulseId) return 1;
+    if (id == ThemeRegistry.glassId) return 2;
+    if (id == ThemeRegistry.eightbitHeroId) return 3;
+    return 4;
+  }
+
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
-    final active = widget.prefs.get(UserPreferences.visualTheme);
+    final currentId = _activeThemeId(widget.prefs);
 
-    // Glass is registered in ThemeRegistry now, so every built-in theme
-    // Settings > Appearance can show is offered here too -- no exclusion.
-    final availableThemes = VisualThemeId.values.toList();
+    // Show every registered theme — built-in + admin-synced + store-saved.
+    final allThemes = ThemeRegistry.availableThemes.values.toList()
+      ..sort((a, b) {
+        final aRank = _themeSortRank(a.id);
+        final bRank = _themeSortRank(b.id);
+        if (aRank != bRank) return aRank.compareTo(bRank);
+        return a.displayName.toLowerCase().compareTo(
+          b.displayName.toLowerCase(),
+        );
+      });
 
     return SingleChildScrollView(
       child: Column(
@@ -1398,13 +1555,13 @@ class _SetupTourStepState extends State<_SetupTourStep> {
             spacing: AppSpacing.spaceMd,
             runSpacing: AppSpacing.spaceMd,
             children: [
-              for (var i = 0; i < availableThemes.length; i++)
+              for (var i = 0; i < allThemes.length; i++)
                 _ThemeSwatch(
                   order: i,
-                  theme: availableThemes[i],
-                  selected: active == availableThemes[i],
-                  autofocus: active == availableThemes[i],
-                  focusNode: active == availableThemes[i]
+                  spec: allThemes[i],
+                  selected: currentId == allThemes[i].id,
+                  autofocus: currentId == allThemes[i].id,
+                  focusNode: currentId == allThemes[i].id
                       ? widget.focusNode
                       : null,
                   // Written straight away rather than held back with the
@@ -1421,7 +1578,7 @@ class _SetupTourStepState extends State<_SetupTourStep> {
                   // otherwise keep overriding this choice.
                   onPressed: () async {
                     await AppThemeScope.of(context)
-                        .applyThemeSelection(widget.prefs, availableThemes[i]);
+                        .applyThemeById(widget.prefs, allThemes[i].id);
                     if (mounted) setState(() {});
                   },
                 ),
@@ -1507,7 +1664,7 @@ class _SetupTourStepState extends State<_SetupTourStep> {
 class _ThemeSwatch extends StatelessWidget {
   const _ThemeSwatch({
     required this.order,
-    required this.theme,
+    required this.spec,
     required this.selected,
     required this.autofocus,
     required this.onPressed,
@@ -1515,7 +1672,7 @@ class _ThemeSwatch extends StatelessWidget {
   });
 
   final int order;
-  final VisualThemeId theme;
+  final ThemeSpec spec;
   final bool selected;
   final bool autofocus;
   final FocusNode? focusNode;
@@ -1524,15 +1681,13 @@ class _ThemeSwatch extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
-    final label = switch (theme) {
-      VisualThemeId.voltix => l10n.themeVoltix,
-      VisualThemeId.neonPulse => l10n.themeNeonPulse,
-      VisualThemeId.glass => l10n.themeGlass,
-      VisualThemeId.eightbitHero => l10n.theme8BitHero,
+    final label = switch (spec.id) {
+      ThemeRegistry.voltixId => l10n.themeVoltix,
+      ThemeRegistry.neonPulseId => l10n.themeNeonPulse,
+      ThemeRegistry.glassId => l10n.themeGlass,
+      ThemeRegistry.eightbitHeroId => l10n.theme8BitHero,
+      _ => spec.displayName,
     };
-    final spec = ThemeRegistry.resolveById(
-      AppThemeController.builtInThemeIdFor(theme),
-    );
 
     return _Focusable(
       order: order,

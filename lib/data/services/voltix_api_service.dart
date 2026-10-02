@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:logger/logger.dart';
@@ -150,6 +151,54 @@ class VoltixApiService {
       final msg = _extractTrpcError(e) ?? 'Login failed';
       _logger.e('[VoltixApi] directLogin failed: $msg');
       throw VoltixApiException(msg);
+    }
+  }
+
+  // ───────────────────────── Free trial (same flow as the website) ─────────────
+
+  /// Step 1 of a free trial: the server checks the details and emails a
+  /// 6-digit code. Same endpoint the website uses; `source: app` replaces the
+  /// website's Turnstile check with this device's ID, which is also what the
+  /// trial's Live TV line is created for.
+  Future<TrialStepResult> requestTrialOtp({
+    required String email,
+    required String username,
+    required String password,
+    required String deviceId,
+  }) async {
+    return _trialPost('/api/trial/request-otp', {
+      'email': email,
+      'username': username,
+      'password': password,
+      'deviceId': deviceId,
+      'source': 'app',
+    });
+  }
+
+  /// Step 2: checks the code. When an account is free the server activates
+  /// the trial straight away and emails the login ([TrialStepResult.activated]);
+  /// otherwise it waits for an admin ([TrialStepResult.pendingApproval]).
+  Future<TrialStepResult> verifyTrialOtp({
+    required String email,
+    required String otp,
+  }) {
+    return _trialPost('/api/trial/verify-otp', {'email': email, 'otp': otp});
+  }
+
+  Future<TrialStepResult> resendTrialOtp(String email) {
+    return _trialPost('/api/trial/resend-otp', {'email': email});
+  }
+
+  Future<TrialStepResult> _trialPost(String path, Map<String, dynamic> body) async {
+    try {
+      final response = await _dio.post('$baseUrl$path', data: body);
+      return TrialStepResult.fromJson(response.data);
+    } on DioException catch (e) {
+      final data = e.response?.data;
+      if (data is Map) return TrialStepResult.fromJson(data);
+      throw VoltixApiException(
+        'Could not reach Voltix. Check your connection and try again.',
+      );
     }
   }
 
@@ -324,6 +373,18 @@ class VoltixApiService {
     }
   }
 
+  /// Fire-and-forget breadcrumb for direct streaming. The backend logs every
+  /// request it receives, so this shows up in the Azure log stream as
+  /// `GET /api/diag/direct-streaming?...` (a 404 is expected and harmless).
+  /// Never carries passwords or tokens.
+  void directStreamingDiag(String stage, [Map<String, String> extra = const {}]) {
+    unawaited(_dio
+        .get('$baseUrl/api/diag/direct-streaming',
+            queryParameters: {'stage': stage, ...extra},
+            options: Options(validateStatus: (_) => true))
+        .then((_) {}, onError: (_) {}));
+  }
+
   // ─────────────────── getDirectCredentials ───────────────────
 
   /// Lumistream addresses and assigned logins for direct streaming, so the app
@@ -363,6 +424,12 @@ class VoltixApiService {
           .toList();
     } catch (e) {
       _logger.w('[VoltixApi] getDirectCredentials failed (using proxy): $e');
+      final status = e is DioException ? '${e.response?.statusCode}' : 'none';
+      final msg = e.toString().split('\n').first;
+      directStreamingDiag('credentials-error', {
+        'status': status,
+        'error': msg.length > 120 ? msg.substring(0, 120) : msg,
+      });
       return const [];
     }
   }
@@ -832,6 +899,30 @@ class VoltixApiService {
 }
 
 // ─────────────────────── Data Models ───────────────────────
+
+class TrialStepResult {
+  final bool success;
+  final bool activated;
+  final bool pendingApproval;
+  final String message;
+
+  const TrialStepResult({
+    required this.success,
+    this.activated = false,
+    this.pendingApproval = false,
+    this.message = '',
+  });
+
+  factory TrialStepResult.fromJson(dynamic json) {
+    final map = json is Map ? json : const {};
+    return TrialStepResult(
+      success: map['success'] == true,
+      activated: map['activated'] == true,
+      pendingApproval: map['pendingApproval'] == true,
+      message: (map['message'] ?? '').toString(),
+    );
+  }
+}
 
 class VoltixApiException implements Exception {
   final String message;

@@ -27,6 +27,7 @@ import 'playback/playback_lifecycle_handler.dart';
 import 'platform/web_runtime_config.dart';
 import 'preference/user_preferences.dart';
 import 'util/platform_detection.dart';
+import 'util/device_performance_profile.dart';
 import 'util/tv_image_cache_stub.dart'
     if (dart.library.io) 'util/tv_image_cache_io.dart';
 import 'util/webview_cache_trimmer.dart';
@@ -73,10 +74,10 @@ void _configureImageCache() {
     return;
   }
   if (PlatformDetection.isTV) {
-    // Chromecast / Android TV: constrain to 24 MB to leave ample
-    // headroom for ExoPlayer / MediaCodec decoders on low-RAM boxes.
-    imageCache.maximumSize = 30;
-    imageCache.maximumSizeBytes = 24 << 20;
+    // Chromecast / Android TV / Skyworth TV: constrain to 16 MB and 20 entries
+    // to leave ample headroom for ExoPlayer / MediaCodec decoders on low-RAM boxes.
+    imageCache.maximumSize = 20;
+    imageCache.maximumSizeBytes = 16 << 20;
     return;
   }
   if (PlatformDetection.isMobile) {
@@ -442,6 +443,9 @@ Future<void> _startVoltix() async {
   unawaited(WebViewCacheTrimmer.trim());
 
   final prefs = GetIt.instance<UserPreferences>();
+  // Raises the image memory budget only if this device was set up as
+  // "Performance"; entry level keeps the limits configured above.
+  DevicePerformanceProfile.applyImageCache(prefs);
   WidgetsBinding.instance.addObserver(_PreferenceWriteFlushObserver(prefs));
   await _detectAndApplyAudioCapabilities(prefs);
 

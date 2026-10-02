@@ -96,6 +96,8 @@ class PlaybackManager implements AudioOwnable {
   Map<String, Map<String, dynamic>> _offlineMetadataByUrl = {};
   Future<void>? _stopInFlight;
   int _playbackSessionToken = 0;
+  bool _authRecoveryInFlight = false;
+  String? _authRetriedItemId;
   Future<void>? _externalSubsLoaded;
   Duration _deferredStartPosition = Duration.zero;
   bool _deferPlaybackToExternalPlayer = false;
@@ -729,6 +731,27 @@ class PlaybackManager implements AudioOwnable {
       return;
     }
 
+    // Stream refused with 401/403 (stale token). Re-resolve once at the
+    // current position: the PlaybackInfo call re-authenticates and the new
+    // stream URL carries a valid token.
+    if (kind == 'http_auth') {
+      if (_isOfflinePlayback || _waitingForMedia || _authRecoveryInFlight) return;
+      // Once per item: the new source resets the native guard, so a token the
+      // server keeps refusing must not loop here.
+      final itemKey = queueItem == null ? null : _traceItemId(queueItem);
+      if (itemKey != null && itemKey == _authRetriedItemId) return;
+      _authRetriedItemId = itemKey;
+      _suppressNextGenericBackendError = true;
+      _authRecoveryInFlight = true;
+      try {
+        await _reResolveAtCurrentPosition();
+      } catch (_) {
+      } finally {
+        _authRecoveryInFlight = false;
+      }
+      return;
+    }
+
     if (kind != 'unsupported_audio') {
       return;
     }
@@ -1272,6 +1295,14 @@ class PlaybackManager implements AudioOwnable {
         await _backend!.stop();
       } catch (_) {}
 
+      // The viewer may have pressed Back while the start was failing. Stop
+      // here: retrying (transcode fallback) after they left is what made a
+      // failed title keep trying to stream again after exiting the player.
+      if (sessionToken != _playbackSessionToken) {
+        _cleanupPreemptedSession(item, resolution);
+        return;
+      }
+
       if (_isPreroll(item)) {
         await next();
         return;
@@ -1295,6 +1326,12 @@ class PlaybackManager implements AudioOwnable {
                 ),
               );
             } catch (_) {}
+          }
+
+          // The decider can show a dialog; the viewer may have left meanwhile.
+          if (sessionToken != _playbackSessionToken) {
+            _cleanupPreemptedSession(item, resolution);
+            return;
           }
 
           if (decision == PlaybackStartupRecoveryDecision.abortPlayback) {

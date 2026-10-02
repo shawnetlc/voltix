@@ -8,6 +8,8 @@ import 'package:server_core/server_core.dart';
 import 'package:uuid/uuid.dart';
 
 import '../auth/store/authentication_store.dart';
+import '../auth/store/credential_store.dart';
+import '../auth/models/user.dart' show PrivateUser;
 import '../auth/store/voltix_session_store.dart';
 import '../data/database/database_connection.dart';
 import '../data/database/offline_database.dart';
@@ -540,13 +542,16 @@ void _installServerAuthRecovery() {
       '',
     );
     MediaServerClient? client;
-    for (final candidate in getIt<MediaServerClientFactory>().clients.values) {
+    String? clientServerId;
+    for (final entry in getIt<MediaServerClientFactory>().clients.entries) {
+      final candidate = entry.value;
       final address = candidate.baseUrl.trim().toLowerCase().replaceAll(
         RegExp(r'/+$'),
         '',
       );
       if (address == normalized) {
         client = candidate;
+        clientServerId = entry.key;
         break;
       }
     }
@@ -586,6 +591,11 @@ void _installServerAuthRecovery() {
       if (userId != null && userId.isNotEmpty) {
         client.userId = userId;
       }
+      // Persist the new token. Without this, the stored (dead) token was put
+      // back on the client a few seconds later by the multi-server session
+      // refresh, so stream URLs were built with it and playback failed with a
+      // "source error" until the viewer signed out and in again.
+      await _persistRecoveredToken(clientServerId, userId ?? client.userId, token);
       return token;
     } catch (_) {
       // A failure here means the 401 stands, which is what the caller does
@@ -593,6 +603,43 @@ void _installServerAuthRecovery() {
       return null;
     }
   };
+}
+
+Future<void> _persistRecoveredToken(
+  String? serverId,
+  String? userId,
+  String token,
+) async {
+  if (serverId == null || serverId.isEmpty) return;
+  try {
+    if (getIt.isRegistered<CredentialStore>()) {
+      await getIt<CredentialStore>().saveToken(serverId, token);
+    }
+    if (userId != null &&
+        userId.isNotEmpty &&
+        getIt.isRegistered<AuthenticationStore>()) {
+      final store = getIt<AuthenticationStore>();
+      final user = store.getUser(serverId, userId);
+      if (user != null && user.accessToken != token) {
+        await store.putUser(
+          PrivateUser(
+            id: user.id,
+            name: user.name,
+            serverId: user.serverId,
+            accessToken: token,
+            lastUsed: DateTime.now(),
+            imageTag: user.imageTag,
+            isAdministrator: user.isAdministrator,
+            canDownload: user.canDownload,
+            canManageSubtitles: user.canManageSubtitles,
+            canManageCollections: user.canManageCollections,
+          ),
+        );
+      }
+    }
+  } catch (_) {
+    // Best effort: the client already holds the new token for this run.
+  }
 }
 
 String? migrateIosPath(String? storedPath, String currentDocsPath) {

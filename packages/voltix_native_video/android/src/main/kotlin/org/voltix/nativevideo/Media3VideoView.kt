@@ -6,6 +6,7 @@ import android.app.UiModeManager
 import android.content.Context
 import android.content.Intent
 import android.content.ContextWrapper
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Typeface
@@ -419,7 +420,24 @@ class Media3VideoView(
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val useSurfaceView = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+    private val isTvDevice: Boolean = run {
+        val uiModeManager = context.getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
+        uiModeManager?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
+            context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+    }
+    private val isLowRamDevice: Boolean = run {
+        context.getSystemService<ActivityManager>()?.isLowRamDevice == true ||
+            (context.getSystemService<ActivityManager>()?.let { am ->
+                val memInfo = ActivityManager.MemoryInfo()
+                am.getMemoryInfo(memInfo)
+                memInfo.totalMem > 0L && memInfo.totalMem <= 1610612736L // <= 1.5GB (e.g. Skyworth TVs)
+            } == true)
+    }
+    // On Android TV and low-RAM devices (such as Skyworth TVs), TextureView allocates
+    // multiple unmanaged graphic buffers and consumes high GPU VRAM, leading to
+    // fatal SIGSEGV or OOM crashes when video streaming starts. SurfaceView bypasses
+    // the GPU compositor and decodes directly to hardware overlays.
+    private val useSurfaceView: Boolean = isTvDevice || isLowRamDevice || Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
     private var videoView: View = if (useSurfaceView) {
         SurfaceView(context)
     } else {
@@ -444,7 +462,6 @@ class Media3VideoView(
         container.addView(firstFrameCover, subtitleLayoutParams)
         container.addView(subtitleView, subtitleLayoutParams)
     }
-    private val isLowRamDevice = context.getSystemService<ActivityManager>()?.isLowRamDevice == true
     private val hasHardwareAv1Decoder by lazy { queryHardwareAv1DecoderAvailability() }
     // Recreated alongside the player in createPlayer(). A TrackSelector must not
     // be shared across ExoPlayer instances: it binds to the playback thread of
@@ -472,6 +489,8 @@ class Media3VideoView(
     private var deviceRequiresStereoDownmix = false
     // Guards the container/source-error transcode fallback against re-emitting.
     private var containerFallbackAttempted = false
+    // One re-resolve per source when the server rejects the stream's token.
+    private var authRetryAttempted = false
 
     private var player: ExoPlayer
 
@@ -945,7 +964,8 @@ class Media3VideoView(
         httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
         val bootDataSourceFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
-        val assHandler = AssHandler(AssRenderType.OVERLAY_OPEN_GL)
+        val assRenderType = if (isLowRamDevice) AssRenderType.OVERLAY_CANVAS else AssRenderType.OVERLAY_OPEN_GL
+        val assHandler = AssHandler(assRenderType)
         registerAssFonts(assHandler)
         val assParserFactory = AssSubtitleParserFactory(assHandler)
         val bootMediaSourceFactory = DefaultMediaSourceFactory(
@@ -960,14 +980,27 @@ class Media3VideoView(
             .setUsage(C.USAGE_MEDIA)
             .build()
 
-        val loadControl = DefaultLoadControl.Builder()
+        val minBufferMs = if (isLowRamDevice) 8000 else 30000
+        val maxBufferMs = if (isLowRamDevice) 15000 else 60000
+        val bufferForPlaybackMs = if (isLowRamDevice) 1000 else 3000
+        val bufferForPlaybackAfterRebufferMs = if (isLowRamDevice) 2000 else 5000
+
+        val loadControlBuilder = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                30000, // minBufferMs (minimum duration of media to buffer)
-                60000, // maxBufferMs (maximum duration of media to buffer)
-                3000,  // bufferForPlaybackMs (duration of media required to start playback)
-                5000   // bufferForPlaybackAfterRebufferMs (duration of media required to resume after rebuffering)
+                minBufferMs,
+                maxBufferMs,
+                bufferForPlaybackMs,
+                bufferForPlaybackAfterRebufferMs
             )
-            .build()
+            .setPrioritizeTimeOverSizeThresholds(true)
+
+        if (isLowRamDevice) {
+            // Cap total memory buffer to 16MB on low-RAM TV devices (e.g. Skyworth TVs)
+            // to avoid exceeding the Android app heap / low-memory killer (LMK).
+            loadControlBuilder.setTargetBufferBytes(16 * 1024 * 1024)
+        }
+
+        val loadControl = loadControlBuilder.build()
 
         return ExoPlayer.Builder(context, renderersFactory.withAssSupport(assHandler))
             .setTrackSelector(trackSelector)
@@ -1470,6 +1503,7 @@ class Media3VideoView(
         audioOffloadRetryAttemptedForCurrentSource = false
         stereoDownmixRetryAttemptedForCurrentSource = false
         containerFallbackAttempted = false
+        authRetryAttempted = false
         // Start each source with the downmix state the device has proven it
         // needs (sticky once an AudioTrack init failure was recovered).
         applyStereoDownmix(deviceRequiresStereoDownmix)
@@ -2742,11 +2776,23 @@ class Media3VideoView(
             PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
             -> if (containerFallbackAttempted) null else "unsupported_container"
 
+            // The server refused the stream (401/403): usually an access token
+            // that was replaced since the URL was built. The app re-resolves
+            // once, which mints a fresh token, instead of showing "Source error".
+            PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> {
+                val code = (error.cause as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)?.responseCode
+                if (!authRetryAttempted && (code == 401 || code == 403)) "http_auth" else null
+            }
+
             else -> null
         }
 
         if (recoverableKind == null) {
             return
+        }
+
+        if (recoverableKind == "http_auth") {
+            authRetryAttempted = true
         }
 
         if (recoverableKind == "unsupported_container") {

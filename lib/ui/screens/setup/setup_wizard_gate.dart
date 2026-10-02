@@ -1,6 +1,8 @@
 import 'package:get_it/get_it.dart';
 import 'package:server_core/server_core.dart';
 
+import '../../../auth/store/voltix_session_store.dart';
+
 import '../../../data/services/connectivity_service.dart';
 import '../../../data/services/media_server_client_factory.dart';
 import '../../../data/services/plugin_sync_service.dart';
@@ -14,7 +16,7 @@ import '../../../preference/user_preferences.dart';
 /// [cloudSync] is never returned by [remainingSteps]: whether it applies
 /// depends on a network probe, and the router calls into this class on every
 /// navigation. The wizard appends it itself once the probe comes back.
-enum SetupStep { navbar, mediaBar, homeRows, detailStyle, background, tour, cloudSync, taste }
+enum SetupStep { navbar, mediaBar, homeRows, detailStyle, background, deviceTier, network, tour, cloudSync, taste }
 
 /// Decides whether the wizard runs, and for which steps.
 ///
@@ -61,7 +63,31 @@ class SetupWizardGate {
       _prefs.get(UserPreferences.setupWizardVersionForServer(serverKey)) >=
       UserPreferences.setupWizardVersion;
 
+  /// The Voltix account the wizard was answered for.
+  ///
+  /// The server+user key alone was not stable across sign-out/sign-in: the
+  /// Jellyfin client is rebuilt (and, with direct streaming, re-registered),
+  /// so the key could resolve to the server address one time and the server
+  /// id the next - and a key nobody had written reads as "never set up". The
+  /// Voltix username is the same every time this person signs in.
+  String? _voltixAccountKey() {
+    if (!GetIt.instance.isRegistered<VoltixSessionStore>()) return null;
+    final store = GetIt.instance<VoltixSessionStore>();
+    final username = (store.username ?? '').trim().toLowerCase();
+    if (username.isEmpty) return null;
+    return 'voltix_$username';
+  }
+
+  bool _isCompleteForVoltixAccount() {
+    final key = _voltixAccountKey();
+    return key != null && _isCompleteFor(key);
+  }
+
   bool shouldRun(MediaServerClient client) {
+    if (GetIt.instance.isRegistered<VoltixSessionStore>() &&
+        GetIt.instance<VoltixSessionStore>().isKidsProfile) {
+      return false;
+    }
     if (_rerunning) return true;
     if (_deferredThisLaunch) return false;
 
@@ -73,6 +99,7 @@ class SetupWizardGate {
       return false;
     }
 
+    if (_isCompleteForVoltixAccount()) return false;
     final serverKey = _serverKeyFor(client);
     if (serverKey == null) return false;
     if (_isCompleteFor(serverKey)) return false;
@@ -104,6 +131,8 @@ class SetupWizardGate {
       SetupStep.homeRows,
       SetupStep.detailStyle,
       SetupStep.background,
+      SetupStep.deviceTier,
+      SetupStep.network,
       SetupStep.tour,
     ];
   }
@@ -150,6 +179,15 @@ class SetupWizardGate {
   /// or skipped the lot. Skipping is an answer: it means stop asking.
   Future<void> markComplete(MediaServerClient client) async {
     _rerunning = false;
+    // Saved against the Voltix account as well as the server+user pair, so
+    // signing out and back in (or a rebuilt client) doesn't ask again.
+    final accountKey = _voltixAccountKey();
+    if (accountKey != null) {
+      await _prefs.set(
+        UserPreferences.setupWizardVersionForServer(accountKey),
+        UserPreferences.setupWizardVersion,
+      );
+    }
     final serverKey = _serverKeyFor(client);
     if (serverKey == null) return;
     await _prefs.set(

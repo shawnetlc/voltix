@@ -42,6 +42,17 @@ class UserPreferences extends ChangeNotifier {
     _migrateOverlayPreferences();
     _migrateDefaultAudioLanguagePreference();
     _enforceMediaQueuingAlwaysOn();
+    _enableTrickPlayOnce();
+  }
+
+  /// Trick play (seek-bar thumbnails) is now on by default. Turn it on once
+  /// for existing installs too, which may have stored the old "off" default;
+  /// anyone who switches it off afterwards keeps that choice.
+  void _enableTrickPlayOnce() {
+    const flag = Preference(key: 'pref_trick_play_default_on_v1', defaultValue: false);
+    if (_store.get(flag)) return;
+    _store.set(trickPlayEnabled, true);
+    _store.set(flag, true);
   }
 
   void _migrateOverlayPreferences() {
@@ -251,6 +262,13 @@ class UserPreferences extends ChangeNotifier {
     try {
       final allStoreKeys = _store.getKeys();
       for (final storeKey in allStoreKeys) {
+        // "Setup wizard done" for a Voltix account travels with the cloud
+        // backup, so a reinstall or a new device doesn't ask again.
+        if (storeKey.startsWith('pref_setup_wizard_version_voltix_')) {
+          final val = _safeGetRaw(storeKey);
+          if (val != null) data[storeKey] = val;
+          continue;
+        }
         if (storeKey.startsWith('homeRowImageType_')) {
           // Derive the base key by removing the scope suffix if present.
           String baseKey = storeKey;
@@ -1392,15 +1410,26 @@ class UserPreferences extends ChangeNotifier {
   /// chosen a limit keeps it.
   static final maxBitrate = Preference(
     key: 'pref_max_bitrate',
-    defaultValue: PlatformDetection.isTV ? '20' : '120',
+    defaultValue: '20',
   );
 
   static final maxVideoResolution = EnumPreference(
     key: 'pref_max_video_resolution',
-    defaultValue: PlatformDetection.isTV
-        ? MaxVideoResolution.res1080p
-        : MaxVideoResolution.auto,
+    defaultValue: MaxVideoResolution.res1080p,
     values: MaxVideoResolution.values,
+  );
+
+  /// Setup wizard "Media box": 'entry' (default - today's limits) or
+  /// 'performance'. Per device, so not part of the cloud settings backup.
+  static final deviceTier = Preference(
+    key: 'pref_device_tier',
+    defaultValue: 'entry',
+  );
+
+  /// Setup wizard "Internet connection": 'wifi' (default) or 'fibre'.
+  static final networkType = Preference(
+    key: 'pref_network_type',
+    defaultValue: 'wifi',
   );
 
   static final mediaQueuingEnabled = Preference(
@@ -1544,7 +1573,7 @@ class UserPreferences extends ChangeNotifier {
 
   static final trickPlayEnabled = Preference(
     key: 'trick_play_enabled',
-    defaultValue: false,
+    defaultValue: true,
   );
 
   static final pgsDirectPlay = Preference(
