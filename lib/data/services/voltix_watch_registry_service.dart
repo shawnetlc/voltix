@@ -215,6 +215,14 @@ class VoltixWatchRegistryService extends ChangeNotifier {
 
   void _loadForCurrentUser() {
     final username = _resolveUsername();
+    // While the Voltix session is still restoring, the username resolves to
+    // 'default_user'. Switching to that (usually empty) list for a moment is
+    // what made shared-server Continue Watching items disappear on some loads.
+    if (username == 'default_user' &&
+        _currentLoadedUsername != null &&
+        _currentLoadedUsername != 'default_user') {
+      return;
+    }
     if (_currentLoadedUsername == username && _entries.isNotEmpty) return;
     _currentLoadedUsername = username;
     _entries = {};

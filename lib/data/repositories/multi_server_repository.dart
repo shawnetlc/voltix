@@ -45,6 +45,23 @@ class MultiServerRepository {
 
   static const _sessionCacheDuration = Duration(seconds: 5);
   static const _serverTimeout = Duration(seconds: 8);
+
+  /// Continue Watching / Next Up get longer than other rows: they are the top
+  /// of the home screen and load while twenty-odd other sections are in
+  /// flight, so 8 seconds was regularly too short and a server's items simply
+  /// vanished from the row for that load.
+  static const _resumeTimeout = Duration(seconds: 20);
+
+  /// Last successful Continue Watching / Next Up result per server. When a
+  /// server times out or errors, its previous items are reused instead of
+  /// dropping to an empty list - which is what made the row flip between
+  /// "everything" and "one item" from one load to the next.
+  final Map<String, List<AggregatedItem>> _lastGoodResume = {};
+  final Map<String, List<AggregatedItem>> _lastGoodNextUp = {};
+
+  /// True when the most recent Continue Watching load had a server fail with
+  /// nothing cached to fall back on, i.e. the result may be incomplete.
+  bool lastResumeIncomplete = false;
   static const _fields =
       'DateCreated,Type,UserData,Overview,Genres,CommunityRating,CriticRating,'
       'OfficialRating,RunTimeTicks,ProductionYear,SeriesName,'
@@ -239,6 +256,7 @@ class MultiServerRepository {
       await getLoggedInServers(),
     );
     final perServer = (limit * 3).clamp(1, 100);
+    var incomplete = false;
 
     final results = await Future.wait(
       sessions.map(
@@ -256,25 +274,31 @@ class MultiServerRepository {
           }
 
           try {
-            return await _withTimeout(() async {
-          final response = await session.client.itemsApi.getResumeItems(
-            includeItemTypes: ['Movie', 'Episode'],
-            limit: perServer,
-            fields: _fields,
-            enableImageTypes: _imageTypes,
-            imageTypeLimit: _imageTypeLimit,
-          );
-          return _parseItems(response, session.server.id);
-            }, label: 'resume from ${session.server.name}');
+            final items = await session.client.itemsApi
+                .getResumeItems(
+                  includeItemTypes: ['Movie', 'Episode'],
+                  limit: perServer,
+                  fields: _fields,
+                  enableImageTypes: _imageTypes,
+                  imageTypeLimit: _imageTypeLimit,
+                )
+                .timeout(_resumeTimeout)
+                .then((response) => _parseItems(response, session.server.id));
+            _lastGoodResume[session.server.id] = items;
+            return items;
           } catch (e) {
+            final previous = _lastGoodResume[session.server.id];
             _logger.w(
-              'MultiServer: resume failed for ${session.server.name}: $e',
+              'MultiServer: resume failed for ${session.server.name}: $e'
+              '${previous != null ? ' - reusing last ${previous.length} items' : ''}',
             );
-            return const <AggregatedItem>[];
+            if (previous == null) incomplete = true;
+            return previous ?? const <AggregatedItem>[];
           }
         },
       ),
     );
+    lastResumeIncomplete = incomplete;
 
     final allRaw = results.expand((e) => e).toList();
 
@@ -373,27 +397,32 @@ class MultiServerRepository {
           }
 
           try {
-            return await _withTimeout(() async {
-          final response = await session.client.itemsApi.getNextUp(
-            limit: perServer,
-            fields: _fields,
-            enableImageTypes: _imageTypes,
-            imageTypeLimit: _imageTypeLimit,
-            enableResumable: false,
-          );
-          final parsed = _parseItems(response, session.server.id);
-          return await _enrichNextUpItemsWithSeriesLastPlayed(
-            parsed,
-            session.client,
-          );
-            }, label: 'next up from ${session.server.name}');
+            final items = await () async {
+              final response = await session.client.itemsApi.getNextUp(
+                limit: perServer,
+                fields: _fields,
+                enableImageTypes: _imageTypes,
+                imageTypeLimit: _imageTypeLimit,
+                enableResumable: false,
+              );
+              final parsed = _parseItems(response, session.server.id);
+              return await _enrichNextUpItemsWithSeriesLastPlayed(
+                parsed,
+                session.client,
+              );
+            }().timeout(_resumeTimeout);
+            _lastGoodNextUp[session.server.id] = items;
+            return items;
           } catch (e) {
             // A single unreachable/expired-token server must never sink the
-            // whole row; skip it and keep results from the rest.
+            // whole row; reuse its last good result (or skip it) and keep
+            // results from the rest.
+            final previous = _lastGoodNextUp[session.server.id];
             _logger.w(
-              'MultiServer: next up failed for ${session.server.name}: $e',
+              'MultiServer: next up failed for ${session.server.name}: $e'
+              '${previous != null ? ' - reusing last ${previous.length} items' : ''}',
             );
-            return const <AggregatedItem>[];
+            return previous ?? const <AggregatedItem>[];
           }
         },
       ),
@@ -1817,9 +1846,84 @@ class MultiServerRepository {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Server variants ("which server do you want to watch from?")
+  // ---------------------------------------------------------------------------
+
+  static const _variantCacheTtl = Duration(minutes: 10);
+  static const _variantLookupTimeout = Duration(seconds: 4);
+  final Map<String, ({DateTime at, Future<List<AggregatedItem>> future})>
+      _variantCache = {};
+
+  /// Finds the same title on every signed-in server so the user can choose
+  /// which server to play from. The item's own server is always first.
+  ///
+  /// Returns an empty list when only one server is signed in or the title was
+  /// found on no other server. Never throws. Results are cached per item for
+  /// [_variantCacheTtl], so the lookup can be started early (e.g. when the
+  /// detail screen opens) and awaited cheaply when Play is pressed.
+  Future<List<AggregatedItem>> findServerVariants(AggregatedItem item) {
+    final key = '${item.serverId}|${item.id}';
+    final cached = _variantCache[key];
+    if (cached != null &&
+        DateTime.now().difference(cached.at) < _variantCacheTtl) {
+      return cached.future;
+    }
+    final future = _lookupServerVariants(item);
+    _variantCache[key] = (at: DateTime.now(), future: future);
+    return future;
+  }
+
+  Future<List<AggregatedItem>> _lookupServerVariants(AggregatedItem item) async {
+    try {
+      final sessions = await getLoggedInServers();
+      if (sessions.length < 2) return const [];
+
+      // Detail screens opened without a serverId carry the base URL in
+      // item.serverId instead, so match the item's own server on either.
+      bool isOwn(ServerUserSession s) =>
+          s.server.id == item.serverId || s.client.baseUrl == item.serverId;
+      final own = sessions.where(isOwn).firstOrNull;
+      final others = sessions.where((s) => !isOwn(s));
+      final matches = await Future.wait(
+        others.map(
+          (session) => _findMatchingItemOnServer(
+            session: session,
+            item: item,
+            withServerName: true,
+            extraFields: ',MediaStreams',
+          ).timeout(_variantLookupTimeout, onTimeout: () => null),
+        ),
+      );
+      final found = matches.whereType<AggregatedItem>().toList();
+      if (found.isEmpty) return const [];
+
+      final self = AggregatedItem(
+        id: item.id,
+        serverId: own?.server.id ?? item.serverId,
+        serverName: own?.server.name ??
+            item.serverName ??
+            serverNameForId(item.serverId),
+        rawData: item.rawData,
+      );
+      return [self, ...found];
+    } catch (e) {
+      _logger.w('MultiServer: server variant lookup failed: $e');
+      return const [];
+    }
+  }
+
   Future<String?> _findMatchingItemIdOnServer({
     required ServerUserSession session,
     required AggregatedItem item,
+  }) async =>
+      (await _findMatchingItemOnServer(session: session, item: item))?.id;
+
+  Future<AggregatedItem?> _findMatchingItemOnServer({
+    required ServerUserSession session,
+    required AggregatedItem item,
+    bool withServerName = false,
+    String extraFields = '',
   }) async {
     try {
       final tmdbId = item.tmdbId;
@@ -1831,28 +1935,30 @@ class MultiServerRepository {
         includeItemTypes: [type],
         recursive: true,
         limit: 10,
-        fields: _fields,
+        fields: '$_fields$extraFields',
       );
-      final remoteItems = _parseItems(response, session.server.id);
+      final remoteItems = withServerName
+          ? _parseItemsWithServerName(response, session)
+          : _parseItems(response, session.server.id);
 
       for (final remote in remoteItems) {
         if (tmdbId != null && tmdbId.isNotEmpty && remote.tmdbId == tmdbId) {
-          return remote.id;
+          return remote;
         }
         if (imdbId != null && imdbId.isNotEmpty && remote.imdbId == imdbId) {
-          return remote.id;
+          return remote;
         }
         if (type == 'Episode') {
           if (remote.parentIndexNumber == item.parentIndexNumber &&
               remote.indexNumber == item.indexNumber &&
               (remote.seriesName ?? '').toLowerCase().trim() ==
                   (item.seriesName ?? '').toLowerCase().trim()) {
-            return remote.id;
+            return remote;
           }
         } else if (remote.name.toLowerCase().trim() ==
                 item.name.toLowerCase().trim() &&
             remote.productionYear == item.productionYear) {
-          return remote.id;
+          return remote;
         }
       }
     } catch (_) {}

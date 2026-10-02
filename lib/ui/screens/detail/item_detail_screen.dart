@@ -12,6 +12,8 @@ import 'package:playback_core/playback_core.dart';
 import 'package:server_core/server_core.dart';
 
 import '../../../data/models/aggregated_item.dart';
+import '../../../data/repositories/multi_server_repository.dart';
+import '../../widgets/server_variant_chooser.dart';
 import '../../../data/repositories/item_mutation_repository.dart';
 import '../../../data/repositories/mdblist_repository.dart';
 import '../../../data/services/background_service.dart';
@@ -4858,6 +4860,8 @@ class DetailActionButtonsState extends State<DetailActionButtons> {
   bool _expanded = false;
   bool _playLaunchInFlight = false;
   bool _autoPlayTriggered = false;
+  bool? _serverLockedCache;
+  String? _variantPrefetchKey;
   DownloadedItem? _offlineRow;
   List<DownloadedItem>? _offlineQueue;
   DownloadService? _downloadService;
@@ -5162,13 +5166,20 @@ class DetailActionButtonsState extends State<DetailActionButtons> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
 
-      // Consume autoPlay from the current detail route so back navigation
-      // doesn't re-trigger playback.
-      context.replace(Destinations.item(item.id, serverId: item.serverId));
+      // autoPlay is consumed by _autoPlayTriggered (this State survives the
+      // player being pushed and popped), so the route is no longer rewritten
+      // here. The old context.replace() ran at the same moment as the server
+      // chooser and the play launch, and rebuilding the route underneath them
+      // could drop the chooser's result and bounce back without playing.
 
       final isPhoto = item.type == 'Photo';
       final ws = _computeWatchState(item);
-      _play(context, item, resume: !isPhoto && ws.hasProgress);
+      _play(
+        context,
+        item,
+        resume: !isPhoto && ws.hasProgress,
+        offerServerChoice: true,
+      );
     });
   }
 
@@ -5249,6 +5260,8 @@ class DetailActionButtonsState extends State<DetailActionButtons> {
 
   @override
   Widget build(BuildContext context) {
+    final prefetchItem = viewModel.item;
+    if (prefetchItem != null) _prefetchServerVariants(prefetchItem);
     final item = viewModel.item!;
     final isNeon = ThemeRegistry.active.id == ThemeRegistry.neonPulseId;
     final isPhoto = item.type == 'Photo';
@@ -5372,6 +5385,7 @@ class DetailActionButtonsState extends State<DetailActionButtons> {
         resume: isBoxSet
             ? (!boxSetAllWatched && !boxSetAllUnwatched)
             : (!isPhoto && hasProgress),
+        offerServerChoice: true,
       ),
       onLongPress: isVideo
           ? () => _showAdvancedPlaybackMenu(context, item)
@@ -6225,6 +6239,67 @@ class DetailActionButtonsState extends State<DetailActionButtons> {
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // Multi-server choice on Play
+  // ---------------------------------------------------------------------------
+
+  // Seasons and home videos are left out: their names ("Season 1", file
+  // names) can't be matched reliably across servers.
+  static const _serverChoiceTypes = {'Movie', 'Series', 'Episode', 'MusicVideo'};
+
+  /// True when this detail screen was opened with its server already decided
+  /// (from Continue Watching / Next Up, or after the user picked a server), so
+  /// Play must not ask again.
+  bool get _serverLocked {
+    final cached = _serverLockedCache;
+    if (cached != null) return cached;
+    var locked = false;
+    try {
+      locked =
+          GoRouterState.of(context).uri.queryParameters['serverLocked'] ==
+          'true';
+    } catch (_) {}
+    return _serverLockedCache = locked;
+  }
+
+  bool _offersServerChoice(AggregatedItem item) =>
+      _serverChoiceTypes.contains(item.type) &&
+      _offlineRow == null &&
+      !_serverLocked &&
+      GetIt.instance.isRegistered<MultiServerRepository>();
+
+  /// Starts the cross-server lookup as soon as the item is known, so the
+  /// chooser can open instantly when Play is pressed. Cached per item.
+  void _prefetchServerVariants(AggregatedItem item) {
+    final key = '${item.serverId}|${item.id}';
+    if (_variantPrefetchKey == key) return;
+    _variantPrefetchKey = key;
+    if (!_offersServerChoice(item)) return;
+    unawaited(GetIt.instance<MultiServerRepository>().findServerVariants(item));
+  }
+
+  /// Returns the item to play: [item] itself when it exists on one server only
+  /// or the user picked this server, the other server's copy when they picked
+  /// another, or null when they dismissed the chooser.
+  Future<AggregatedItem?> _chooseServer(
+    BuildContext context,
+    AggregatedItem item,
+  ) async {
+    if (!_offersServerChoice(item)) return item;
+    final variants = await GetIt.instance<MultiServerRepository>()
+        .findServerVariants(item)
+        .timeout(const Duration(seconds: 5), onTimeout: () => const []);
+    if (variants.length < 2 || !context.mounted) return item;
+    final picked = await showServerVariantChooser(
+      context,
+      title: item.name,
+      variants: variants,
+    );
+    if (picked == null) return null;
+    // The first variant is always this screen's own server.
+    return identical(picked, variants.first) ? item : picked;
+  }
+
   void _play(
     BuildContext context,
     AggregatedItem item, {
@@ -6232,10 +6307,33 @@ class DetailActionButtonsState extends State<DetailActionButtons> {
     int? forceMaxBitrateMbps,
     bool forceTranscode = false,
     bool openInExternalPlayer = false,
+    bool offerServerChoice = false,
   }) async {
     if (_playLaunchInFlight) return;
     _playLaunchInFlight = true;
     try {
+      if (offerServerChoice) {
+        final chosen = await _chooseServer(context, item);
+        if (chosen == null || !mounted || !context.mounted) return;
+        // Let the chooser finish closing (route pop + focus returning to this
+        // screen) before navigating or starting playback. Acting in the same
+        // frame let the select key reach whatever regained focus underneath.
+        await WidgetsBinding.instance.endOfFrame;
+        if (!mounted || !context.mounted) return;
+        if (!identical(chosen, item)) {
+          // Open the title on the chosen server and play it there; that
+          // screen's own Play path handles resume, versions and tracks.
+          context.push(
+            Destinations.item(
+              chosen.id,
+              serverId: chosen.serverId,
+              autoPlay: true,
+              serverLocked: true,
+            ),
+          );
+          return;
+        }
+      }
       final manager = GetIt.instance<PlaybackManager>();
       manager.setBitrateOverride(forceMaxBitrateMbps);
       if (openInExternalPlayer) {

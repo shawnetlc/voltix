@@ -379,7 +379,23 @@ class HomeViewModel extends ChangeNotifier {
   @override
   void dispose() {
     _dailySyncTimer?.cancel();
+    _rowNotifyTimer?.cancel();
+    _disposed = true;
     super.dispose();
+  }
+
+  bool _disposed = false;
+  Timer? _rowNotifyTimer;
+
+  /// Coalesces the rebuilds caused by home sections finishing. Twenty-odd
+  /// sections landing within a few milliseconds of each other used to rebuild
+  /// the whole home screen once per section; now it rebuilds at most once per
+  /// frame, which keeps scrolling and image decoding smooth while rows arrive.
+  void _notifyRowsChanged() {
+    if (_rowNotifyTimer?.isActive ?? false) return;
+    _rowNotifyTimer = Timer(const Duration(milliseconds: 16), () {
+      if (!_disposed) notifyListeners();
+    });
   }
 
   Future<void> load({bool preserveExisting = false}) async {
@@ -668,8 +684,14 @@ class HomeViewModel extends ChangeNotifier {
               _rows.insertAll(insertIndex, loadedRows);
             }
           }
-          notifyListeners();
+          _notifyRowsChanged();
         });
+      }
+
+      // Continue Watching is the top row, so start it now alongside the other
+      // sections instead of after all of them have finished.
+      if (showMergedResume) {
+        _loadResumeAndNextUpInBackground();
       }
 
       // Bounded on TV, unbounded everywhere else.
@@ -703,10 +725,6 @@ class HomeViewModel extends ChangeNotifier {
       _topShelf.update(_rows);
       _watchNext.update(_rows);
       _tvChannels.update();
-
-      if (showMergedResume) {
-        _loadResumeAndNextUpInBackground();
-      }
     } finally {
       _isLoading = false;
       notifyListeners();
@@ -3214,10 +3232,32 @@ class HomeViewModel extends ChangeNotifier {
     if (resumeIndex < 0) return;
     _rows = List.of(_rows);
     if (mergedItems.isEmpty) {
-      _rows.removeAt(resumeIndex);
+      // If a server failed with nothing cached, the empty result may just be
+      // a failed load - keep what is already showing instead of removing the
+      // row. A genuinely empty result (every server answered) still hides it.
+      final mayBeIncomplete =
+          _multiServerEnabled && _multiServerRepo.lastResumeIncomplete;
+      if (_rows[resumeIndex].items.isEmpty || !mayBeIncomplete) {
+        _rows.removeAt(resumeIndex);
+      } else {
+        _rows[resumeIndex] = _rows[resumeIndex].copyWith(isLoading: false);
+      }
     } else {
+      var items = mergedItems;
+      // A server failed with nothing cached: keep the items it was showing
+      // before so the row doesn't shrink to whatever the other servers sent.
+      if (_multiServerEnabled && _multiServerRepo.lastResumeIncomplete) {
+        final answeredServers = {for (final i in mergedItems) i.serverId};
+        final ids = {for (final i in mergedItems) '${i.serverId}_${i.id}'};
+        final kept = _rows[resumeIndex].items.where(
+          (i) =>
+              !answeredServers.contains(i.serverId) &&
+              !ids.contains('${i.serverId}_${i.id}'),
+        );
+        if (kept.isNotEmpty) items = [...mergedItems, ...kept];
+      }
       _rows[resumeIndex] = _rows[resumeIndex].copyWith(
-        items: mergedItems,
+        items: items,
         isLoading: false,
       );
     }
