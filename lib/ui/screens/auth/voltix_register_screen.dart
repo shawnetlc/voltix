@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:get_it/get_it.dart';
 import 'package:go_router/go_router.dart';
 import 'package:voltix_design/voltix_design.dart';
@@ -235,10 +236,148 @@ class _VoltixRegisterScreenState extends State<VoltixRegisterScreen> {
   void initState() {
     super.initState();
     _loadDeviceMac();
+    _wireRemoteNavigation();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _trialOptionFocus.requestFocus();
     });
   }
+
+  // ── Remote / keyboard navigation ───────────────────────────────────────
+  //
+  // The account form could not be used with a TV remote: the TV text fields
+  // were drawn from the focus nodes but never attached to them, so nothing
+  // on that page could take focus and the page never scrolled to the fields.
+  // Every control on the first two steps now has explicit up/down moves and
+  // scrolls itself into view when focused.
+
+  bool _isMove(KeyEvent e) => e is KeyDownEvent || e is KeyRepeatEvent;
+
+  KeyEventResult _moveFocus(
+    KeyEvent event, {
+    FocusNode? up,
+    FocusNode? down,
+    FocusNode? left,
+    FocusNode? right,
+  }) {
+    if (!_isMove(event)) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    FocusNode? target;
+    if (key == LogicalKeyboardKey.arrowUp) target = up;
+    if (key == LogicalKeyboardKey.arrowDown) target = down;
+    if (key == LogicalKeyboardKey.arrowLeft) target = left;
+    if (key == LogicalKeyboardKey.arrowRight) target = right;
+    if (target == null) return KeyEventResult.ignored;
+    target.requestFocus();
+    return KeyEventResult.handled;
+  }
+
+  void _scrollIntoView(FocusNode node, {double alignment = 0.5}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = node.context;
+      if (ctx == null || !mounted) return;
+      Scrollable.ensureVisible(
+        ctx,
+        alignment: alignment,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
+  /// The plan card currently selected, so "up" from the button returns to it.
+  FocusNode get _selectedPlanFocus => _isTrial ? _trialOptionFocus : _subOptionFocus;
+
+  /// Enter/OK on a TV field opens its on-screen keyboard; Back closes it.
+  bool _handleTvFieldKeys(
+    KeyEvent event,
+    FocusNode node,
+    GlobalKey<CustomTVTextFieldState> fieldKey,
+  ) {
+    if (!PlatformDetection.isTV || _isLoading) return false;
+    if (event is! KeyDownEvent) return false;
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.escape) {
+      if (fieldKey.currentState?.isKeyboardVisible ?? false) {
+        fieldKey.currentState?.closeKeyboard();
+        node.requestFocus();
+        return true;
+      }
+      return false;
+    }
+    if (key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.numpadEnter) {
+      if (!node.hasFocus) node.requestFocus();
+      fieldKey.currentState?.openKeyboard();
+      _scrollIntoView(node, alignment: 0.15);
+      return true;
+    }
+    return false;
+  }
+
+  void _wireRemoteNavigation() {
+    // Step 1: the two plan cards and the Continue button.
+    _planNextFocus.onKeyEvent = (node, event) =>
+        _moveFocus(event, up: _selectedPlanFocus);
+
+    // Step 2: fields top to bottom, then Back / Continue.
+    final fields = <(FocusNode, GlobalKey<CustomTVTextFieldState>)>[
+      (_usernameFocus, _usernameTvFieldKey),
+      (_emailFocus, _emailTvFieldKey),
+      (_passwordFocus, _passwordTvFieldKey),
+      (_confirmPasswordFocus, _confirmPasswordTvFieldKey),
+    ];
+    for (var i = 0; i < fields.length; i++) {
+      final (node, key) = fields[i];
+      final up = i > 0 ? fields[i - 1].$1 : null;
+      final down = i < fields.length - 1 ? fields[i + 1].$1 : _infoNextFocus;
+      node.onKeyEvent = (n, event) {
+        if (_handleTvFieldKeys(event, node, key)) return KeyEventResult.handled;
+        // Phones/desktop use normal text fields, where left/right move the
+        // cursor; only take over left/right on TV.
+        if (!PlatformDetection.isTV &&
+            (event.logicalKey == LogicalKeyboardKey.arrowLeft ||
+                event.logicalKey == LogicalKeyboardKey.arrowRight)) {
+          return KeyEventResult.ignored;
+        }
+        return _moveFocus(event, up: up, down: down);
+      };
+      node.addListener(() {
+        if (node.hasFocus) _scrollIntoView(node, alignment: 0.3);
+      });
+    }
+    _infoNextFocus.onKeyEvent = (node, event) => _moveFocus(
+          event,
+          up: _confirmPasswordFocus,
+          left: _infoBackFocus,
+        );
+    _infoBackFocus.onKeyEvent = (node, event) => _moveFocus(
+          event,
+          up: _confirmPasswordFocus,
+          right: _infoNextFocus,
+        );
+    for (final node in [_planNextFocus, _infoNextFocus, _infoBackFocus]) {
+      node.addListener(() {
+        if (node.hasFocus) _scrollIntoView(node, alignment: 0.8);
+      });
+    }
+  }
+
+  /// Focus ring for buttons on TV. The default Material focus overlay is a
+  /// faint tint that is easy to miss across a room.
+  ButtonStyle _tvFocusRing(ButtonStyle base) => base.copyWith(
+        side: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.focused)
+              ? const BorderSide(color: Colors.white, width: 3)
+              : base.side?.resolve(states),
+        ),
+        elevation: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.focused) ? 10 : 0,
+        ),
+        shadowColor: WidgetStatePropertyAll(
+          AppColorScheme.accent.withValues(alpha: 0.6),
+        ),
+      );
 
   @override
   void dispose() {
@@ -868,12 +1007,12 @@ class _VoltixRegisterScreenState extends State<VoltixRegisterScreen> {
         ElevatedButton(
           focusNode: _planNextFocus,
           onPressed: _validateStep1AndProceed,
-          style: ElevatedButton.styleFrom(
+          style: _tvFocusRing(ElevatedButton.styleFrom(
             backgroundColor: AppColorScheme.accent,
             foregroundColor: Colors.black,
             padding: const EdgeInsets.symmetric(vertical: 16),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          ),
+          )),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -910,12 +1049,24 @@ class _VoltixRegisterScreenState extends State<VoltixRegisterScreen> {
       // mouse/touch: the trial card looked selectable because it starts
       // pre-selected, not because activating it ever worked either.
       onKeyEvent: (node, event) {
-        if (!isActivateKey(event)) return KeyEventResult.ignored;
-        onTap();
-        return KeyEventResult.handled;
+        if (isActivateKey(event)) {
+          // OK on a card selects it and moves straight to Continue.
+          onTap();
+          _planNextFocus.requestFocus();
+          return KeyEventResult.handled;
+        }
+        return _moveFocus(
+          event,
+          down: _planNextFocus,
+          left: focusNode == _subOptionFocus ? _trialOptionFocus : null,
+          right: focusNode == _trialOptionFocus ? _subOptionFocus : null,
+        );
       },
       onFocusChange: (focused) {
         if (!focused) return;
+        // Landing on a card makes it the active choice, so the highlighted
+        // card and the Continue button always agree.
+        if (!isSelected) onTap();
         WidgetsBinding.instance.addPostFrameCallback((_) {
           final ctx = focusNode.context;
           if (ctx == null) return;
@@ -985,13 +1136,21 @@ class _VoltixRegisterScreenState extends State<VoltixRegisterScreen> {
                     ],
                   ),
                   const SizedBox(height: 12),
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 17,
-                      fontWeight: FontWeight.bold,
-                    ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          title,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 17,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      if (isSelected)
+                        Icon(Icons.check_circle, color: AppColorScheme.accent, size: 22),
+                    ],
                   ),
                   Text(
                     subtitle,
@@ -1123,13 +1282,18 @@ class _VoltixRegisterScreenState extends State<VoltixRegisterScreen> {
             Expanded(
               child: OutlinedButton(
                 focusNode: _infoBackFocus,
-                onPressed: () => _goToStep(0),
-                style: OutlinedButton.styleFrom(
+                onPressed: () {
+                  _goToStep(0);
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted) _selectedPlanFocus.requestFocus();
+                  });
+                },
+                style: _tvFocusRing(OutlinedButton.styleFrom(
                   foregroundColor: Colors.white,
                   side: const BorderSide(color: Colors.white24),
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                ),
+                )),
                 child: const Text('Back'),
               ),
             ),
@@ -1139,12 +1303,12 @@ class _VoltixRegisterScreenState extends State<VoltixRegisterScreen> {
               child: ElevatedButton(
                 focusNode: _infoNextFocus,
                 onPressed: _isLoading ? null : _validateStep2AndProceed,
-                style: ElevatedButton.styleFrom(
+                style: _tvFocusRing(ElevatedButton.styleFrom(
                   backgroundColor: AppColorScheme.accent,
                   foregroundColor: Colors.black,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                ),
+                )),
                 child: _isLoading
                     ? const SizedBox(
                         height: 20,
@@ -1181,7 +1345,11 @@ class _VoltixRegisterScreenState extends State<VoltixRegisterScreen> {
     TextInputType keyboardType = TextInputType.text,
   }) {
     if (PlatformDetection.isTV) {
-      return ListenableBuilder(
+      // The Focus wrapper is what makes the field reachable with the remote;
+      // without it the node was never attached and nothing here could focus.
+      return Focus(
+        focusNode: focusNode,
+        child: ListenableBuilder(
         listenable: focusNode,
         builder: (context, _) {
           final isFocused = focusNode.hasFocus;
@@ -1206,8 +1374,13 @@ class _VoltixRegisterScreenState extends State<VoltixRegisterScreen> {
               icon,
               color: isFocused ? Colors.black : Colors.white,
             ),
+            popParentOnKeyboardClose: false,
+            onVisibilityChanged: (visible) {
+              if (visible) _scrollIntoView(focusNode, alignment: 0.15);
+            },
           );
         },
+        ),
       );
     }
 
@@ -1216,6 +1389,8 @@ class _VoltixRegisterScreenState extends State<VoltixRegisterScreen> {
       focusNode: focusNode,
       obscureText: obscureText,
       keyboardType: keyboardType,
+      textInputAction: TextInputAction.next,
+      scrollPadding: const EdgeInsets.only(bottom: 160),
       style: const TextStyle(color: Colors.white),
       decoration: InputDecoration(
         labelText: label,
