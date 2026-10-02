@@ -25,7 +25,7 @@ class TasteHistoryAnalyzer {
         sortBy: 'DatePlayed',
         sortOrder: 'Descending',
         limit: 50,
-      ).timeout(const Duration(seconds: 8));
+      ).timeout(const Duration(seconds: 30));
 
       // 2. Fetch favorites
       final favFuture = _client.itemsApi.getItems(
@@ -34,13 +34,13 @@ class TasteHistoryAnalyzer {
         includeItemTypes: const ['Movie', 'Series'],
         fields: 'Genres,People,ProductionYear,UserData',
         limit: 50,
-      ).timeout(const Duration(seconds: 8));
+      ).timeout(const Duration(seconds: 30));
 
       // 3. Fetch in-progress / resume items (useful for detecting early abandonment vs active watch)
       final resumeFuture = _client.itemsApi.getResumeItems(
         fields: 'Genres,People,UserData',
         limit: 20,
-      ).timeout(const Duration(seconds: 8));
+      ).timeout(const Duration(seconds: 30));
 
       final results = await Future.wait([
         playedFuture.catchError((_) => <String, dynamic>{'Items': []}),

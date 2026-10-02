@@ -197,38 +197,82 @@ class TasteSyncManager extends ChangeNotifier {
           completed: completed,
         );
 
-        if (!token.isCancelled && outstanding.contains(SyncStep.movies)) {
+        // All four fetches start NOW, together - movies, series, genres and
+        // viewing history are independent server queries, and on a slow
+        // Lumistream server each can take 10-20 s. Run one after another they
+        // added up to over a minute, so "Continue to Movies" opened an empty
+        // page. The checklist still ticks over top-to-bottom: each result is
+        // recorded in order as soon as it (and everything above it) is in.
+        final moviesFuture = outstanding.contains(SyncStep.movies)
+            ? _syncMoviesWithFailover(
+                primaryServerId: serverId,
+                userId: userId,
+                languageSettings: languageSettings,
+                token: token,
+              ).catchError((Object e) {
+                debugPrint('[TasteSyncManager] Movies fetch failed: $e');
+                return <AggregatedItem>[];
+              })
+            : null;
+        final seriesFuture = outstanding.contains(SyncStep.series)
+            ? _syncSeriesWithFailover(
+                primaryServerId: serverId,
+                userId: userId,
+                languageSettings: languageSettings,
+                token: token,
+              ).catchError((Object e) {
+                debugPrint('[TasteSyncManager] Series fetch failed: $e');
+                return <AggregatedItem>[];
+              })
+            : null;
+        final genresFuture = outstanding.contains(SyncStep.genres)
+            ? _genreService
+                .discoverServerGenres(userId: userId, forceRefresh: true)
+                .catchError((Object e) {
+                debugPrint('[TasteSyncManager] Genre discovery failed: $e');
+                return _cachedServerGenres;
+              })
+            : null;
+        final historyFuture = outstanding.contains(SyncStep.viewingLab)
+            ? _analyzer.analyzeHistory(userId: userId)
+            : null;
+
+        if (!token.isCancelled && moviesFuture != null) {
           await _stepMovies(
             serverId: serverId,
             userId: userId,
             languageSettings: languageSettings,
             token: token,
             completed: completed,
+            prefetched: moviesFuture,
           );
         }
-        if (!token.isCancelled && outstanding.contains(SyncStep.series)) {
+        if (!token.isCancelled && seriesFuture != null) {
           await _stepSeries(
             serverId: serverId,
             userId: userId,
             languageSettings: languageSettings,
             token: token,
             completed: completed,
+            prefetched: seriesFuture,
           );
         }
-        if (!token.isCancelled && outstanding.contains(SyncStep.genres)) {
+        if (!token.isCancelled && genresFuture != null) {
           await _stepGenres(
             serverId: serverId,
             userId: userId,
             token: token,
             completed: completed,
+            prefetched: genresFuture,
           );
         }
-        if (!token.isCancelled && outstanding.contains(SyncStep.viewingLab)) {
+        if (!token.isCancelled && historyFuture != null) {
           await _stepViewingLab(
             serverId: serverId,
             userId: userId,
             token: token,
             completed: completed,
+            prefetched: historyFuture,
           );
         }
       }
@@ -308,14 +352,16 @@ class TasteSyncManager extends ChangeNotifier {
     required LanguageSettings languageSettings,
     required SyncCancellationToken token,
     required Set<SyncStep> completed,
+    Future<List<AggregatedItem>>? prefetched,
   }) async {
     if (token.isCancelled) return;
-    final movies = await _syncMoviesWithFailover(
-      primaryServerId: serverId,
-      userId: userId,
-      languageSettings: languageSettings,
-      token: token,
-    );
+    final movies = await (prefetched ??
+        _syncMoviesWithFailover(
+          primaryServerId: serverId,
+          userId: userId,
+          languageSettings: languageSettings,
+          token: token,
+        ));
     if (token.isCancelled) return;
 
     if (movies.isNotEmpty) {
@@ -342,14 +388,16 @@ class TasteSyncManager extends ChangeNotifier {
     required LanguageSettings languageSettings,
     required SyncCancellationToken token,
     required Set<SyncStep> completed,
+    Future<List<AggregatedItem>>? prefetched,
   }) async {
     if (token.isCancelled) return;
-    final series = await _syncSeriesWithFailover(
-      primaryServerId: serverId,
-      userId: userId,
-      languageSettings: languageSettings,
-      token: token,
-    );
+    final series = await (prefetched ??
+        _syncSeriesWithFailover(
+          primaryServerId: serverId,
+          userId: userId,
+          languageSettings: languageSettings,
+          token: token,
+        ));
     if (token.isCancelled) return;
 
     if (series.isNotEmpty) {
@@ -375,12 +423,14 @@ class TasteSyncManager extends ChangeNotifier {
     required String userId,
     required SyncCancellationToken token,
     required Set<SyncStep> completed,
+    Future<List<ServerGenreInfo>>? prefetched,
   }) async {
     if (token.isCancelled) return;
-    final genres = await _genreService.discoverServerGenres(
-      userId: userId,
-      forceRefresh: true,
-    );
+    final genres = await (prefetched ??
+        _genreService.discoverServerGenres(
+          userId: userId,
+          forceRefresh: true,
+        ));
     if (token.isCancelled) return;
     _cachedServerGenres = genres;
 
@@ -399,9 +449,10 @@ class TasteSyncManager extends ChangeNotifier {
     required String userId,
     required SyncCancellationToken token,
     required Set<SyncStep> completed,
+    Future<InferredTasteProfile>? prefetched,
   }) async {
     if (token.isCancelled) return;
-    final inferred = await _analyzer.analyzeHistory(userId: userId);
+    final inferred = await (prefetched ?? _analyzer.analyzeHistory(userId: userId));
     if (token.isCancelled) return;
     _cachedInferredProfile = inferred;
 

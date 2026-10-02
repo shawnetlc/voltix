@@ -118,6 +118,9 @@ class CustomTVTextFieldState extends State<CustomTVTextField>
   final FocusNode _keyboardFocusNode = FocusNode();
   final FocusNode _systemInputFocusNode = FocusNode();
   FocusNode? _focusToRestoreAfterOverlay;
+  // The keyboard dialog's own context, so closing the keyboard closes the
+  // dialog route it lives in.
+  BuildContext? _overlayContext;
 
   bool _useSystemImeSession = false;
 
@@ -207,11 +210,19 @@ class CustomTVTextFieldState extends State<CustomTVTextField>
     _keyboardController.setText(widget.controller.text);
     _keyboardController.onTextChanged = (text) => widget.controller.text = text;
     _keyboardController.onKeyboardClosed = (shouldPop) {
+      // Hiding the keyboard only blanked its widget: the (near-invisible)
+      // dialog route stayed on top and swallowed every key until Back was
+      // pressed a second time - so Done/Enter seemed to "lose" focus. Close
+      // the dialog itself whenever the keyboard hides.
+      final closedOverlay = _closeOverlayRoute();
       if (shouldPop) {
         widget.onFieldSubmitted?.call(widget.controller.text);
       }
+      // popParentOnKeyboardClose used to be what closed the dialog; when the
+      // dialog has just been closed above, don't pop a second route (the page).
       if (widget.popParentOnKeyboardClose &&
           shouldPop &&
+          !closedOverlay &&
           Navigator.canPop(context)) {
         Navigator.pop(context);
       }
@@ -359,6 +370,27 @@ class CustomTVTextFieldState extends State<CustomTVTextField>
     };
   }
 
+  /// Closes the keyboard's dialog route if it is still open. Returns true when
+  /// it did, so the caller doesn't pop a second route.
+  bool _closeOverlayRoute() {
+    final ctx = _overlayContext;
+    _overlayContext = null;
+    if (ctx == null || !ctx.mounted) return false;
+    try {
+      final route = ModalRoute.of(ctx);
+      if (route == null || !route.isActive) return false;
+      final nav = Navigator.of(ctx);
+      if (route.isCurrent) {
+        nav.pop();
+      } else {
+        nav.removeRoute(route);
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   void _showKeyboardOverlay() {
     if (_isOverlayOpen.value) return;
     _isOverlayOpen.value = true;
@@ -367,7 +399,9 @@ class CustomTVTextFieldState extends State<CustomTVTextField>
       context: context,
       barrierDismissible: false,
       barrierColor: Colors.black.withValues(alpha: 0.01),
-      builder: (context) => Dialog(
+      builder: (dialogContext) {
+        _overlayContext = dialogContext;
+        return Dialog(
         backgroundColor: Colors.transparent,
         insetPadding: EdgeInsets.zero,
         child: CustomKeyboard(
@@ -378,8 +412,10 @@ class CustomTVTextFieldState extends State<CustomTVTextField>
           suggestionsBuilder: widget.suggestionsBuilder,
           recentSuggestions: widget.recentSuggestions,
         ),
-      ),
+      );
+      },
     ).whenComplete(() {
+      _overlayContext = null;
       _isOverlayOpen.value = false;
 
       final focusToRestore = _focusToRestoreAfterOverlay;

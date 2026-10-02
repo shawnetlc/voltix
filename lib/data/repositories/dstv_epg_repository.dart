@@ -226,6 +226,17 @@ class DstvEpgRepository {
   }
 
   static const Map<String, String> _knownDstvAliases = {
+    // M-Net rebrand: 106 M-Net Plus, 107 M-Net Stars, 108 M-Net Legends
+    // (formerly M-Net Movies 2/3/4, which still map to the same numbers below).
+    'm net plus': '106',
+    'mnet plus': '106',
+    'm plus': '106',
+    'm net stars': '107',
+    'mnet stars': '107',
+    'm stars': '107',
+    'm net legends': '108',
+    'mnet legends': '108',
+    'm legends': '108',
     // M-Net & Movies
     'm net movies 1': '104',
     'mnet movies 1': '104',

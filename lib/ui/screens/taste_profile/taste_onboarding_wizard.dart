@@ -150,7 +150,21 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
   }
 
   void _onSyncProgressUpdated() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    // Pick each list up the moment the sync has it, not only once the whole
+    // sync finishes - so "Continue to Movies" opens on a full page.
+    final sync = _tasteRepo.syncManager;
+    final moviesArrived =
+        sync.cachedMovies.isNotEmpty && sync.cachedMovies.length != _allMovies.length;
+    final seriesArrived =
+        sync.cachedSeries.isNotEmpty && sync.cachedSeries.length != _allSeries.length;
+    final genresArrived = sync.cachedServerGenres.isNotEmpty &&
+        sync.cachedServerGenres.length != _serverGenres.length;
+    if (moviesArrived || seriesArrived || genresArrived) {
+      unawaited(_refreshLocalCaches());
+    } else {
+      setState(() {});
+    }
   }
 
   Future<void> _initializeWizard() async {

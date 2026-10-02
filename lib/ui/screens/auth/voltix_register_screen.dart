@@ -315,6 +315,30 @@ class _VoltixRegisterScreenState extends State<VoltixRegisterScreen> {
     return false;
   }
 
+  /// Enter / Done on a field's keyboard: go to the next field and open its
+  /// keyboard, or to the Continue button after the last one.
+  void _advanceFromField(FocusNode current) {
+    final order = [
+      (_usernameFocus, _usernameTvFieldKey),
+      (_emailFocus, _emailTvFieldKey),
+      (_passwordFocus, _passwordTvFieldKey),
+      (_confirmPasswordFocus, _confirmPasswordTvFieldKey),
+    ];
+    final i = order.indexWhere((e) => e.$1 == current);
+    // Runs after the keyboard dialog has closed and handed focus back.
+    Future.delayed(const Duration(milliseconds: 250), () {
+      if (!mounted) return;
+      if (i >= 0 && i < order.length - 1) {
+        final (next, key) = order[i + 1];
+        next.requestFocus();
+        if (PlatformDetection.isTV) key.currentState?.openKeyboard();
+        _scrollIntoView(next, alignment: 0.15);
+      } else {
+        _infoNextFocus.requestFocus();
+      }
+    });
+  }
+
   void _wireRemoteNavigation() {
     // Step 1: the two plan cards and the Continue button.
     _planNextFocus.onKeyEvent = (node, event) =>
@@ -1374,7 +1398,9 @@ class _VoltixRegisterScreenState extends State<VoltixRegisterScreen> {
               icon,
               color: isFocused ? Colors.black : Colors.white,
             ),
+            // Never pop the page itself; the keyboard closes its own dialog.
             popParentOnKeyboardClose: false,
+            onFieldSubmitted: (_) => _advanceFromField(focusNode),
             onVisibilityChanged: (visible) {
               if (visible) _scrollIntoView(focusNode, alignment: 0.15);
             },
@@ -1389,7 +1415,10 @@ class _VoltixRegisterScreenState extends State<VoltixRegisterScreen> {
       focusNode: focusNode,
       obscureText: obscureText,
       keyboardType: keyboardType,
-      textInputAction: TextInputAction.next,
+      textInputAction: focusNode == _confirmPasswordFocus
+          ? TextInputAction.done
+          : TextInputAction.next,
+      onSubmitted: (_) => _advanceFromField(focusNode),
       scrollPadding: const EdgeInsets.only(bottom: 160),
       style: const TextStyle(color: Colors.white),
       decoration: InputDecoration(
