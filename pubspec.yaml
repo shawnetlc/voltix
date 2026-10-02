@@ -1,10 +1,10 @@
 name: voltix
 description: "Voltix Streaming"
 publish_to: 'none'
-version: 2.0.38+40000372
+version: 2.0.58+40000412
 
 voltix:
-  android_tv_build_number: 40000373
+  android_tv_build_number: 40000413
 
 environment:
   sdk: ^3.11.0
@@ -113,6 +113,9 @@ dependencies:
   intl: ^0.20.2
   collection: ^1.19.1
   package_info_plus: ^8.3.1
+  # Google Play In-App Updates: asks Play itself whether a newer build exists
+  # and runs the update inside the app. Android only; no-op elsewhere.
+  in_app_update: ^4.2.3
   path: ^1.9.1
   uuid: ^4.5.3
   cupertino_icons: ^1.0.9
@@ -235,6 +238,7 @@ flutter:
 
   assets:
     - assets/images/
+    - assets/avatars/
     - assets/icons/
     - assets/icons/ratings/
     - assets/fonts/

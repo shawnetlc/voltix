@@ -11,6 +11,7 @@ import 'package:playback_core/playback_core.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'data/services/app_update_service.dart';
+import 'data/services/play_store_updater.dart';
 import 'data/services/cast/cast_service.dart';
 import 'data/services/deep_link_service.dart';
 import 'data/services/download_service.dart';
@@ -923,6 +924,11 @@ class _ConnectivityListenerState extends ConsumerState<_ConnectivityListener>
 
   Future<void> _runDesktopUpdateCheck() async {
     try {
+      // Every launch: ask Google Play first. When Play answers (update started
+      // or up to date) that is the final word for a Play install.
+      final play = await PlayStoreUpdater.checkAndUpdate();
+      if (play != PlayUpdateCheck.unavailable) return;
+
       final update = await GetIt.instance<AppUpdateService>()
           .checkForUpdateIfDue();
       if (!mounted || update == null) {

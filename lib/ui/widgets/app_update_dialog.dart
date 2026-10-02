@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:voltix_design/voltix_design.dart';
 
 import '../../data/services/app_update_service.dart';
+import '../../data/services/play_store_updater.dart';
 import '../../l10n/app_localizations.dart';
 import '../../util/app_distribution.dart';
 import '../../util/platform_detection.dart';
@@ -18,6 +19,21 @@ final _kAccent = AppColorScheme.accent;
 /// Checks for an update and shows the dialog or an appropriate snackbar.
 /// Returns true if an update was found and the dialog was shown.
 Future<void> checkAndShowUpdateResult(BuildContext context) async {
+  // Play installs: Google Play is the authority. It either starts its own
+  // update screen or confirms this is the latest build.
+  final play = await PlayStoreUpdater.checkAndUpdate(forced: true);
+  if (!context.mounted) return;
+  if (play == PlayUpdateCheck.upToDate) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(AppLocalizations.of(context).youAreUpToDate),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+    return;
+  }
+  if (play == PlayUpdateCheck.updateStarted) return;
+
   final result =
       await GetIt.instance<AppUpdateService>().checkForUpdateNowDetailed();
   if (!context.mounted) return;
@@ -298,6 +314,13 @@ class _ForceUpdateModalState extends State<_ForceUpdateModal> {
 
   /// Opens this app's listing in whichever store owns updates for this build.
   void _openStoreListing() async {
+    // Google Play installs: run Play's own update flow inside the app rather
+    // than opening the listing (which can show "can't update right now" while
+    // Play hasn't refreshed). Falls through to the listing if Play can't.
+    if (!AppDistribution.isAppGalleryBuild) {
+      final play = await PlayStoreUpdater.checkAndUpdate(forced: true);
+      if (play == PlayUpdateCheck.updateStarted) return;
+    }
     String pkgName = 'cc.voltix.streaming';
     try {
       final info = await PackageInfo.fromPlatform();
