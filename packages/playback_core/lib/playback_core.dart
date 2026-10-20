@@ -5,6 +5,8 @@
 library;
 
 export 'src/playback_manager.dart';
+export 'src/media_source_version_picker.dart';
+export 'src/audio_track_preference.dart';
 export 'src/playback_arbiter.dart';
 export 'src/player_backend.dart';
 export 'src/player_service.dart';

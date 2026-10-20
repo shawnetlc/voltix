@@ -5,6 +5,7 @@ import 'package:voltix_design/voltix_design.dart';
 import '../../preference/preference_constants.dart';
 import '../../util/focus/dpad_keys.dart';
 import '../../util/focus/key_event_utils.dart';
+import '../../util/voltix_library_branding.dart' show kAppAssetImagePrefix;
 import 'bounded_network_image.dart';
 import 'marquee_text.dart';
 import '../mixins/focus_state_mixin.dart';
@@ -425,7 +426,30 @@ class _CardImage extends StatelessWidget {
                   padding: (itemType == 'Network' || itemType == 'Studio')
                       ? const EdgeInsets.all(8.0)
                       : EdgeInsets.zero,
-                  child: imageUrl != null
+                  child: imageUrl != null &&
+                          imageUrl!.startsWith(kAppAssetImagePrefix)
+                      // Artwork bundled with the app (e.g. My Media categories).
+                      ? Image.asset(
+                          imageUrl!.substring(kAppAssetImagePrefix.length),
+                          fit: BoxFit.cover,
+                          cacheWidth: aspectRatio > 1.2 ? 960 : 640,
+                          errorBuilder: (_, _, _) => fallbackImageUrl != null
+                              ? BoundedNetworkImage(
+                                  imageUrl: fallbackImageUrl!,
+                                  fit: BoxFit.cover,
+                                  fadeInDuration: Duration.zero,
+                                  maxWidth: aspectRatio > 1.2 ? 960 : 640,
+                                  errorBuilder: (_, _, _) => _PlaceholderIcon(
+                                    itemType: itemType,
+                                    title: title,
+                                  ),
+                                )
+                              : _PlaceholderIcon(
+                                  itemType: itemType,
+                                  title: title,
+                                ),
+                        )
+                      : imageUrl != null
                       ? BoundedNetworkImage(
                           imageUrl: imageUrl!,
                           fit: (itemType == 'Network' || itemType == 'Studio')

@@ -167,11 +167,13 @@ class AppUpdateService {
       final data = result is Map ? result['data'] : null;
       if (data is! Map) return null;
 
+      final jsonMap = (data['json'] is Map) ? data['json'] as Map : data;
+
       return _VoltixAppConfig(
-        latestVersion: data['latestVersion']?.toString(),
-        minimumVersion: data['minimumVersion']?.toString(),
-        releaseNotes: data['releaseNotes']?.toString(),
-        forceUpdate: data['forceUpdate'] == true,
+        latestVersion: jsonMap['latestVersion']?.toString(),
+        minimumVersion: jsonMap['minimumVersion']?.toString(),
+        releaseNotes: jsonMap['releaseNotes']?.toString(),
+        forceUpdate: jsonMap['forceUpdate'] == true,
       );
     } catch (_) {
       return null;
@@ -256,6 +258,17 @@ class AppUpdateService {
     );
   }
 
+  /// Whether the Voltix server (admin "minimum version") requires this build
+  /// to update before it can be used. Never throws; false when unknown.
+  Future<bool> isUpdateMandatory() async {
+    try {
+      return await _isServerForceUpdate(await _currentAppVersion())
+          .timeout(const Duration(seconds: 8));
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Checks the server's minimum_version config. Returns true if the server
   /// requires a higher version than [currentVersion].
   Future<bool> _isServerForceUpdate(String currentVersion) async {
@@ -311,21 +324,84 @@ class AppUpdateService {
 
     final currentVersion = await _currentAppVersion();
 
+    // Detect if this Android device installed Voltix via Google Play Store
+    if (Platform.isAndroid && !AppDistribution.isManagedStoreBuild) {
+      try {
+        final packageInfo = await PackageInfo.fromPlatform();
+        final installer = packageInfo.installerStore?.toLowerCase() ?? '';
+        if (installer.contains('vending') || installer.contains('google')) {
+          AppDistribution.setRuntimePlayStore(true);
+        }
+      } catch (_) {}
+    }
+
     // ── Store-managed builds: use the Voltix API as the version source ──
     // Play Store and AppGallery releases are not published on GitHub, so the
     // GitHub releases API returns 404. Instead, the Voltix server's appConfig
     // endpoint provides `latestVersion` (and `minimumVersion` for force
     // updates). This path produces a store-listing link, never an APK.
     if (AppDistribution.isManagedStoreBuild) {
-      return _checkForUpdateViaVoltixApi(
+      final storeResult = await _checkForUpdateViaVoltixApi(
         currentVersion: currentVersion,
         suppressIfAlreadyNotified: suppressIfAlreadyNotified,
       );
+      if (storeResult.status == DesktopUpdateCheckStatus.updateAvailable) {
+        return storeResult;
+      }
+
+      // Fallback: If the Voltix server API doesn't report an update, check
+      // GitHub releases. If a newer release exists there, we know a new
+      // version was published! Surface it as a Play Store update.
+      final release = await _fetchLatestRelease();
+      if (release != null && _isNewerVersion(release.version, currentVersion)) {
+        String pkgName = 'cc.voltix.streaming';
+        try {
+          final packageInfo = await PackageInfo.fromPlatform();
+          if (packageInfo.packageName.trim().isNotEmpty) {
+            pkgName = packageInfo.packageName.trim();
+          }
+        } catch (_) {}
+        final storeUri = Uri.parse(
+          'https://play.google.com/store/apps/details?id=$pkgName',
+        );
+
+        final lastNotified = _store.getString(_lastNotifiedVersionKey);
+        if (suppressIfAlreadyNotified &&
+            !release.forceUpdate &&
+            _normalizeVersion(lastNotified) == _normalizeVersion(release.version)) {
+          return const DesktopUpdateCheckResult(
+            status: DesktopUpdateCheckStatus.alreadyNotified,
+          );
+        }
+        await _store.setString(_lastNotifiedVersionKey, release.version);
+
+        return DesktopUpdateCheckResult(
+          status: DesktopUpdateCheckStatus.updateAvailable,
+          update: DesktopUpdateInfo(
+            version: release.version,
+            downloadUri: storeUri,
+            assetName: '',
+            releaseNotesUrl: storeUri.toString(),
+            releaseNotesBody: release.releaseNotesBody,
+            forceUpdate: release.forceUpdate || await _isServerForceUpdate(currentVersion),
+          ),
+        );
+      }
+
+      return storeResult;
     }
 
     // ── Sideload / APK / desktop builds: use GitHub releases ──
     final release = await _fetchLatestRelease();
     if (release == null) {
+      // If GitHub release check fails on Android (e.g. 404), fall back to
+      // checking the Voltix server API for store updates.
+      if (Platform.isAndroid) {
+        return _checkForUpdateViaVoltixApi(
+          currentVersion: currentVersion,
+          suppressIfAlreadyNotified: suppressIfAlreadyNotified,
+        );
+      }
       return const DesktopUpdateCheckResult(
         status: DesktopUpdateCheckStatus.checkFailed,
       );

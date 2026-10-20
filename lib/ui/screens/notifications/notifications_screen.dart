@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:voltix_design/voltix_design.dart';
 
 import '../../../data/services/notification_inbox.dart';
+import '../../navigation/deep_link_navigator.dart';
 import '../../navigation/destinations.dart';
 
 /// Everything this device has been sent, and what to do about it.
@@ -374,9 +374,7 @@ class _NotificationDetailSheet extends StatelessWidget {
               FilledButton.icon(
                 onPressed: () {
                   Navigator.of(context).pop();
-                  // go rather than push: the notification's destination is a
-                  // place in the app, not a step on top of the inbox.
-                  GoRouter.of(context).go(route.trim());
+                  navigateOrLaunchUrl(route.trim(), context: context);
                 },
                 icon: const Icon(Icons.open_in_new_rounded),
                 label: const Text('Open'),

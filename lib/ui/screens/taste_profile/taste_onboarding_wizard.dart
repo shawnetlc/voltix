@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -12,8 +13,10 @@ import '../../../data/models/aggregated_item.dart';
 import '../../../data/models/taste_profile/taste_profile_models.dart';
 import '../../../data/repositories/taste_profile_repository.dart';
 import '../../../data/services/taste_profile/taste_recommendation_engine.dart';
+import '../../../data/services/taste_profile/foreign_content_filter.dart';
 import '../../widgets/bounded_network_image.dart';
 import '../../../util/focus/key_event_utils.dart';
+import '../../../util/platform_detection.dart';
 import '../../widgets/focus/request_initial_focus.dart';
 
 /// Interactive 8-Step Onboarding Wizard for Jellyfin Taste Profile & Recommendations.
@@ -96,6 +99,11 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
 
   // Cached candidates
   List<AggregatedItem> _allMovies = [];
+  /// Foreign-language libraries and their titles (never offered to rate).
+  ForeignLibraryInfo? _foreign;
+  bool _notForeign(AggregatedItem i) =>
+      !(_foreign?.isForeign(i.id) ?? false) &&
+      !ForeignContentFilter.isExcludedItem(i.rawData);
   List<AggregatedItem> _displayedMovies = [];
   List<AggregatedItem> _allSeries = [];
   List<AggregatedItem> _displayedSeries = [];
@@ -111,6 +119,18 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
   final Set<String> _selectedPreferenceIds = {};
   final Set<String> _selectedMoodIds = {};
   final TextEditingController _freeTextController = TextEditingController();
+
+  // ── Title search (movies step / series step) ──────────────────────────
+  final TextEditingController _movieSearchController = TextEditingController();
+  final TextEditingController _seriesSearchController = TextEditingController();
+  List<AggregatedItem>? _movieSearchResults; // null = not searching
+  List<AggregatedItem>? _seriesSearchResults;
+  bool _searchingMovies = false;
+  bool _searchingSeries = false;
+  Timer? _searchDebounce;
+  int _searchSeq = 0;
+  // Set when the last search hit the time limit (shown instead of "no results").
+  bool _searchTimedOut = false;
 
   // Filter State: Movies & Series
   String _movieDecadeFilter = 'all';
@@ -137,6 +157,9 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
+    _movieSearchController.dispose();
+    _seriesSearchController.dispose();
     _tasteRepo.syncManager.removeListener(_onSyncProgressUpdated);
     // A pending debounce would otherwise drop the last few edits on close.
     if (_draftSaveDebounce?.isActive ?? false) {
@@ -229,12 +252,55 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
 
     if (mounted) setState(() => _loading = false);
 
-    // Start fast sync for Step 0 if not completed
-    if (!_tasteRepo.syncManager.progressState.isCompleted) {
+    // Foreign-language titles are never offered in the wizard. Looked up in
+    // the background; when the cached candidates (built by an older build)
+    // still contain foreign titles, the candidate sync is rebuilt from the
+    // non-foreign libraries only.
+    unawaited(() async {
+      try {
+        final client =
+            _tasteRepo.serverContext.getPrimaryClient(_resolveServerId()) ??
+                _client;
+        final info = await ForeignContentFilter.load(client);
+        if (!mounted) return;
+        _foreign = info;
+        bool oldCache(AggregatedItem m) =>
+            !m.rawData.containsKey('ProductionLocations');
+        final cacheHasForeign = _allMovies.any(oldCache) ||
+            _allSeries.any(oldCache) ||
+            _allMovies.any((m) => info.isForeign(m.id)) ||
+            _allSeries.any((m) =>
+                info.isForeign(m.id) || ForeignContentFilter.isExcludedItem(m.rawData));
+        setState(() {
+          _applyMovieFilters();
+          _applySeriesFilters();
+        });
+        // Never restart a sync that is still running (that is what kept the
+        // wizard on "downloading movies").
+        if (cacheHasForeign && !_tasteRepo.syncManager.isSyncing) {
+          await _tasteRepo.syncManager.startOrResumeSync(
+            serverId: serverId,
+            userId: userId,
+            languageSettings: _languageSettings,
+            forceRestart: true,
+          );
+          if (mounted) await _refreshLocalCaches();
+        }
+      } catch (e) {
+        debugPrint('[TasteOnboarding] Foreign library lookup failed: $e');
+      }
+    }());
+
+    // Start fast sync for Step 0 if not completed -- or if it claims to be
+    // but left nothing to rate (an older build saved empty syncs as
+    // completed, so the wizard never fetched again).
+    final emptyCaches = _allMovies.isEmpty || _allSeries.isEmpty;
+    if (!_tasteRepo.syncManager.progressState.isCompleted || emptyCaches) {
       _tasteRepo.syncManager.startOrResumeSync(
         serverId: serverId,
         userId: userId,
         languageSettings: _languageSettings,
+        forceRestart: emptyCaches,
       ).then((_) {
         if (mounted) {
           _refreshLocalCaches();
@@ -289,7 +355,7 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
   /// than the same fixed 36 titles. The engine still draws from the
   /// top-scoring pool, so the picks stay recognisable.
   void _applyMovieFilters({bool randomize = true}) {
-    var list = List<AggregatedItem>.from(_allMovies);
+    var list = _allMovies.where(_notForeign).toList();
 
     if (_movieDecadeFilter != 'all') {
       final year = int.tryParse(_movieDecadeFilter) ?? 0;
@@ -313,7 +379,7 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
   }
 
   void _applySeriesFilters({bool randomize = true}) {
-    var list = List<AggregatedItem>.from(_allSeries);
+    var list = _allSeries.where(_notForeign).toList();
 
     if (_seriesFormatFilter == 'limited') {
       list = list
@@ -1218,11 +1284,15 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
           ),
         ),
 
+        _buildTitleSearchField(theme, isMovies: true),
+
         const SizedBox(height: 6),
 
-        // Movie Cards Grid
+        // Movie Cards Grid (search results while a search is active)
         Expanded(
-          child: _displayedMovies.isEmpty
+          child: (_movieSearchResults?.isEmpty ?? false)
+              ? _buildNoSearchResults(theme, 'movies')
+              : (_movieSearchResults ?? _displayedMovies).isEmpty
               ? _buildEmptyCandidateState(
                   theme: theme,
                   noun: 'movies',
@@ -1238,9 +1308,9 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
                     crossAxisSpacing: 12,
                     mainAxisSpacing: 12,
                   ),
-                  itemCount: _displayedMovies.length,
+                  itemCount: (_movieSearchResults ?? _displayedMovies).length,
                   itemBuilder: (context, index) {
-                    final item = _displayedMovies[index];
+                    final item = (_movieSearchResults ?? _displayedMovies)[index];
                     final rating =
                         _movieRatings[item.id] ?? TasteRating.neutral;
                     return _buildMediaCard(
@@ -1260,6 +1330,249 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
       ],
     );
   }
+
+  void _onSearchChanged(String text, {required bool isMovies}) {
+    _searchDebounce?.cancel();
+    final q = text.trim();
+    if (q.length < 2) {
+      _searchSeq++;
+      setState(() {
+        if (isMovies) {
+          _movieSearchResults = null;
+          _searchingMovies = false;
+        } else {
+          _seriesSearchResults = null;
+          _searchingSeries = false;
+        }
+      });
+      return;
+    }
+    _searchDebounce = Timer(
+      const Duration(milliseconds: 900),
+      () => _runTitleSearch(q, isMovies: isMovies),
+    );
+  }
+
+  /// Searches the server for movies (movies step) or series (series step) by
+  /// title. Results use the same rules as the rest of the wizard (no foreign
+  /// or sport titles) and are added to the pool so their ratings are saved.
+  Future<void> _runTitleSearch(String query, {required bool isMovies}) async {
+    final seq = ++_searchSeq;
+    setState(() {
+      if (isMovies) {
+        _searchingMovies = true;
+      } else {
+        _searchingSeries = true;
+      }
+    });
+    final found = <AggregatedItem>[];
+    var timedOut = false;
+    try {
+      final client =
+          _tasteRepo.serverContext.getPrimaryClient(_resolveServerId()) ??
+              _client;
+      _foreign ??= await ForeignContentFilter.loadViews(client)
+          .timeout(const Duration(seconds: 8));
+      // Light query: no MediaStreams/Overview (those made a title search on a
+      // big shared server take 25 s+). The foreign check still works from
+      // poster, production countries and rating.
+      final res = await client.itemsApi.getItems(
+        searchTerm: query,
+        includeItemTypes: [isMovies ? 'Movie' : 'Series'],
+        recursive: true,
+        limit: 30,
+        enableTotalRecordCount: false,
+        enableImageTypes: 'Primary',
+        imageTypeLimit: 1,
+        fields: 'Genres,CommunityRating,ProductionYear,OfficialRating,'
+            'RunTimeTicks,ImageTags,ProviderIds,ProductionLocations',
+      ).timeout(const Duration(seconds: 20));
+      final serverId = _resolveServerId();
+      for (final raw
+          in (res['Items'] as List? ?? []).whereType<Map<String, dynamic>>()) {
+        final id = raw['Id']?.toString() ?? '';
+        if (id.isEmpty) continue;
+        raw.putIfAbsent('ProductionLocations', () => const <String>[]);
+        final item = AggregatedItem(id: id, serverId: serverId, rawData: raw);
+        if (_notForeign(item)) found.add(item);
+      }
+    } on TimeoutException {
+      timedOut = true;
+      debugPrint('[TasteOnboarding] Title search timed out');
+    } catch (e) {
+      debugPrint('[TasteOnboarding] Title search failed: $e');
+    }
+    if (!mounted || seq != _searchSeq) return;
+    setState(() {
+      _searchTimedOut = timedOut;
+      final pool = isMovies ? _allMovies : _allSeries;
+      final known = pool.map((e) => e.id).toSet();
+      pool.addAll(found.where((e) => !known.contains(e.id)));
+      if (isMovies) {
+        _movieSearchResults = found;
+        _searchingMovies = false;
+      } else {
+        _seriesSearchResults = found;
+        _searchingSeries = false;
+      }
+    });
+  }
+
+  Widget _buildTitleSearchField(ThemeData theme, {required bool isMovies}) {
+    final controller =
+        isMovies ? _movieSearchController : _seriesSearchController;
+    final searching = isMovies ? _searchingMovies : _searchingSeries;
+    if (PlatformDetection.isTV) {
+      return _buildTvSearchButton(theme, controller, searching, isMovies);
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 0, 24, 4),
+      child: TextField(
+        controller: controller,
+        textInputAction: TextInputAction.search,
+        onChanged: (t) => _onSearchChanged(t, isMovies: isMovies),
+        onSubmitted: (t) {
+          _searchDebounce?.cancel();
+          if (t.trim().length >= 2) {
+            _runTitleSearch(t.trim(), isMovies: isMovies);
+          }
+        },
+        style: theme.textTheme.bodyMedium,
+        decoration: InputDecoration(
+          isDense: true,
+          hintText: isMovies ? 'Search movies to add…' : 'Search series to add…',
+          prefixIcon: const Icon(Icons.search_rounded, size: 20),
+          suffixIcon: searching
+              ? const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
+              : (controller.text.isEmpty
+                  ? null
+                  : IconButton(
+                      icon: const Icon(Icons.close_rounded, size: 18),
+                      tooltip: 'Clear search',
+                      onPressed: () {
+                        controller.clear();
+                        _onSearchChanged('', isMovies: isMovies);
+                      },
+                    )),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      ),
+    );
+  }
+
+  /// TV: the search box is a button. Moving over it with the remote never
+  /// opens the keyboard (which then trapped the D-pad in the text field);
+  /// OK opens a small search dialog, Search/OK there runs the search, Back
+  /// closes it. A second button clears the search.
+  Widget _buildTvSearchButton(
+    ThemeData theme,
+    TextEditingController controller,
+    bool searching,
+    bool isMovies,
+  ) {
+    final hasQuery = controller.text.trim().isNotEmpty;
+    final label = hasQuery
+        ? 'Search: ${controller.text.trim()}'
+        : (isMovies ? 'Search movies to add…' : 'Search series to add…');
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 0, 24, 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                alignment: Alignment.centerLeft,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              ),
+              icon: searching
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.search_rounded, size: 20),
+              label: Text(label, overflow: TextOverflow.ellipsis),
+              onPressed: () => _openTvSearchDialog(controller, isMovies),
+            ),
+          ),
+          if (hasQuery) ...[
+            const SizedBox(width: 8),
+            IconButton(
+              icon: const Icon(Icons.close_rounded),
+              tooltip: 'Clear search',
+              onPressed: () {
+                controller.clear();
+                _onSearchChanged('', isMovies: isMovies);
+              },
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openTvSearchDialog(
+    TextEditingController controller,
+    bool isMovies,
+  ) async {
+    final input = TextEditingController(text: controller.text);
+    final query = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(isMovies ? 'Search movies' : 'Search series'),
+        content: TextField(
+          controller: input,
+          autofocus: true,
+          textInputAction: TextInputAction.search,
+          decoration: const InputDecoration(hintText: 'Title'),
+          onSubmitted: (t) => Navigator.of(ctx).pop(t),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(input.text),
+            child: const Text('Search'),
+          ),
+        ],
+      ),
+    );
+    input.dispose();
+    // Keyboard down whatever happened; focus back on the page.
+    SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+    if (!mounted || query == null) return;
+    final q = query.trim();
+    setState(() => controller.text = q);
+    _searchDebounce?.cancel();
+    if (q.length >= 2) {
+      unawaited(_runTitleSearch(q, isMovies: isMovies));
+    } else {
+      _onSearchChanged('', isMovies: isMovies);
+    }
+  }
+
+  Widget _buildNoSearchResults(ThemeData theme, String noun) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            _searchTimedOut
+                ? 'The server is taking too long to search. Try a shorter or more exact title.'
+                : 'No $noun found for that search.',
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+            ),
+          ),
+        ),
+      );
 
   Future<void> _shuffleMovies() =>
       _shuffleFromServer(itemType: 'Movie', isMovies: true);
@@ -1299,6 +1612,10 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
   ///
   /// Any failure - offline, timeout, a server that ignores Random - falls back
   /// to a local reshuffle, so the button never dead-ends.
+  /// Library sizes learned from the first shuffle, for random paging.
+  /// Library sizes learned per (type, library), for random paging.
+  final Map<String, int> _shuffleTotals = {};
+
   Future<void> _shuffleFromServer({
     required String itemType,
     required bool isMovies,
@@ -1316,24 +1633,51 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
       final client =
           _tasteRepo.serverContext.getPrimaryClient(_resolveServerId()) ??
               _client;
+      // A random PAGE of recently added titles instead of SortBy=Random:
+      // a random sort shuffles the whole library on the server and timed out
+      // on the shared server, leaving the grid spinning.
+      const pageSize = 100;
+      const fields =
+          'Genres,PrimaryImageAspectRatio,UserData,CommunityRating,VoteCount,'
+          'CriticRating,ProductionYear,OfficialRating,RunTimeTicks,'
+          'OriginalLanguage,MediaStreams,SpokenLanguages,CollectionId,'
+          'SeriesId,ImageTags,Overview,ProviderIds,ProductionLocations';
+      // Draw from a random NON-foreign library when the server has foreign
+      // ones (e.g. "Movies International"), so a shuffle never lands on them.
+      final foreign = _foreign ?? await ForeignContentFilter.loadViews(client);
+      String? parentId;
+      if (foreign.hasForeignLibraries) {
+        final libs = foreign.englishViews(isMovies ? 'movies' : 'tvshows');
+        if (libs.isNotEmpty) {
+          parentId = libs[math.Random().nextInt(libs.length)]['Id']?.toString();
+        }
+      }
+      final totalKey = '${isMovies ? 'm' : 's'}|${parentId ?? 'all'}';
+      final total = _shuffleTotals[totalKey];
+      final maxStart = total != null && total > pageSize ? total - pageSize : 0;
+      final start = maxStart > 0 ? math.Random().nextInt(maxStart) : 0;
       final res = await client.itemsApi.getItems(
+        parentId: parentId,
         recursive: true,
         includeItemTypes: [itemType],
-        sortBy: 'Random',
-        limit: 100,
-        fields:
-            'Genres,PrimaryImageAspectRatio,UserData,CommunityRating,VoteCount,'
-            'CriticRating,ProductionYear,OfficialRating,RunTimeTicks,'
-            'OriginalLanguage,MediaStreams,SpokenLanguages,CollectionId,'
-            'SeriesId,ImageTags,Overview,People,ProviderIds',
-      );
+        sortBy: 'DateCreated',
+        sortOrder: 'Descending',
+        startIndex: start,
+        limit: pageSize,
+        fields: fields,
+      ).timeout(const Duration(seconds: 25));
+      final reported = res['TotalRecordCount'];
+      if (reported is num && reported > 0) {
+        _shuffleTotals[totalKey] = reported.toInt();
+      }
 
       final serverId = _resolveServerId();
       final fetched = <AggregatedItem>[];
       for (final raw in (res['Items'] as List? ?? [])
           .whereType<Map<String, dynamic>>()) {
         final id = raw['Id']?.toString() ?? '';
-        if (id.isEmpty) continue;
+        raw.putIfAbsent('ProductionLocations', () => const <String>[]);
+        if (id.isEmpty || foreign.isForeign(id) || ForeignContentFilter.isExcludedItem(raw)) continue;
         fetched.add(
           AggregatedItem(id: id, serverId: serverId, rawData: raw),
         );
@@ -1469,11 +1813,15 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
           ),
         ),
 
+        _buildTitleSearchField(theme, isMovies: false),
+
         const SizedBox(height: 6),
 
-        // Series Grid
+        // Series Grid (search results while a search is active)
         Expanded(
-          child: _displayedSeries.isEmpty
+          child: (_seriesSearchResults?.isEmpty ?? false)
+              ? _buildNoSearchResults(theme, 'series')
+              : (_seriesSearchResults ?? _displayedSeries).isEmpty
               ? _buildEmptyCandidateState(
                   theme: theme,
                   noun: 'series',
@@ -1489,9 +1837,9 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
                     crossAxisSpacing: 12,
                     mainAxisSpacing: 12,
                   ),
-                  itemCount: _displayedSeries.length,
+                  itemCount: (_seriesSearchResults ?? _displayedSeries).length,
                   itemBuilder: (context, index) {
-                    final item = _displayedSeries[index];
+                    final item = (_seriesSearchResults ?? _displayedSeries)[index];
                     final rating =
                         _seriesRatings[item.id] ?? TasteRating.neutral;
                     return _buildMediaCard(
@@ -2678,7 +3026,7 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
     required String noun,
     required bool filtered,
   }) {
-    final syncing = !_tasteRepo.syncManager.progressState.isCompleted;
+    final syncing = _tasteRepo.syncManager.isSyncing;
 
     return Center(
       child: Padding(

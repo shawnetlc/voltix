@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:async';
 import 'dart:ui';
 
@@ -10,6 +11,8 @@ import 'package:go_router/go_router.dart';
 import 'package:voltix_design/voltix_design.dart';
 import 'package:playback_core/playback_core.dart';
 import 'package:server_core/server_core.dart';
+import 'package:playback_jellyfin/playback_jellyfin.dart'
+    show JellyfinMediaStreamResolver;
 
 import '../../../data/models/aggregated_item.dart';
 import '../../../data/repositories/multi_server_repository.dart';
@@ -74,6 +77,7 @@ import '../../../util/language_matching.dart';
 import '../../../util/platform_detection.dart';
 import 'detail_buttons.dart';
 import 'modern/modern_detail_content.dart';
+import '../../../util/device_performance_profile.dart';
 
 const _textShadows = [Shadow(blurRadius: 4, color: Colors.black54)];
 const _kCompactBreakpoint = 600.0;
@@ -197,6 +201,34 @@ class _ItemDetailScreenState extends State<ItemDetailScreen>
   );
   bool _themeMusicStarted = false;
   String? _selectedMediaSourceId;
+
+  /// Item whose Versions choice was already made automatically (or by the
+  /// viewer), so later refreshes of the item never override it.
+  String? _autoVersionDoneFor;
+
+  /// Versions list: start on the file that fits the viewer's maximum video
+  /// resolution (Settings > Playback), e.g. the 1080p file when the setting is
+  /// 1080p and the title also has a 2160p version. Runs once the item's full
+  /// version list has loaded; the viewer can still pick another version.
+  void _autoSelectVersion(AggregatedItem item) {
+    if (_autoVersionDoneFor == item.id) return;
+    final sources = item.mediaSources;
+    if (sources.length < 2) return; // wait for the full item (or nothing to choose)
+    _autoVersionDoneFor = item.id;
+    final picked = MediaSourceVersionPicker.pickId(
+      sources.map((m) => Map<String, dynamic>.from(m)).toList(),
+      limit: DevicePerformanceProfile.effectiveMaxResolution(_prefs).height,
+    );
+    if (picked == null || picked == _selectedMediaSourceId) return;
+    _selectedMediaSourceId = picked;
+    // Same as choosing it in the Versions list: reload for that file's audio
+    // and subtitle tracks and its playback info.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _selectedMediaSourceId != picked) return;
+      setState(() {});
+      _viewModel.load(mediaSourceId: picked);
+    });
+  }
   bool _showNavbar = true;
   bool _actionsExpanded = false;
   Timer? _focusedBackdropDebounce;
@@ -284,14 +316,18 @@ class _ItemDetailScreenState extends State<ItemDetailScreen>
         _setBackdropUrl(_backgroundService.currentUrl);
 
         if (item.mediaSources.isNotEmpty) {
-          _selectedMediaSourceId = item.mediaSources.first['Id']?.toString();
+          _selectedMediaSourceId = MediaSourceVersionPicker.playable(
+            item.mediaSources,
+          ).first['Id']?.toString();
         } else {
           _selectedMediaSourceId = null;
         }
+        _autoVersionDoneFor = null;
 
         _viewModel.selectedAudioIndex = null;
         _viewModel.selectedSubtitleIndex = null;
       }
+      _autoSelectVersion(item);
       if (!_themeMusicStarted) {
         _themeMusicStarted = true;
         _themeMusicService.playForItem(item);
@@ -434,6 +470,7 @@ class _ItemDetailScreenState extends State<ItemDetailScreen>
                 selectedMediaSourceId: _selectedMediaSourceId,
                 initialFocusNode: _ensureInitialFocusNode(),
                 onSelectedMediaSourceChanged: (id) {
+                  _autoVersionDoneFor = _viewModel.item?.id;
                   setState(() => _selectedMediaSourceId = id);
                   _viewModel.load(mediaSourceId: id);
                 },
@@ -463,8 +500,10 @@ class _ItemDetailScreenState extends State<ItemDetailScreen>
                 backdropUrl: _backdropUrl,
                 selectedMediaSourceId: _selectedMediaSourceId,
                 initialFocusNode: _ensureInitialFocusNode(),
-                onSelectedMediaSourceChanged: (id) =>
-                    setState(() => _selectedMediaSourceId = id),
+                onSelectedMediaSourceChanged: (id) {
+                  _autoVersionDoneFor = _viewModel.item?.id;
+                  setState(() => _selectedMediaSourceId = id);
+                },
                 onBackdropItemFocused: _onBackdropItemFocused,
                 autoPlay: widget.autoPlay,
               ),
@@ -4860,6 +4899,9 @@ class DetailActionButtonsState extends State<DetailActionButtons> {
   bool _expanded = false;
   bool _playLaunchInFlight = false;
   bool _autoPlayTriggered = false;
+
+  /// Route pages whose autoPlay has already run (see _maybeTriggerAutoPlay).
+  static final LinkedHashSet<String> _consumedAutoPlayPages = LinkedHashSet<String>();
   bool? _serverLockedCache;
   String? _variantPrefetchKey;
   DownloadedItem? _offlineRow;
@@ -5158,17 +5200,35 @@ class DetailActionButtonsState extends State<DetailActionButtons> {
 
   void _maybeTriggerAutoPlay() {
     if (!widget.autoPlay || _autoPlayTriggered) return;
+    if (widget.viewModel.autoPlayConsumed) return;
+    // Also remembered per route page, in case the whole screen is rebuilt
+    // (new view model) while its route - still carrying autoPlay=true - stays.
+    String? pageKey;
+    try {
+      pageKey = GoRouterState.of(context).pageKey.value;
+    } catch (_) {}
+    if (pageKey != null && _consumedAutoPlayPages.contains(pageKey)) {
+      widget.viewModel.autoPlayConsumed = true;
+      return;
+    }
 
     final item = widget.viewModel.item;
     if (item == null) return;
 
     _autoPlayTriggered = true;
+    widget.viewModel.autoPlayConsumed = true;
+    if (pageKey != null) {
+      _consumedAutoPlayPages.add(pageKey);
+      if (_consumedAutoPlayPages.length > 50) {
+        _consumedAutoPlayPages.remove(_consumedAutoPlayPages.first);
+      }
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
 
-      // autoPlay is consumed by _autoPlayTriggered (this State survives the
-      // player being pushed and popped), so the route is no longer rewritten
-      // here. The old context.replace() ran at the same moment as the server
+      // autoPlay is consumed via viewModel.autoPlayConsumed (the view model
+      // outlives the content widget, which is rebuilt when the screen reloads
+      // after playback), so the route is no longer rewritten here. The old context.replace() ran at the same moment as the server
       // chooser and the play launch, and rebuilding the route underneath them
       // could drop the chooser's result and bounce back without playing.
 
@@ -5261,7 +5321,10 @@ class DetailActionButtonsState extends State<DetailActionButtons> {
   @override
   Widget build(BuildContext context) {
     final prefetchItem = viewModel.item;
-    if (prefetchItem != null) _prefetchServerVariants(prefetchItem);
+    if (prefetchItem != null) {
+      _prefetchServerVariants(prefetchItem);
+      _prefetchPlaybackInfo(prefetchItem);
+    }
     final item = viewModel.item!;
     final isNeon = ThemeRegistry.active.id == ThemeRegistry.neonPulseId;
     final isPhoto = item.type == 'Photo';
@@ -5456,7 +5519,10 @@ class DetailActionButtonsState extends State<DetailActionButtons> {
         DetailButton.version: _DetailActionButton(
           label: l10n.version,
           icon: Icons.video_file,
-          onPressed: () => _showVersionSelector(context, item.mediaSources),
+          onPressed: () => _showVersionSelector(
+            context,
+            MediaSourceVersionPicker.playable(item.mediaSources),
+          ),
           isActive: widget.selectedMediaSourceId != null,
           activeColor: AppColorScheme.accent,
         ),
@@ -6270,6 +6336,37 @@ class DetailActionButtonsState extends State<DetailActionButtons> {
 
   /// Starts the cross-server lookup as soon as the item is known, so the
   /// chooser can open instantly when Play is pressed. Cached per item.
+  String? _playbackPrefetchId;
+
+  /// Asks the server how to play a movie / episode as soon as its page opens,
+  /// so pressing Play skips that round trip (~1-2 s on the shared server).
+  void _prefetchPlaybackInfo(AggregatedItem item) {
+    if (_playbackPrefetchId == item.id) return;
+    _playbackPrefetchId = item.id;
+    final type = item.type;
+    if (type != 'Movie' && type != 'Episode') return;
+    try {
+      if (!GetIt.instance.isRegistered<MediaServerClient>()) return;
+      final client = GetIt.instance<MediaServerClient>();
+      if (client.baseUrl.contains('voltix-stub')) return;
+      Map<String, dynamic>? profile;
+      int? maxBitrate;
+      if (GetIt.instance.isRegistered<PlaybackManager>()) {
+        final backend = GetIt.instance<PlaybackManager>().backend;
+        if (backend != null) {
+          profile = backend.getDeviceProfile(useProgressiveTranscode: false);
+          maxBitrate = profile['MaxStreamingBitrate'] as int?;
+        }
+      }
+      JellyfinMediaStreamResolver.prefetchPlaybackInfo(
+        client,
+        item.id,
+        deviceProfile: profile,
+        maxStreamingBitrate: maxBitrate,
+      );
+    } catch (_) {}
+  }
+
   void _prefetchServerVariants(AggregatedItem item) {
     final key = '${item.serverId}|${item.id}';
     if (_variantPrefetchKey == key) return;

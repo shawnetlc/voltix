@@ -309,11 +309,11 @@ class PlatformDetection {
   }
 
   static bool get _hasMobileFormFactor {
-    if (isAndroid || isIOS) return true;
     final size = _screenLogicalSize;
-    if (size == null) return _isMobilePlatformSignal;
-    if (size.shortestSide <= 0) return _isMobilePlatformSignal;
-    return size.shortestSide < _mobileFormFactorBreakpoint;
+    if (size != null && size.shortestSide > 0) {
+      return size.shortestSide < _mobileFormFactorBreakpoint;
+    }
+    return _isMobilePlatformSignal;
   }
 
   /// Whether to use a 10-foot (lean-back) UI optimized for remote control.

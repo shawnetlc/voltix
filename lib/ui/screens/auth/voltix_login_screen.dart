@@ -62,7 +62,6 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
   final _signInFocus = FocusNode();
   final _macRefreshFocus = FocusNode();
   final _macConnectFocus = FocusNode();
-  final _envToggleFocus = FocusNode(debugLabel: 'LoginEnvToggle');
   final _usernameTvFieldKey = GlobalKey<CustomTVTextFieldState>();
   final _passwordTvFieldKey = GlobalKey<CustomTVTextFieldState>();
 
@@ -96,7 +95,6 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
   String? _errorMessage;
   bool _tvKeyboardVisible = false;
   String _deviceMac = '...';
-  bool _useTestServer = false;
 
   bool get _isVoltix => ThemeRegistry.active.id == ThemeRegistry.voltixId;
 
@@ -119,8 +117,6 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
   @override
   void initState() {
     super.initState();
-    final userPrefs = GetIt.instance<UserPreferences>();
-    _useTestServer = userPrefs.get(UserPreferences.voltixUseTestServer);
 
     _setupFocusHandlers();
     _loadDeviceMac();
@@ -141,7 +137,6 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
     _signInFocus.dispose();
     _macRefreshFocus.dispose();
     _macConnectFocus.dispose();
-    _envToggleFocus.dispose();
     
     _nextWelcomeFocus.dispose();
     _loginChooseFocus.dispose();
@@ -151,21 +146,6 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
     _getNewCodeFocus.dispose();
     _backLoginFocus.dispose();
     super.dispose();
-  }
-
-  void _toggleEnvironment() async {
-    final nextVal = !_useTestServer;
-    final userPrefs = GetIt.instance<UserPreferences>();
-    await userPrefs.set(UserPreferences.voltixUseTestServer, nextVal);
-    setState(() {
-      _useTestServer = nextVal;
-    });
-    // Restore focus to the toggle after the rebuild
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && !_envToggleFocus.hasFocus) {
-        _envToggleFocus.requestFocus();
-      }
-    });
   }
 
   // ───────────────────── Focus / D-pad ─────────────────────
@@ -283,26 +263,9 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
       return KeyEventResult.ignored;
     };
 
-    _envToggleFocus.onKeyEvent = (node, event) {
-      if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
-      if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-        _usernameFocus.requestFocus();
-        return KeyEventResult.handled;
-      }
-      if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
-        _backLoginFocus.requestFocus();
-        return KeyEventResult.handled;
-      }
-      if (event.logicalKey == LogicalKeyboardKey.select || event.logicalKey == LogicalKeyboardKey.enter) {
-        _toggleEnvironment();
-        return KeyEventResult.handled;
-      }
-      return KeyEventResult.ignored;
-    };
-
     _usernameFocus.onKeyEvent = (node, event) {
       if (_handleTvFieldOpen(event, _usernameFocus)) return KeyEventResult.handled;
-      return _verticalNav(event, up: _envToggleFocus, down: _passwordFocus);
+      return _verticalNav(event, up: _backLoginFocus, down: _passwordFocus);
     };
 
     _passwordFocus.onKeyEvent = (node, event) {
@@ -1651,8 +1614,6 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
           ),
           const SizedBox(height: 24),
 
-          _buildEnvironmentToggle(),
-          const SizedBox(height: 20),
 
           // Username
           _buildTextField(
@@ -1834,96 +1795,6 @@ class _VoltixLoginScreenState extends State<VoltixLoginScreen> {
                   fontSize: 16,
                 ),
               ),
-      ),
-    );
-  }
-
-  Widget _buildEnvironmentToggle() {
-    return Focus(
-      focusNode: _envToggleFocus,
-      descendantsAreFocusable: false,
-      child: ListenableBuilder(
-        listenable: _envToggleFocus,
-        builder: (context, _) {
-          final focused = _envToggleFocus.hasFocus;
-          return GestureDetector(
-            onTap: _toggleEnvironment,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(
-                color: focused
-                    ? _loginForegroundSolid
-                    : _loginForeground(0.04),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: focused ? _kAccent : _loginForeground(0.08),
-                  width: focused ? 2 : 1,
-                ),
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.dns_outlined,
-                    size: 20,
-                    color: focused
-                        ? AppColors.black.withValues(alpha: 0.8)
-                        : _loginForeground(0.6),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Server Environment',
-                          style: TextStyle(
-                            color: focused
-                                ? AppColors.black.withValues(alpha: 0.5)
-                                : _loginForeground(0.5),
-                            fontSize: 10,
-                            fontWeight: FontWeight.w500,
-                            letterSpacing: 0.5,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          _useTestServer ? 'Local Test Server' : 'Production Server',
-                          style: TextStyle(
-                            color: focused
-                                ? AppColors.black
-                                : _loginForegroundSolid,
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 1),
-                        Text(
-                          _useTestServer
-                              ? 'http://192.168.0.31:3000'
-                              : 'https://www.voltixstudio.com',
-                          style: TextStyle(
-                            color: focused
-                                ? AppColors.black.withValues(alpha: 0.6)
-                                : _loginForeground(0.5),
-                            fontSize: 11,
-                            fontFamily: 'monospace',
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Switch(
-                    focusNode: FocusNode(canRequestFocus: false),
-                    value: _useTestServer,
-                    onChanged: (val) => _toggleEnvironment(),
-                    activeThumbColor: _kAccent,
-                    activeTrackColor: _kAccent.withValues(alpha: 0.5),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
       ),
     );
   }

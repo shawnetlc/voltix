@@ -153,10 +153,15 @@ Future<String> _resolveDeviceName() async {
       );
     }
   } catch (_) {
-    // Fall through to app-based fallback below.
+    // Fall through to the neutral fallback below.
   }
 
-  return _clientName();
+  // Sent to media servers as the device name, so it must not name the app
+  // (Lumistream rejects third-party clients).
+  if (PlatformDetection.isTizen) return 'Samsung TV';
+  if (PlatformDetection.isWeb) return 'Web Browser';
+  if (PlatformDetection.isAndroid) return 'Android Device';
+  return 'Smart TV';
 }
 
 Future<String> _resolveAppVersion() async {
@@ -175,6 +180,29 @@ Future<String> _resolveAppVersion() async {
 }
 
 Future<void> _migrateLegacyBitrateCap(PreferenceStore store) async {
+  // Subtitles off by default: switched on once for every existing device;
+  // anyone can turn subtitles back on under Settings > Subtitles afterwards.
+  const subtitlesOffMigration = 'subtitles_default_none_migrated_v1';
+  if (store.getBool(subtitlesOffMigration) != true) {
+    await store.setBool(UserPreferences.subtitlesDefaultToNone.key, true);
+    await store.setBool(subtitlesOffMigration, true);
+  }
+
+  // v5: default raised to 200 Mbps. Devices still on an old default (40 / 120
+  // / auto / unset) move to 200 once; a different choice is kept.
+  const migrationV5 = 'pref_max_bitrate_migrated_v5_200';
+  if (store.getBool(migrationV5) != true) {
+    final cur = store.getString(UserPreferences.maxBitrate.key) ?? '';
+    if (cur.isEmpty || cur == '40' || cur == '120' || cur == 'auto' ||
+        cur == '100' || cur == '10') {
+      await store.setString(
+        UserPreferences.maxBitrate.key,
+        UserPreferences.maxBitrate.defaultValue,
+      );
+    }
+    await store.setBool(migrationV5, true);
+  }
+
   const migrationKey = 'pref_max_bitrate_migrated_v4';
   if (store.getBool(migrationKey) == true) {
     return;

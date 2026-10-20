@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'genre_query.dart';
+import 'taste_profile/foreign_content_filter.dart';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show debugPrint;
@@ -24,6 +26,7 @@ import 'custom_external_lists_service.dart';
 import 'taste_profile/taste_row_builder.dart';
 import '../../auth/store/voltix_session_store.dart';
 import '../../util/parental_rating_severity.dart';
+import '../../util/voltix_query_mode.dart';
 
 class RowDataSource {
   final MediaServerClient _client;
@@ -642,15 +645,34 @@ class RowDataSource {
     List<String>? includeItemTypes,
     int limit = _defaultLimit,
   }) async {
-    final response = await _getItemsWithFallback(
-      genres: [genreName],
+    // Genre id as well as the name (supersilo ignores the name filter), then
+    // keep only titles that really have the genre and aren't foreign / sport.
+    final ids = await GenreQuery.genreIds(_client, [genreName]);
+    final response = Map<String, dynamic>.from(await _getItemsWithFallback(
+      genres: ids.isEmpty ? [genreName] : null,
+      genreIds: ids.isEmpty ? null : ids,
       sortBy: sortBy,
       sortOrder: sortOrder,
       recursive: true,
-      limit: limit,
-      includeItemTypes: includeItemTypes,
+      limit: sortBy.toLowerCase().contains('rating') ? 100 : limit * 3,
+      includeItemTypes: includeItemTypes ?? const ['Movie', 'Series'],
       excludeItemTypes: const ['Episode'],
-    );
+    ));
+    final kept = (response['Items'] as List? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .where((r) =>
+            GenreQuery.itemHasGenre(r, genreName) &&
+            !ForeignContentFilter.isExcludedItem(r))
+        .toList();
+    // Rating sorts aren't applied by every server (supersilo): order by
+    // rating here (community rating, else critic rating).
+    if (sortBy.toLowerCase().contains('rating')) {
+      double r(Map<String, dynamic> m) =>
+          ((m['CommunityRating'] ?? m['CriticRating']) as num?)?.toDouble() ?? -1;
+      kept.sort((a, b) =>
+          sortOrder == 'Ascending' ? r(a).compareTo(r(b)) : r(b).compareTo(r(a)));
+    }
+    response['Items'] = kept.take(limit).toList();
     return _buildRow(
       id: rowId,
       title: title,
@@ -2129,7 +2151,7 @@ class RowDataSource {
           recursive: true,
           includeItemTypes: queryItemTypes,
           limit: 30, // Query more items to ensure we get enough unique shows
-          fields: '$_fields,Tags,People,SeriesId',
+          fields: liteRecommendations ? '$_fields,SeriesId' : '$_fields,Tags,People,SeriesId',
         ),
         merge: _byLastPlayed,
       );
@@ -2161,7 +2183,7 @@ class RowDataSource {
         try {
           final seriesRes = await _client.itemsApi.getItems(
             ids: seriesIdsToFetch,
-            fields: '$_fields,Tags,People',
+            fields: liteRecommendations ? _fields : '$_fields,Tags,People',
           );
           final fetchedSeries = _parseItems(seriesRes, serverId);
           final seriesMap = {for (final s in fetchedSeries) s.id: s};
@@ -2202,7 +2224,7 @@ class RowDataSource {
         recursive: true,
         includeItemTypes: queryItemTypes,
         limit: 30,
-        fields: '$_fields,Tags,People',
+        fields: liteRecommendations ? _fields : '$_fields,Tags,People',
       );
       baseItems = _parseItems(res, serverId);
     } else {
@@ -2213,7 +2235,7 @@ class RowDataSource {
         recursive: true,
         includeItemTypes: queryItemTypes,
         limit: 30,
-        fields: '$_fields,Tags,People',
+        fields: liteRecommendations ? _fields : '$_fields,Tags,People',
       );
       baseItems = _parseItems(res, serverId);
     }
@@ -2310,7 +2332,7 @@ class RowDataSource {
           recursive: true,
           includeItemTypes: queryItemTypes,
           limit: 40,
-          fields: '$_fields,Tags,People,SeriesId',
+          fields: liteRecommendations ? '$_fields,SeriesId' : '$_fields,Tags,People,SeriesId',
         ),
         merge: _byLastPlayed,
       );
@@ -2456,6 +2478,15 @@ class RowDataSource {
     }
   }
 
+  /// Light recommendations: genre matches only, without cast/crew, tags or
+  /// overview. People look-ups and the People field are the most expensive
+  /// queries on a large shared Jellyfin server (they stalled search and the
+  /// home rows), and genre + rating + year still rank candidates sensibly.
+  static const bool liteRecommendations = !kFullHomeQueries;
+  static const String _recFields = liteRecommendations
+      ? 'Genres,UserData,OfficialRating,ProductionYear,CommunityRating'
+      : 'Genres,Tags,People,UserData,OfficialRating,ProductionYear,CommunityRating,Studios,Overview';
+
   Future<List<AggregatedItem>> getRecommendations({
     required String serverId,
     required AggregatedItem baseItem,
@@ -2538,7 +2569,7 @@ class RowDataSource {
                 genres: genres,
                 recursive: true,
                 limit: 40,
-                fields: 'Genres,Tags,People,UserData,OfficialRating,ProductionYear,CommunityRating,Studios,Overview',
+                fields: _recFields,
               ),
             );
             final items = [
@@ -2554,7 +2585,7 @@ class RowDataSource {
       }
 
       // Fetch candidates matching tags in parallel
-      if (tags.isNotEmpty) {
+      if (!liteRecommendations && tags.isNotEmpty) {
         futures.add(() async {
           try {
             final cacheKey = '$serverId:$scope:tags:${types.join(",")}:${tags.join(",")}';
@@ -2574,7 +2605,7 @@ class RowDataSource {
                 tags: tags,
                 recursive: true,
                 limit: 40,
-                fields: 'Genres,Tags,People,UserData,OfficialRating,ProductionYear,CommunityRating,Studios,Overview',
+                fields: _recFields,
               ),
             );
             final items = [
@@ -2595,7 +2626,7 @@ class RowDataSource {
         ...writerIds,
         ...actorIds.take(10),
       ];
-      if (allPersonIds.isNotEmpty) {
+      if (!liteRecommendations && allPersonIds.isNotEmpty) {
         futures.add(() async {
           try {
             final cacheKey = '$serverId:$scope:people:${types.join(",")}:${allPersonIds.join(",")}';
@@ -2615,7 +2646,7 @@ class RowDataSource {
                 personIds: allPersonIds,
                 recursive: true,
                 limit: 40,
-                fields: 'Genres,Tags,People,UserData,OfficialRating,ProductionYear,CommunityRating,Studios,Overview',
+                fields: _recFields,
               ),
             );
             final items = [
@@ -2683,7 +2714,7 @@ class RowDataSource {
               limit: 30,
               sortBy: 'ProductionYear,SortName',
               sortOrder: 'Descending',
-              fields: 'Genres,Tags,People,UserData,OfficialRating,ProductionYear,CommunityRating,Studios,Overview',
+              fields: _recFields,
             );
             items = (res['Items'] as List? ?? [])
                 .map((e) => e is Map ? Map<String, dynamic>.from(e) : null)

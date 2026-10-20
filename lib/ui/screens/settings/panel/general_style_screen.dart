@@ -162,6 +162,19 @@ class _GeneralStyleScreenState extends State<_GeneralStyleScreen> {
                     icon: Icons.photo,
                     onChanged: _pushPersonalizationSync,
                   ),
+                  SwitchPreferenceTile(
+                    preference: UserPreferences.backgroundParticlesEnabled,
+                    title: 'Background Particle Effects',
+                    subtitle: 'Animate floating particles over Voltix background screens',
+                    icon: Icons.auto_awesome,
+                    onChanged: () {
+                      GetIt.instance<UserPreferences>().set(
+                        UserPreferences.backgroundParticlesManuallySet,
+                        true,
+                      );
+                      _pushPersonalizationSync();
+                    },
+                  ),
                   EnumPreferenceTile<OledMode>(
                     preference: UserPreferences.oledMode,
                     // Not yet in app_en.arb -- see note above.

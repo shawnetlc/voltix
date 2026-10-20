@@ -51,12 +51,15 @@ class FavoriteRegistryEntry {
 
 /// Profile-Scoped Favorites Registry Service.
 class VoltixFavoritesRegistryService extends ChangeNotifier {
+  /// Ticks on every favourite add / remove so UserSettingsSyncService can
+  /// upload the Voltix user's favourites immediately.
+  static final ValueNotifier<int> syncNowTick = ValueNotifier<int>(0);
+
   final Logger _logger = Logger();
   static const String _prefKeyPrefix = 'pref_voltix_favorites_registry_';
 
   Map<String, FavoriteRegistryEntry> _entries = {};
   String? _currentLoadedUsername;
-  Timer? _debounceSaveTimer;
 
   VoltixFavoritesRegistryService() {
     _loadForCurrentUser();
@@ -81,9 +84,14 @@ class VoltixFavoritesRegistryService extends ChangeNotifier {
 
   String _prefKey(String username) => '$_prefKeyPrefix$username';
 
-  void _loadForCurrentUser() {
+  bool get hasEntries {
+    _loadForCurrentUser();
+    return _entries.isNotEmpty;
+  }
+
+  void _loadForCurrentUser({bool forceReload = false}) {
     final username = _resolveUsername();
-    if (_currentLoadedUsername == username && _entries.isNotEmpty) return;
+    if (!forceReload && _currentLoadedUsername == username) return;
     _currentLoadedUsername = username;
     _entries = {};
 
@@ -129,8 +137,28 @@ class VoltixFavoritesRegistryService extends ChangeNotifier {
     );
 
     _entries[key] = entry;
-    _scheduleSave();
+    await _persistLocal();
     notifyListeners();
+    syncNowTick.value++; // favourite changed: sync to the cloud now
+  }
+
+  Future<void> addMultipleFavorites(List<AggregatedItem> items) async {
+    if (items.isEmpty) return;
+    _loadForCurrentUser();
+    for (final item in items) {
+      final key = _computeKey(item.id, item.serverId);
+      _entries[key] = FavoriteRegistryEntry(
+        itemId: item.id,
+        serverId: item.serverId,
+        type: item.type ?? 'Movie',
+        name: item.name,
+        primaryImageTag: item.primaryImageTag ?? item.primaryImageTagField,
+        addedAt: DateTime.now(),
+      );
+    }
+    await _persistLocal();
+    notifyListeners();
+    syncNowTick.value++; // favourite changed: sync to the cloud now
   }
 
   Future<void> removeFavorite(AggregatedItem item) async {
@@ -157,24 +185,32 @@ class VoltixFavoritesRegistryService extends ChangeNotifier {
     );
 
     _entries[key] = entry;
-    _scheduleSave();
+    await _persistLocal();
     notifyListeners();
+    syncNowTick.value++; // favourite changed: sync to the cloud now
   }
 
-  Future<void> removeFavoriteById(String itemId, String serverId) async {
+  Future<void> removeFavoriteById(String itemId, [String? serverId]) async {
     _loadForCurrentUser();
-    final key = _computeKey(itemId, serverId);
-    if (_entries.containsKey(key)) {
-      _entries.remove(key);
-      _scheduleSave();
-      notifyListeners();
+    if (serverId != null && serverId.isNotEmpty) {
+      _entries.remove(_computeKey(itemId, serverId));
     }
+    // Also remove by itemId across all entries to prevent leftover keys
+    // when serverId was saved as baseUrl but removed with server.id (or vice versa).
+    _entries.removeWhere((_, entry) => entry.itemId == itemId);
+    await _persistLocal();
+    notifyListeners();
+    syncNowTick.value++; // favourite changed: sync to the cloud now
   }
 
-  bool isFavorite(String itemId, String serverId) {
+  bool isFavorite(String itemId, [String? serverId]) {
     _loadForCurrentUser();
-    final key = _computeKey(itemId, serverId);
-    return _entries.containsKey(key);
+    if (serverId != null && serverId.isNotEmpty) {
+      final key = _computeKey(itemId, serverId);
+      if (_entries.containsKey(key)) return true;
+    }
+    // Also check by itemId directly because serverId may differ between baseUrl and server.id
+    return _entries.values.any((e) => e.itemId == itemId);
   }
 
   bool isFavoriteByItem(AggregatedItem item) {
@@ -192,11 +228,28 @@ class VoltixFavoritesRegistryService extends ChangeNotifier {
     return _entries.values.map((e) => e.itemId).toList();
   }
 
-  void _scheduleSave() {
-    _debounceSaveTimer?.cancel();
-    _debounceSaveTimer = Timer(const Duration(milliseconds: 800), () async {
-      await _persistLocal();
-    });
+  /// Favorite item ids, most recently added first, de-duplicated.
+  List<String> favoriteItemIdsByRecency({int? limit}) {
+    _loadForCurrentUser();
+    final sorted = _entries.values.toList()
+      ..sort((a, b) => b.addedAt.compareTo(a.addedAt));
+    final seen = <String>{};
+    final out = <String>[];
+    for (final e in sorted) {
+      if (e.itemId.isEmpty || !seen.add(e.itemId)) continue;
+      out.add(e.itemId);
+      if (limit != null && out.length >= limit) break;
+    }
+    return out;
+  }
+
+  /// All favorite item ids, for quick membership checks.
+  Set<String> favoriteItemIdSet() {
+    _loadForCurrentUser();
+    return _entries.values
+        .map((e) => e.itemId)
+        .where((id) => id.isNotEmpty)
+        .toSet();
   }
 
   Future<void> _persistLocal() async {
@@ -228,6 +281,9 @@ class VoltixFavoritesRegistryService extends ChangeNotifier {
   }
 
   Future<void> importRegistryData(Map<String, dynamic> data) async {
+    // Merge into the CURRENT user/profile's list (the profile may have been
+    // picked since this registry was last touched).
+    _loadForCurrentUser();
     try {
       final entriesJson = data['entries'] as Map<String, dynamic>?;
       if (entriesJson != null) {

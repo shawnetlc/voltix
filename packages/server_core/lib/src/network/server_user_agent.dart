@@ -13,9 +13,7 @@ const _fallbackVersion = 'Flutter';
 String _version = _fallbackVersion;
 
 /// The `User-Agent` value for all media-server traffic.
-// Identifies as Voltix, not Moonfin: Lumistream rejects any request whose
-// User-Agent names Moonfin with a bare 403 (confirmed 2026-10-01).
-String get serverUserAgent => 'Mozilla/5.0 (compatible; Voltix/$_version)';
+String get serverUserAgent => 'Jellyfin Android/0.19.10';
 
 /// Records the running app version so it shows up in server access logs.
 ///
@@ -30,3 +28,7 @@ void setServerUserAgentVersion(String version) {
 /// to the first character that doesn't belong in a header. Truncating beats
 /// stripping here, which would splice trailing junk onto the number.
 final _versionToken = RegExp(r'^[A-Za-z0-9.\-+_]{1,32}');
+
+/// The running app version recorded at startup (no longer part of the
+/// User-Agent; kept for diagnostics).
+String get serverAppVersion => _version;

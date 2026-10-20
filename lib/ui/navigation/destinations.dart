@@ -107,6 +107,11 @@ class Destinations {
   static const liveTvPlayer = '/live-tv/player';
   static const voltixLiveTv = '/live-tv/iptv';
 
+  // Movies and Series open the Voltix IPTV screen directly on their section
+  // via the ?section= query param read in app_router.
+  static const voltixMovies = '/live-tv/iptv?section=movies';
+  static const voltixSeries = '/live-tv/iptv?section=series';
+
   // Playback
   static const videoPlayer = '/player/video';
   static const externalPlayer = '/player/external';
@@ -222,11 +227,15 @@ class Destinations {
     String? serverId,
     bool autoPlay = false,
     String? seasonContext,
+    // The server is already decided (Continue Watching / Next Up, or the user
+    // picked one), so Play must not show the multi-server chooser.
+    bool serverLocked = false,
   }) {
     final base = '/item/$itemId';
     final params = <String>[
       if (serverId != null) 'serverId=$serverId',
       if (autoPlay) 'autoPlay=true',
+      if (serverLocked) 'serverLocked=true',
       if (seasonContext != null && seasonContext.isNotEmpty)
         'seasonContext=${Uri.encodeQueryComponent(seasonContext)}',
     ];
@@ -320,6 +329,7 @@ class Destinations {
     String? serverId,
     String? type,
     String? channelId,
+    bool serverLocked = false,
   }) {
     if (type == 'Photo') return photo(itemId);
     // Channels have no detail screen worth landing on, so go straight to
@@ -333,7 +343,7 @@ class Destinations {
     }
     // Folders open their contents rather than a detail screen.
     if (isFolderType(type)) return folder(itemId, serverId: serverId);
-    return item(itemId, serverId: serverId);
+    return item(itemId, serverId: serverId, serverLocked: serverLocked);
   }
   static String nextUpFor(String itemId) => '/player/next-up/$itemId';
   static String stillWatchingFor(String itemId) =>

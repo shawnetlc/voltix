@@ -47,9 +47,9 @@ $outputsRoots = @(
 )
 
 # -- Versions for this build ------------------------------------------------
-$sharedVersionName = "2.0.62"
-$mobileVersionCode = "40000420"
-$tvVersionCode     = "40000421"
+$sharedVersionName = "2.0.85"
+$mobileVersionCode = "40000466"
+$tvVersionCode     = "40000467"
 
 function Assert-VersionsMatchPubspec {
     $pubspec = Get-Content "$repoRoot\pubspec.yaml" -Raw

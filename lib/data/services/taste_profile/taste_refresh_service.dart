@@ -5,6 +5,7 @@ import '../../models/aggregated_item.dart';
 import '../../models/taste_profile/taste_profile_models.dart';
 import 'taste_recommendation_engine.dart';
 import 'taste_server_context.dart';
+import '../../../util/voltix_query_mode.dart';
 
 /// State of candidate title refresh operations.
 enum RefreshState { idle, refreshing, success, error }
@@ -131,7 +132,7 @@ class TasteRefreshService extends ChangeNotifier {
             includeItemTypes: const ['Movie', 'Series'],
             fields:
                 'Genres,People,Studios,Tags,Overview,CommunityRating,VoteCount,RunTimeTicks,PremiereDate,ProductionYear,UserData,SeriesId,OriginalLanguage,MediaStreams,SpokenLanguages',
-            sortBy: 'CommunityRating,ProductionYear',
+            sortBy: kFullHomeQueries ? 'CommunityRating,ProductionYear' : 'DateCreated', // lite: whole-library rating sort timed out
             sortOrder: 'Descending',
             startIndex: startIndex,
             limit: _batchSize,

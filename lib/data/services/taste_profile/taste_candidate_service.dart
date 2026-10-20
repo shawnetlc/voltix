@@ -8,7 +8,9 @@ import '../../repositories/multi_server_repository.dart';
 import 'taste_cold_start_service.dart';
 import '../../models/taste_profile/taste_profile_models.dart';
 import 'taste_recommendation_engine.dart';
+import '../../utils/bounded_concurrency.dart';
 import 'taste_server_context.dart';
+import '../genre_query.dart';
 
 /// Which parts of the profile shape a candidate query.
 ///
@@ -112,6 +114,9 @@ class TasteCandidateService {
   /// a server does not know is not looked up again every rebuild.
   final Map<String, String?> _personIdCache = {};
 
+  /// Library views per server, fetched once and reused by every seed query.
+  final Map<String, Future<List<Map<String, dynamic>>>> _viewsCache = {};
+
 
   /// How many values a single signal contributes. Each one costs a request,
   /// so the top few carry nearly all the weight anyway.
@@ -123,9 +128,9 @@ class TasteCandidateService {
   /// expensive one and only matters when language filtering is on, so it is
   /// requested conditionally rather than on every call.
   static const _baseFields =
-      'Genres,Tags,Studios,People,Overview,CommunityRating,VoteCount,'
+      'Genres,Tags,Studios,CommunityRating,VoteCount,'
       'CriticRating,ProductionYear,OfficialRating,RunTimeTicks,UserData,'
-      'ImageTags,PrimaryImageAspectRatio,CollectionId,SeriesId,ProviderIds';
+      'ImageTags,PrimaryImageAspectRatio,CollectionId,SeriesId,ProviderIds,ProductionLocations';
   static const _languageFields =
       ',OriginalLanguage,SpokenLanguages,MediaStreams';
 
@@ -258,7 +263,28 @@ class TasteCandidateService {
     return null;
   }
 
-  void clearPersonCache() => _personIdCache.clear();
+  void clearPersonCache() {
+    _personIdCache.clear();
+    _viewsCache.clear();
+  }
+
+  Future<List<Map<String, dynamic>>> _librariesFor(
+    MediaServerClient client,
+    String serverId,
+  ) {
+    return _viewsCache[serverId] ??= () async {
+      try {
+        final res = await client.userViewsApi.getUserViews();
+        return (res['Items'] as List? ?? [])
+            .whereType<Map<String, dynamic>>()
+            .toList();
+      } catch (e) {
+        debugPrint('[TasteCandidateService] getUserViews failed: $e');
+        _viewsCache.remove(serverId);
+        return <Map<String, dynamic>>[];
+      }
+    }();
+  }
 
   // ───────────────────────────── query building ─────────────────────────────
 
@@ -350,9 +376,28 @@ class TasteCandidateService {
     required _SignalQuery query,
   }) async {
     final needsLanguageFields = profile.languageSettings.excludeForeignContent;
-    final fields =
-        needsLanguageFields ? '$_baseFields$_languageFields' : _baseFields;
+    // People (cast/crew) is heavy on big shared servers; only person-based
+    // rows need it.
+    final personFields = (query.personIds?.isNotEmpty ?? false) ? ',People' : '';
+    final fields = needsLanguageFields
+        ? '$_baseFields$personFields$_languageFields'
+        : '$_baseFields$personFields';
+    // Genre ids as well as names: supersilo ignores the name filter and
+    // returned every genre. Results are also checked against the item's own
+    // genres below.
+    final genreIds = (query.genres?.isNotEmpty ?? false)
+        ? await GenreQuery.genreIds(client, query.genres!)
+        : const <String>[];
+    final useIds = genreIds.isNotEmpty;
+    bool genreOk(Map<String, dynamic> r) =>
+        !(query.genres?.isNotEmpty ?? false) ||
+        GenreQuery.itemHasAnyGenre(r, query.genres!);
 
+    // One server-wide query first: that is a single request per seed. Only
+    // when it comes back empty (a server that answers nothing for an unscoped
+    // recursive query) are the libraries queried one by one, two at a time.
+    // Querying every library for every seed up front multiplied the request
+    // count by the number of libraries and overloaded slow servers.
     try {
       final res = await client.itemsApi.getItems(
         recursive: true,
@@ -361,14 +406,16 @@ class TasteCandidateService {
         sortOrder: spec.sortOrder,
         fields: fields,
         limit: spec.limit,
-        genres: query.genres,
+        genres: useIds ? null : query.genres,
+        genreIds: useIds ? genreIds : null,
         studios: query.studios,
         personIds: query.personIds,
         minPremiereDate: _minPremiereDate(profile, spec),
         maxOfficialRating: _maxOfficialRating(profile),
-      );
-
-      final raw = (res['Items'] as List? ?? []).whereType<Map<String, dynamic>>();
+      ).timeout(const Duration(seconds: 20));
+      final raw = (res['Items'] as List? ?? [])
+          .whereType<Map<String, dynamic>>()
+          .where(genreOk);
       final items = <AggregatedItem>[];
       for (final r in raw) {
         final id = r['Id']?.toString() ?? '';
@@ -376,12 +423,71 @@ class TasteCandidateService {
         final item = AggregatedItem(id: id, serverId: serverId, rawData: r);
         if (_passesPostFilters(item, profile, spec)) items.add(item);
       }
-      return _QueryResult(query.signature, items);
+      if (items.isNotEmpty) return _QueryResult(query.signature, items);
     } catch (e) {
-      debugPrint('[TasteCandidateService] candidate query failed: $e');
-      return _QueryResult(query.signature, const []);
+      debugPrint('[TasteCandidateService] server-wide query failed, trying per library: $e');
     }
+
+    final wanted = <String>{
+      if (itemTypes.contains('Movie')) 'movies',
+      if (itemTypes.contains('Series')) 'tvshows',
+    };
+    final views = await _librariesFor(client, serverId);
+    var targets = views
+        .where((v) => wanted.contains(
+            (v['CollectionType'] as String? ?? '').toLowerCase()))
+        .toList();
+    if (targets.isEmpty) targets = views;
+    if (targets.isEmpty) return _QueryResult(query.signature, const []);
+
+    final perLibrary = (await mapBounded<Map<String, dynamic>, List<Map<String, dynamic>>>(
+        targets, 2, (view) async {
+      final parentId = view['Id']?.toString() ?? '';
+      if (parentId.isEmpty) return const <Map<String, dynamic>>[];
+      try {
+        final res = await client.itemsApi.getItems(
+          parentId: parentId,
+          recursive: true,
+          includeItemTypes: itemTypes,
+          sortBy: spec.sortBy,
+          sortOrder: spec.sortOrder,
+          fields: fields,
+          limit: spec.limit,
+          genres: useIds ? null : query.genres,
+          genreIds: useIds ? genreIds : null,
+          studios: query.studios,
+          personIds: query.personIds,
+          minPremiereDate: _minPremiereDate(profile, spec),
+          maxOfficialRating: _maxOfficialRating(profile),
+        ).timeout(const Duration(seconds: 20));
+        return (res['Items'] as List? ?? [])
+            .whereType<Map<String, dynamic>>()
+            .where(genreOk)
+            .toList();
+      } catch (e) {
+        debugPrint('[TasteCandidateService] candidate query failed (parent=$parentId): $e');
+        return const <Map<String, dynamic>>[];
+      }
+    }))
+        .map((l) => l ?? const <Map<String, dynamic>>[])
+        .toList();
+
+    final items = <AggregatedItem>[];
+    final seen = <String>{};
+    final longest = perLibrary.fold<int>(0, (m, l) => l.length > m ? l.length : m);
+    for (var i = 0; i < longest; i++) {
+      for (final list in perLibrary) {
+        if (i >= list.length) continue;
+        final r = list[i];
+        final id = r['Id']?.toString() ?? '';
+        if (id.isEmpty || !seen.add(id)) continue;
+        final item = AggregatedItem(id: id, serverId: serverId, rawData: r);
+        if (_passesPostFilters(item, profile, spec)) items.add(item);
+      }
+    }
+    return _QueryResult(query.signature, items);
   }
+
 
   // ────────────────────────────── post-filters ──────────────────────────────
 

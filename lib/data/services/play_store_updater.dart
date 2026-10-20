@@ -50,7 +50,11 @@ class PlayStoreUpdater {
   /// [forced] uses Play's full-screen "immediate" flow (the app restarts on
   /// the new build); otherwise the update downloads in the background and is
   /// installed as soon as it has finished.
-  static Future<PlayUpdateCheck> checkAndUpdate({bool forced = false}) async {
+  static Future<PlayUpdateCheck> checkAndUpdate({
+    bool forced = false,
+    // Server-required update: re-show Play's screen if the viewer dismisses it.
+    bool mandatory = false,
+  }) async {
     if (_inFlight) return PlayUpdateCheck.unavailable;
     if (!await _mayBePlayInstall()) return PlayUpdateCheck.unavailable;
     _inFlight = true;
@@ -70,10 +74,18 @@ class PlayStoreUpdater {
             : PlayUpdateCheck.unavailable;
       }
 
-      final useImmediate =
-          (forced && info.immediateUpdateAllowed) || !info.flexibleUpdateAllowed;
+      final useImmediate = ((forced || mandatory) && info.immediateUpdateAllowed) ||
+          !info.flexibleUpdateAllowed;
       if (useImmediate && info.immediateUpdateAllowed) {
-        await InAppUpdate.performImmediateUpdate();
+        var result = await InAppUpdate.performImmediateUpdate();
+        // Mandatory update: Play's screen is shown again if it is dismissed,
+        // so the out-of-date build cannot be used (backing out leaves the app).
+        var attempts = 0;
+        while (mandatory && result != AppUpdateResult.success && attempts < 20) {
+          attempts++;
+          await Future<void>.delayed(const Duration(milliseconds: 600));
+          result = await InAppUpdate.performImmediateUpdate();
+        }
         return PlayUpdateCheck.updateStarted;
       }
       if (info.flexibleUpdateAllowed) {

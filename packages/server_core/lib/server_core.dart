@@ -5,6 +5,7 @@
 library;
 
 export 'src/media_server_client.dart';
+export 'src/network/server_availability.dart';
 export 'src/models/server_type.dart';
 export 'src/models/device_info.dart';
 export 'src/models/enums.dart';
@@ -48,7 +49,9 @@ export 'src/feature/feature_detector.dart';
 export 'src/diagnostics/server_log_sink.dart';
 export 'src/network/configure_server_dio.dart';
 export 'src/network/auth_header.dart';
+export 'src/network/lumistream_host.dart';
 export 'src/network/redirect_interceptor.dart';
+export 'src/network/server_dio_hooks.dart';
 export 'src/network/server_user_agent.dart';
 export 'src/network/server_probe.dart';
 export 'src/network/server_auth_recovery.dart';

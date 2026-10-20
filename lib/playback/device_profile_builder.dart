@@ -1033,19 +1033,9 @@ class DeviceProfileBuilder {
     }
   }
 
-  static String _profileName() {
-    if (PlatformDetection.isWeb) {
-      return webRuntimeConfig.pluginMode
-          ? 'Voltix for Web'
-          : 'Voltix on Github';
-    }
-    if (PlatformDetection.isAndroid) return 'Voltix for Android';
-    if (PlatformDetection.isIOS) return 'Voltix iOS';
-    if (PlatformDetection.isMacOS) return 'Voltix macOS';
-    if (PlatformDetection.isWindows) return 'Voltix Windows';
-    if (PlatformDetection.isLinux) return 'Voltix Linux';
-    return 'Voltix';
-  }
+  // Neutral name: the profile is sent to the media server with every playback
+  // request, and Lumistream rejects clients that name a third-party app.
+  static String _profileName() => 'Jellyfin Web';
 
   static List<Map<String, dynamic>> _codecProfiles({
     required int maxAudioChannels,

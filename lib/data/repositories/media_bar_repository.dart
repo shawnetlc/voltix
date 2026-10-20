@@ -313,11 +313,14 @@ class MediaBarRepository {
       final response = await _client.itemsApi
           .getItems(
             includeItemTypes: itemTypes,
-            sortBy: 'Random',
+            // Newest additions, shuffled here. SortBy=Random made the server
+            // shuffle the whole catalogue (5-15 s on the shared server); the
+            // newest-first query is indexed and cheap.
+            sortBy: 'DateCreated',
             sortOrder: 'Descending',
             recursive: true,
             parentId: parentId,
-            limit: limit,
+            limit: (limit * 4).clamp(limit, 60),
             fields: _fields,
             enableTotalRecordCount: false,
             enableImageTypes: 'Backdrop,Logo',
@@ -325,8 +328,11 @@ class MediaBarRepository {
             hasParentalRating: isKids ? true : null,
           )
           .timeout(const Duration(seconds: 3));
-      final rawItems = response['Items'] as List? ?? [];
-      return rawItems.cast<Map<String, dynamic>>();
+      final rawItems = (response['Items'] as List? ?? [])
+          .cast<Map<String, dynamic>>()
+          .toList()
+        ..shuffle();
+      return rawItems.take(limit).toList();
     } on TimeoutException {
       return _fetchItemsFromFallbackSource(
         itemTypes,

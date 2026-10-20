@@ -117,6 +117,8 @@ class _StartupScreenState extends State<StartupScreen>
     await voltixStore.load();
 
     if (widget.bootstrapActiveSession && session.activeUserId != null) {
+      await VoltixDirectStreaming.upgradeActiveSession()
+          .timeout(const Duration(seconds: 30), onTimeout: () {});
       _navigate(Destinations.home);
       return;
     }
@@ -162,17 +164,7 @@ class _StartupScreenState extends State<StartupScreen>
       if (!mounted) return;
     }
 
-    // A linked device still connected through the Voltix proxy goes through
-    // the Voltix restore below instead, which signs in to Lumistream directly
-    // when the backend allows it - so existing installs move to direct
-    // streaming without signing out and back in. If direct isn't available it
-    // re-authenticates through the proxy exactly as before.
-    final activeAddress = serverRepo.getServer(session.activeServerId ?? '')?.address ?? '';
-    final onVoltixProxy = restored &&
-        voltixStore.hasSession &&
-        activeAddress.contains('/api/jellyfin/');
-
-    if (restored && session.activeUserId != null && !onVoltixProxy) {
+    if (restored && session.activeUserId != null) {
       final store = GetIt.instance<PreferenceStore>();
       final pinUtil = PinCodeUtil(store, session.activeUserId!);
 
@@ -192,6 +184,9 @@ class _StartupScreenState extends State<StartupScreen>
         }
       }
 
+      await VoltixDirectStreaming.upgradeActiveSession()
+          .timeout(const Duration(seconds: 30), onTimeout: () {});
+      if (!mounted) return;
       _navigate(Destinations.home);
     } else {
       // Try to restore from a Voltix session token

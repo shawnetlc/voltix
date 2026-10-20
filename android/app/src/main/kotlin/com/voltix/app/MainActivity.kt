@@ -256,7 +256,11 @@ class MainActivity : AudioServiceActivity(), GamepadsCompatibleActivity {
                     val pm = packageManager
                     val isTv = uiModeManager.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
                         pm.hasSystemFeature(PackageManager.FEATURE_LEANBACK) ||
-                        pm.hasSystemFeature("amazon.hardware.fire_tv")
+                        pm.hasSystemFeature("android.software.leanback") ||
+                        pm.hasSystemFeature("android.software.leanback_only") ||
+                        pm.hasSystemFeature("android.hardware.type.television") ||
+                        pm.hasSystemFeature("amazon.hardware.fire_tv") ||
+                        !pm.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN)
                     result.success(isTv)
                 }
                 "displayHdrTypes" -> result.success(getDisplayHdrTypes())

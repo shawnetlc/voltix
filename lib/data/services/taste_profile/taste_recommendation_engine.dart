@@ -104,8 +104,8 @@ class TasteRecommendationEngine {
       return true;
     }
 
-    // For onboarding title selection, strictly exclude missing language by default
-    return !isOnboarding && languageSettings.allowForeignFallback;
+    // Allow foreign fallback if configured
+    return languageSettings.allowForeignFallback;
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -230,7 +230,7 @@ class TasteRecommendationEngine {
     int targetCount = 36,
     bool randomize = true,
   }) {
-    // 1. Filter out foreign content (unless allowed), missing posters, and documentaries/cooking shows
+    // 1. Filter out foreign content (unless allowed) and documentaries/cooking shows
     final eligible = libraryItems.where((item) {
       if (!isLanguageAllowed(
         item: item,
@@ -242,8 +242,8 @@ class TasteRecommendationEngine {
       if (isExcludedNonEntertainmentItem(item)) {
         return false;
       }
-      return item.primaryImageTag != null ||
-          (item.rawData['ImageTags'] as Map?)?.containsKey('Primary') == true;
+      // Accept item if it has an ID
+      return item.id.isNotEmpty;
     }).toList();
 
     // 2. Compute well-known score for all eligible items
@@ -280,11 +280,31 @@ class TasteRecommendationEngine {
       franchiseCount[collectionId] = countInFranchise + 1;
     }
 
-    // 4. Randomize selection from the highest-rated candidate pool if requested
+    // 4. Randomize selection from a diverse candidate pool if requested
     if (randomize && deduplicated.length > targetCount) {
-      final poolSize = math.min(deduplicated.length, targetCount * 2);
-      final candidateSlice = deduplicated.sublist(0, poolSize)..shuffle();
-      return candidateSlice.take(targetCount).toList();
+      // Balance recognizable anchor titles with deep library discovery so the user
+      // doesn't see the exact same options on repeated quiz runs:
+      // Draw ~12 recognizable anchors from the top tier, plus ~24 diverse picks
+      // sampled from the broader library pool (up to 300 candidates).
+      final topAnchorCount = math.min(12, deduplicated.length);
+      final broaderPoolLimit = math.min(deduplicated.length, 300);
+
+      final topTier = deduplicated.sublist(0, math.min(deduplicated.length, targetCount));
+      final topPicks = (List<AggregatedItem>.from(topTier)..shuffle()).take(topAnchorCount).toList();
+      final topPickIds = topPicks.map((e) => e.id).toSet();
+
+      final broaderPool = deduplicated
+          .sublist(0, broaderPoolLimit)
+          .where((e) => !topPickIds.contains(e.id))
+          .toList()
+        ..shuffle();
+
+      final combined = [
+        ...topPicks,
+        ...broaderPool.take(targetCount - topPicks.length),
+      ]..shuffle();
+
+      return combined;
     }
 
     return deduplicated.take(targetCount).toList();
@@ -298,7 +318,7 @@ class TasteRecommendationEngine {
     int targetCount = 36,
     bool randomize = true,
   }) {
-    // 1. Filter out foreign content, missing posters, and documentaries/cooking shows
+    // 1. Filter out foreign content (unless allowed) and documentaries/cooking shows
     final eligible = librarySeries.where((item) {
       if (!isLanguageAllowed(
         item: item,
@@ -310,8 +330,7 @@ class TasteRecommendationEngine {
       if (isExcludedNonEntertainmentItem(item)) {
         return false;
       }
-      return item.primaryImageTag != null ||
-          (item.rawData['ImageTags'] as Map?)?.containsKey('Primary') == true;
+      return item.id.isNotEmpty;
     }).toList();
 
     // 2. Compute well-known score with series balance
@@ -333,11 +352,27 @@ class TasteRecommendationEngine {
       }
     }
 
-    // 4. Randomize top pool
+    // 4. Randomize top pool with diverse sampling
     if (randomize && deduplicated.length > targetCount) {
-      final poolSize = math.min(deduplicated.length, targetCount * 2);
-      final candidateSlice = deduplicated.sublist(0, poolSize)..shuffle();
-      return candidateSlice.take(targetCount).toList();
+      final topAnchorCount = math.min(12, deduplicated.length);
+      final broaderPoolLimit = math.min(deduplicated.length, 300);
+
+      final topTier = deduplicated.sublist(0, math.min(deduplicated.length, targetCount));
+      final topPicks = (List<AggregatedItem>.from(topTier)..shuffle()).take(topAnchorCount).toList();
+      final topPickIds = topPicks.map((e) => e.id).toSet();
+
+      final broaderPool = deduplicated
+          .sublist(0, broaderPoolLimit)
+          .where((e) => !topPickIds.contains(e.id))
+          .toList()
+        ..shuffle();
+
+      final combined = [
+        ...topPicks,
+        ...broaderPool.take(targetCount - topPicks.length),
+      ]..shuffle();
+
+      return combined;
     }
 
     return deduplicated.take(targetCount).toList();

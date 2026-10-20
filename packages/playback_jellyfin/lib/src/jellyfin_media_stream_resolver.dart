@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:dio/dio.dart';
 import 'package:playback_core/playback_core.dart';
 import 'package:server_core/server_core.dart';
 
@@ -5,6 +8,80 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
   final MediaServerClient _client;
 
   JellyfinMediaStreamResolver(this._client);
+
+  /// When true, a video the server would only convert (transcode/remux) is
+  /// first tried as the original file, the way the Jellyfin app plays it.
+  /// If the device can't play it, the manager's startup recovery still
+  /// retries with conversion (enableDirectPlay=false bypasses this).
+  static bool preferOriginalFile = true;
+
+  /// The player decodes every audio format itself (Media3 + FFmpeg on Android,
+  /// mpv on phones/desktop): TrueHD / DTS-HD do NOT need the server, so the
+  /// original file is played even when the server would convert the audio.
+  /// Server conversion on shared servers (supersilo) is slow or unavailable -
+  /// it was the "Loading stream" that never finished.
+  static bool deviceDecodesAllAudio = false;
+
+  /// Titles that must play from the original file (a server-converted stream
+  /// of them stalled). Set by the playback manager's stall recovery.
+  static final Set<String> forceOriginalItems = <String>{};
+
+  /// Diagnostics hook (the app forwards these to its backend log).
+  static void Function(String stage, Map<String, String> data)? onDiag;
+
+  // ── Playback-info prefetch ────────────────────────────────────────────
+  // The detail screen asks for PlaybackInfo as soon as a movie / episode
+  // opens; Play then uses that answer instead of waiting ~1-2 s for it.
+  static const _prefetchTtl = Duration(seconds: 90);
+  static final Map<String, ({DateTime at, Future<Map<String, dynamic>> info})>
+      _prefetched = {};
+
+  static String _prefetchKey(MediaServerClient client, String itemId) =>
+      '${client.baseUrl}|${client.userId}|$itemId';
+
+  /// Starts PlaybackInfo for [itemId] in the background (no-op when a fresh
+  /// one is already cached). Never throws.
+  static void prefetchPlaybackInfo(
+    MediaServerClient client,
+    String itemId, {
+    Map<String, dynamic>? deviceProfile,
+    int? maxStreamingBitrate,
+  }) {
+    if (itemId.isEmpty) return;
+    final key = _prefetchKey(client, itemId);
+    final existing = _prefetched[key];
+    if (existing != null &&
+        DateTime.now().difference(existing.at) < _prefetchTtl) {
+      return;
+    }
+    _prefetched.removeWhere(
+        (_, v) => DateTime.now().difference(v.at) >= _prefetchTtl);
+    final request = PlaybackInfoRequest(
+      itemId: itemId,
+      deviceProfile: deviceProfile,
+      maxStreamingBitrate: maxStreamingBitrate,
+    );
+    final future = client.playbackApi.getPlaybackInfo(
+      itemId,
+      requestBody: request.toJson(),
+      userId: client.userId,
+    );
+    future.catchError((Object _) {
+      _prefetched.remove(key);
+      return const <String, dynamic>{};
+    });
+    _prefetched[key] = (at: DateTime.now(), info: future);
+  }
+
+  /// A fresh prefetched answer for a plain Play (no explicit track, source
+  /// or transcode request); removed once taken so re-resolves ask again.
+  Future<Map<String, dynamic>>? _takePrefetched(String itemId) {
+    final key = _prefetchKey(_client, itemId);
+    final hit = _prefetched.remove(key);
+    if (hit == null) return null;
+    if (DateTime.now().difference(hit.at) >= _prefetchTtl) return null;
+    return hit.info;
+  }
 
   Map<String, String> _buildRequestHeaders() {
     final token = _client.accessToken;
@@ -19,6 +96,50 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
       headers['X-Emby-Token'] = token;
     }
     return headers;
+  }
+
+  /// Live TV channels/programmes must never take the "original file" path:
+  /// a channel has no file, its stream comes from an opened live session.
+  bool _isLiveMediaItem(dynamic mediaItem) {
+    bool isLiveType(Object? raw) {
+      final t = raw?.toString().trim().toLowerCase();
+      return t == 'tvchannel' || t == 'livetvchannel' || t == 'program' ||
+          t == 'channel' || t == 'recording';
+    }
+
+    Map? raw;
+    try {
+      final dynamic dyn = mediaItem;
+      if (isLiveType(dyn.type)) return true;
+      raw = dyn.rawData as Map?;
+    } catch (_) {}
+    if (mediaItem is Map) raw = mediaItem;
+    if (raw != null) {
+      if (isLiveType(raw['Type']) || isLiveType(raw['MediaType'])) return true;
+      if (raw['ChannelId'] != null || raw['TimerId'] != null) return true;
+      if (raw['IsLive'] == true) return true;
+    }
+    return false;
+  }
+
+
+  /// When the file's default audio track is a heavy codec and the same file
+  /// has a light-codec track in the same language, returns that track's
+  /// index (most channels first). Null = keep the default.
+  static int? preferDecodableAudioTrack(
+    List<Map<String, dynamic>> streams,
+    int? defaultIndex,
+  ) {
+    final audio = streams.where((s) => s['Type'] == 'Audio').toList();
+    if (audio.length < 2) return null;
+    final current = audio.firstWhere(
+      (s) => defaultIndex != null ? s['Index'] == defaultIndex : s['IsDefault'] == true,
+      orElse: () => audio.first,
+    );
+    // AC3 5.1 first, then E-AC3 5.1+, other AC3/E-AC3, AAC (see
+    // AudioTrackPreference).
+    final alt = AudioTrackPreference.lighterAlternative(audio, current);
+    return alt?['Index'] as int?;
   }
 
   bool _isAudioMediaItem(dynamic mediaItem) {
@@ -55,7 +176,49 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
     bool enableTranscoding = true,
   }) async {
     final itemId = MediaStreamResolver.extractItemId(mediaItem);
+    final resolveWatch = Stopwatch()..start();
+    final slowTimer = Timer(const Duration(seconds: 10), () {
+      try {
+        onDiag?.call('resolve-slow', {
+          'item': itemId,
+          'source': mediaSourceId ?? '',
+          'ms': '${resolveWatch.elapsedMilliseconds}',
+        });
+      } catch (_) {}
+    });
+    try {
+      return await _resolve(
+        mediaItem,
+        itemId,
+        deviceProfile: deviceProfile,
+        maxStreamingBitrate: maxStreamingBitrate,
+        audioStreamIndex: audioStreamIndex,
+        subtitleStreamIndex: subtitleStreamIndex,
+        startTimeTicks: startTimeTicks,
+        mediaSourceId: mediaSourceId,
+        enableDirectPlay: enableDirectPlay,
+        enableDirectStream: enableDirectStream,
+        enableTranscoding: enableTranscoding,
+      );
+    } finally {
+      slowTimer.cancel();
+    }
+  }
 
+  Future<StreamResolutionResult> _resolve(
+    dynamic mediaItem,
+    String itemId, {
+    Map<String, dynamic>? deviceProfile,
+    int? maxStreamingBitrate,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+    int? startTimeTicks,
+    String? mediaSourceId,
+    bool enableDirectPlay = true,
+    bool enableDirectStream = true,
+    bool enableTranscoding = true,
+  }) async {
+    final resolveTimer = Stopwatch()..start();
     final resolvedMediaSourceId =
         MediaStreamResolver.resolveStaticMediaSourceId(mediaItem, mediaSourceId);
 
@@ -72,12 +235,27 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
       enableTranscoding: enableTranscoding,
     );
 
-    final rawInfo = await _client.playbackApi.getPlaybackInfo(
-      itemId,
-      requestBody: request.toJson(),
-      userId: _client.userId,
-      startTimeTicks: startTimeTicks,
-    );
+    final canUsePrefetch = audioStreamIndex == null &&
+        subtitleStreamIndex == null &&
+        enableDirectPlay &&
+        enableDirectStream &&
+        enableTranscoding &&
+        (mediaSourceId == null || mediaSourceId == itemId);
+    final prefetched = canUsePrefetch ? _takePrefetched(itemId) : null;
+    Map<String, dynamic>? fromPrefetch;
+    if (prefetched != null) {
+      try {
+        final v = await prefetched;
+        if (v.isNotEmpty) fromPrefetch = v;
+      } catch (_) {}
+    }
+    final rawInfo = fromPrefetch ??
+        await _client.playbackApi.getPlaybackInfo(
+          itemId,
+          requestBody: request.toJson(),
+          userId: _client.userId,
+          startTimeTicks: startTimeTicks,
+        );
 
     final info = PlaybackInfoResult.fromJson(rawInfo);
 
@@ -88,9 +266,34 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
       throw Exception('No media sources available for item $itemId');
     }
 
-    final source = _selectBestSource(
-      info.mediaSources,
-      preferredId: resolvedMediaSourceId,
+    // No version chosen by the viewer: take the one that fits their maximum
+    // resolution (e.g. the 1080p file when 2160p and 1080p versions exist).
+    var preferredSourceId = resolvedMediaSourceId;
+    if ((preferredSourceId == null || preferredSourceId.isEmpty) &&
+        info.mediaSources.length > 1) {
+      final rawSources = (rawInfo['MediaSources'] as List? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .toList();
+      preferredSourceId = MediaSourceVersionPicker.pickId(rawSources);
+    }
+    // Versions that already failed on this device are skipped (a different
+    // one is played instead of an error).
+    final usableSources = info.mediaSources.length > 1
+        ? info.mediaSources
+            .where((s) => !MediaSourceVersionPicker.isUnplayable(s.id))
+            .toList()
+        : info.mediaSources;
+    if (MediaSourceVersionPicker.isUnplayable(preferredSourceId) &&
+        usableSources.isNotEmpty) {
+      final rawUsable = (rawInfo['MediaSources'] as List? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .where((m) => !MediaSourceVersionPicker.isUnplayable(m['Id']))
+          .toList();
+      preferredSourceId = MediaSourceVersionPicker.pickId(rawUsable);
+    }
+    var source = _selectBestSource(
+      usableSources.isEmpty ? info.mediaSources : usableSources,
+      preferredId: preferredSourceId,
       enableDirectPlay: enableDirectPlay,
     );
     final hasKnownMediaStreams = source.mediaStreams.isNotEmpty;
@@ -101,8 +304,76 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
       itemId,
       source,
       isAudio: isAudio,
+      isLive: _isLiveMediaItem(mediaItem),
       enableDirectPlay: enableDirectPlay,
     );
+
+    // Title with several versions: check the version's file address answers
+    // before handing it to the player. Servers differ on which address a
+    // version uses (/Videos/<item>/stream?MediaSourceId=<version> or
+    // /Videos/<version>/stream); supersilo accepts only one of them per
+    // version. A version neither address can deliver is marked unplayable
+    // (hidden from Versions) and the next best version is played instead.
+    if (!isAudio &&
+        !_isLiveMediaItem(mediaItem) &&
+        playMethod == StreamPlayMethod.directPlay &&
+        source.id.isNotEmpty &&
+        source.id != itemId &&
+        _isServerUrl(url) &&
+        (source.liveStreamId ?? '').isEmpty) {
+      for (var attempt = 0; attempt < info.mediaSources.length; attempt++) {
+        final working = await _workingVersionUrl(
+          itemId,
+          source,
+          ownSourceFirst: identical(source, info.mediaSources.first),
+        );
+        if (working != null) {
+          url = working;
+          break;
+        }
+        MediaSourceVersionPicker.markUnplayable(source.id);
+        final rawUsable = (rawInfo['MediaSources'] as List? ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .where((m) => !MediaSourceVersionPicker.isUnplayable(m['Id']))
+            .toList();
+        if (rawUsable.isEmpty) break; // nothing else to try: keep the error path
+        final nextId = MediaSourceVersionPicker.pickId(rawUsable);
+        final next = info.mediaSources.where((s) => s.id == nextId).firstOrNull;
+        if (next == null) break;
+        source = next;
+        (url, playMethod) = _resolveStreamUrl(
+          itemId,
+          source,
+          isAudio: isAudio,
+          isLive: false,
+          enableDirectPlay: enableDirectPlay,
+        );
+        if (playMethod != StreamPlayMethod.directPlay || !_isServerUrl(url)) {
+          break;
+        }
+      }
+    }
+
+    try {
+      final uri = Uri.tryParse(url);
+      final sourceName = source.name ?? '';
+      onDiag?.call('play-resolve', {
+        'item': itemId,
+        'source': source.id,
+        'sources': '${info.mediaSources.length}',
+        'name': sourceName.length > 80 ? sourceName.substring(0, 80) : sourceName,
+        'mbps': ((source.bitrate ?? 0) / 1000000).toStringAsFixed(1),
+        'dp': '${source.supportsDirectPlay}',
+        'ds': '${source.supportsDirectStream}',
+        'tc': '${source.supportsTranscoding}',
+        'reasons': source.transcodingReasons.join(','),
+        'method': playMethod.name,
+        'path': uri?.path ?? '',
+        'static': uri?.queryParameters['Static'] ??
+            uri?.queryParameters['static'] ?? '',
+        'ms': '${resolveTimer.elapsedMilliseconds}',
+      });
+    } catch (_) {}
 
     if (playMethod == StreamPlayMethod.transcode || playMethod == StreamPlayMethod.directStream) {
       url = MediaStreamResolver.applyStreamIndices(url, audioStreamIndex, subtitleStreamIndex);
@@ -164,7 +435,15 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
       normalizationGainDb: normalizationGainDb,
       externalSubtitles: authedSubs,
       mediaStreams: source.mediaStreams,
-      selectedAudioStreamIndex: source.defaultAudioStreamIndex,
+      // No track chosen by the viewer, or the file's default one: swap a
+      // TrueHD/DTS default for the same-language AC3 5.1 (etc.) track.
+      selectedAudioStreamIndex: ((audioStreamIndex == null ||
+                  audioStreamIndex == source.defaultAudioStreamIndex) &&
+              playMethod != StreamPlayMethod.transcode)
+          ? (preferDecodableAudioTrack(source.mediaStreams,
+                  source.defaultAudioStreamIndex) ??
+              source.defaultAudioStreamIndex)
+          : source.defaultAudioStreamIndex,
       transcodingReasons: source.transcodingReasons,
       hybridAudioUrl: hybridAudioUrl,
     );
@@ -221,6 +500,22 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
     return directStream ?? transcode ?? directPlay ?? sources.first;
   }
 
+  /// The server says this device can't decode the file's audio (e.g. TrueHD /
+  /// DTS-HD on a TV without that decoder). Playing the original file then
+  /// gives a stalled or silent start, so take the server's version instead:
+  /// "direct stream" copies the video untouched and only converts the audio,
+  /// which is light for the server - what the official Jellyfin app does.
+  static const _audioConversionReasons = {
+    'AudioCodecNotSupported',
+    'AudioProfileNotSupported',
+    'AudioBitDepthNotSupported',
+    'AudioSampleRateNotSupported',
+    'SecondaryAudioNotSupported',
+  };
+
+  bool _audioNeedsConversion(PlaybackMediaSource source) =>
+      source.transcodingReasons.any(_audioConversionReasons.contains);
+
   bool _isServerUrl(String url) {
     final base = _client.baseUrl.trim().toLowerCase();
     final cleanBase =
@@ -250,6 +545,106 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
     return '$url${separator}api_key=${Uri.encodeComponent(token)}';
   }
 
+  // ── Version address check ─────────────────────────────────────────────
+  /// Which address worked for a version, per server: 'own' = /Videos/<version>
+  /// /stream, 'item' = /Videos/<item>/stream?MediaSourceId=<version>.
+  static final Map<String, String> _versionUrlForm = {};
+  static final Dio _probeDio = Dio(
+    BaseOptions(
+      connectTimeout: const Duration(seconds: 6),
+      receiveTimeout: const Duration(seconds: 8),
+      followRedirects: true,
+      validateStatus: (_) => true,
+      responseType: ResponseType.stream,
+    ),
+  );
+
+  /// The address that delivers [source], or null when the server refused
+  /// both (missing/broken file). When the check itself can't finish (slow
+  /// server, timeout) the usual address is returned, as before.
+  Future<String?> _workingVersionUrl(
+    String itemId,
+    PlaybackMediaSource source, {
+    required bool ownSourceFirst,
+  }) async {
+    final byOwnId =
+        _client.playbackApi.getStreamUrl(source.id, mediaSourceId: source.id);
+    final byItem =
+        _client.playbackApi.getStreamUrl(itemId, mediaSourceId: source.id);
+    if (source.id.isEmpty || source.id == itemId) return byItem;
+    final key = '${_client.baseUrl}|${source.id}';
+    switch (_versionUrlForm[key]) {
+      case 'own':
+        return byOwnId;
+      case 'item':
+        return byItem;
+    }
+    // The standard Jellyfin address first (/Videos/<title>/stream?MediaSourceId=
+    // <version>): supersilo serves every version of Wicked that way and answers
+    // 401 to /Videos/<version>/stream (tested with the stream-test script).
+    final order = [('item', byItem), ('own', byOwnId)];
+    var undecided = false;
+    final results = <String>[];
+    final sw = Stopwatch()..start();
+    String? found;
+    for (final (form, candidate) in order) {
+      // Hard limit: the check must never hold up Play for long.
+      final ok = await _probe(_appendAuth(candidate))
+          .timeout(const Duration(seconds: 5), onTimeout: () => null);
+      results.add('$form=${ok ?? 'unknown'}');
+      if (ok == true) {
+        _versionUrlForm[key] = form;
+        found = candidate;
+        break;
+      }
+      if (ok == null) undecided = true;
+    }
+    try {
+      onDiag?.call('version-check', {
+        'source': source.id,
+        'result': results.join(','),
+        'ms': '${sw.elapsedMilliseconds}',
+      });
+    } catch (_) {}
+    if (found != null) return found;
+    return undecided ? order.first.$2 : null;
+  }
+
+  /// true = the file answers, false = the server refused it, null = unknown.
+  Future<bool?> _probe(String url) async {
+    try {
+      final cancel = CancelToken();
+      final timer = Timer(const Duration(seconds: 5), () {
+        if (!cancel.isCancelled) cancel.cancel();
+      });
+      final Response<ResponseBody> r;
+      try {
+        r = await _probeDio.get<ResponseBody>(
+          url,
+          cancelToken: cancel,
+          options: Options(
+            headers: {..._buildRequestHeaders(), 'Range': 'bytes=0-0'},
+          ),
+        );
+      } finally {
+        timer.cancel();
+      }
+      // Don't wait for the (possibly huge) body: drop the connection.
+      try {
+        unawaited(r.data?.stream.listen(null).cancel() ?? Future.value());
+      } catch (_) {}
+      final code = r.statusCode ?? 0;
+      if (code == 200 || code == 206) return true;
+      if (code == 400 || code == 401 || code == 403 || code == 404 ||
+          code == 410 || code == 500) {
+        return false;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   String _buildDirectPlayAudioUrl(String itemId, PlaybackMediaSource source) {
     final params = <String, String>{
       if (source.id.isNotEmpty) 'MediaSourceId': source.id,
@@ -271,6 +666,7 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
     String itemId,
     PlaybackMediaSource source, {
     bool isAudio = false,
+    bool isLive = false,
     bool enableDirectPlay = true,
   }) {
     final remotePath = source.path;
@@ -308,9 +704,30 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
       );
     }
 
+    // Another version of the title (its own media source id): stream it by
+    // ITS id. In Jellyfin every version is an item of its own, and supersilo
+    // answers 404 to /Videos/<main id>/stream?MediaSourceId=<other version>.
+    // Standard Jellyfin address: /Videos/<title>/stream?MediaSourceId=<version>.
+    // (The version-id form returned 401 on supersilo; a server that wants it
+    // is found by the address check in resolve().)
+    final fileItemId = itemId;
     if (enableDirectPlay && source.supportsDirectPlay) {
       return (
-        _client.playbackApi.getStreamUrl(itemId, mediaSourceId: source.id, liveStreamId: source.liveStreamId),
+        _client.playbackApi.getStreamUrl(fileItemId, mediaSourceId: source.id, liveStreamId: source.liveStreamId),
+        StreamPlayMethod.directPlay,
+      );
+    }
+    if (preferOriginalFile &&
+        enableDirectPlay &&
+        (!_audioNeedsConversion(source) ||
+            deviceDecodesAllAudio ||
+            forceOriginalItems.contains(itemId)) &&
+        !isAudio &&
+        !isLive &&
+        !isManagedLiveStream &&
+        itemId.isNotEmpty) {
+      return (
+        _client.playbackApi.getStreamUrl(fileItemId, mediaSourceId: source.id),
         StreamPlayMethod.directPlay,
       );
     }

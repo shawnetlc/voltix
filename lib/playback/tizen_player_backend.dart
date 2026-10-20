@@ -210,15 +210,18 @@ class TizenPlayerBackend extends PlayerBackend {
         UserPreferences.dolbyVisionProfile7DirectPlayBehavior,
       ),
     );
-    final audioCapabilityProfile = const AudioCapabilityProfile.optimistic();
+    final audioCapabilityProfile = const AudioCapabilityProfile.tizen();
 
-    // Conservative Samsung-TV capability set: H.264 + HEVC (incl. Main10/HDR10)
-    // direct-play up to 4K; everything else (AV1, VC1, Dolby Vision) is left to
-    // server transcoding. Per-model capability detection over the C# runner is a
-    // future improvement (mirroring the Android TV platform channel).
+    // Samsung Tizen TV hardware decoder capabilities:
+    // - H.264/AVC: Hardware-accelerated up to 1080p (1920x1080) at Level 4.2, 8-bit only.
+    //   Samsung Tizen AVPlay does NOT support 10-bit H.264 (High 10) or 4K H.264;
+    //   direct-playing them leads to severe frame drops, decoders choking, and slow-motion video.
+    // - HEVC: Hardware-accelerated up to 4K (3840x2160) Level 183 (6.2), including Main10/HDR10.
+    const fhdWidth = 1920;
+    const fhdHeight = 1080;
     const uhdWidth = 3840;
     const uhdHeight = 2160;
-    const h264Level52 = 52;
+    const h264Level42 = 42;
     const hevcLevel62 = 183;
 
     return DeviceProfileBuilder.build(
@@ -240,9 +243,9 @@ class TizenPlayerBackend extends PlayerBackend {
       pgsDirectPlay: false,
       assDirectPlay: false,
       supportsAvc: true,
-      supportsAvcHigh10: true,
-      avcMainLevel: h264Level52,
-      avcHigh10Level: h264Level52,
+      supportsAvcHigh10: false,
+      avcMainLevel: h264Level42,
+      avcHigh10Level: 0,
       supportsHevc: true,
       supportsHevcMain10: true,
       hevcMainLevel: hevcLevel62,
@@ -256,8 +259,8 @@ class TizenPlayerBackend extends PlayerBackend {
       supportsAv1Hdr10: false,
       supportsAv1Hdr10Plus: false,
       supportsVc1: false,
-      maxResolutionAvcWidth: uhdWidth,
-      maxResolutionAvcHeight: uhdHeight,
+      maxResolutionAvcWidth: fhdWidth,
+      maxResolutionAvcHeight: fhdHeight,
       maxResolutionHevcWidth: uhdWidth,
       maxResolutionHevcHeight: uhdHeight,
       maxResolutionAv1Width: 0,

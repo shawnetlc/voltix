@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:dio/dio.dart' show DioException;
 
 import 'package:flutter/foundation.dart';
 import 'package:get_it/get_it.dart';
@@ -9,15 +10,18 @@ import '../models/tmdb_item_ref.dart';
 import '../models/lyrics.dart';
 import '../repositories/item_mutation_repository.dart';
 import '../repositories/mdblist_repository.dart';
+import '../repositories/multi_server_repository.dart';
 import '../repositories/seerr_repository.dart';
 import '../services/plugin_sync_service.dart';
 import '../services/row_data_source.dart';
+import '../services/voltix_watch_registry_service.dart';
 import '../utils/playlist_utils.dart';
 import '../../preference/seerr_preferences.dart';
 import 'seerr_media_detail_view_model.dart';
 import '../../preference/preference_constants.dart';
 import '../../preference/user_preferences.dart';
 import '../../util/episode_playability.dart';
+import '../../util/shared_server_util.dart';
 import '../../util/user_facing_error.dart';
 
 enum ItemDetailState { loading, ready, error }
@@ -57,6 +61,13 @@ class _PlaylistItemIndexEntry {
 }
 
 class ItemDetailViewModel extends ChangeNotifier {
+  /// Set once this screen's `autoPlay` has started playback. Lives on the view
+  /// model, not the content widget, because the content widget is rebuilt
+  /// from scratch every time the view model reloads (it does after playback
+  /// ends) - a flag kept there reset itself and auto-play fired again on the
+  /// way back from the player, which is what looped the stream.
+  bool autoPlayConsumed = false;
+
   static const _episodeOverviewFields =
       'Overview,MediaStreams,MediaSources,RunTimeTicks,Trickplay,UserData,Chapters';
 
@@ -361,10 +372,12 @@ class ItemDetailViewModel extends ChangeNotifier {
         itemId,
         mediaSourceId: mediaSourceId,
       );
-      _item = AggregatedItem(
-        id: itemId,
-        serverId: _serverId ?? _client.baseUrl,
-        rawData: data,
+      _item = _withRegistryProgress(
+        AggregatedItem(
+          id: itemId,
+          serverId: _serverId ?? _client.baseUrl,
+          rawData: data,
+        ),
       );
       _lyrics = LyricsData.empty;
       _state = ItemDetailState.ready;
@@ -418,10 +431,13 @@ class ItemDetailViewModel extends ChangeNotifier {
         type == 'Trailer' ||
         type == 'Video') {
       futures.add(_loadRatings());
-      futures.add(_loadSimilar());
-      futures.add(_loadFeatures());
+      // Secondary rows wait a moment so the playback info for the Play button
+      // (prefetched by the detail screen) gets the server first: on a slow
+      // server these requests queue behind each other and delayed playback.
+      futures.add(_afterPlaybackHeadStart(_loadSimilar));
+      futures.add(_afterPlaybackHeadStart(_loadFeatures));
       if (type != 'MusicVideo') {
-        futures.add(_loadParentCollection());
+        futures.add(_afterPlaybackHeadStart(_loadParentCollection));
       }
     } else {
       futures.add(_loadRatings());
@@ -467,10 +483,12 @@ class ItemDetailViewModel extends ChangeNotifier {
       final items = (data['Items'] as List?) ?? [];
       if (items.isNotEmpty) {
         final raw = items.first as Map<String, dynamic>;
-        final candidate = AggregatedItem(
-          id: raw['Id']?.toString() ?? '',
-          serverId: _serverId ?? _client.baseUrl,
-          rawData: raw,
+        final candidate = _withRegistryProgress(
+          AggregatedItem(
+            id: raw['Id']?.toString() ?? '',
+            serverId: _serverId ?? _client.baseUrl,
+            rawData: raw,
+          ),
         );
         if (isEligibleNextEpisodeCandidate(candidate)) {
           nextUp = candidate;
@@ -488,13 +506,67 @@ class ItemDetailViewModel extends ChangeNotifier {
     return items
         .cast<Map<String, dynamic>>()
         .map(
-          (raw) => AggregatedItem(
-            id: raw['Id']?.toString() ?? '',
-            serverId: _serverId ?? _client.baseUrl,
-            rawData: raw,
+          (raw) => _withRegistryProgress(
+            AggregatedItem(
+              id: raw['Id']?.toString() ?? '',
+              serverId: _serverId ?? _client.baseUrl,
+              rawData: raw,
+            ),
           ),
         )
         .toList();
+  }
+
+  bool get _isSharedServer {
+    String? name;
+    final serverId = _serverId;
+    if (serverId != null && GetIt.instance.isRegistered<MultiServerRepository>()) {
+      name = GetIt.instance<MultiServerRepository>().serverNameForId(serverId);
+    }
+    return isSharedServer(name: name, address: _client.baseUrl);
+  }
+
+  /// Lays the user's own resume point over the server's copy of [item].
+  ///
+  /// Continue Watching reads progress the server itself may not hold:
+  ///  * Shared (Extra / 4K) accounts are used by every Voltix user, so their
+  ///    watch state is wiped after each session and this user's position lives
+  ///    only in the Voltix watch registry.
+  ///  * A position synced from another server.
+  /// Without this the detail screen re-read the item from the server, found no
+  /// position, and offered Play from the start instead of Resume.
+  AggregatedItem _withRegistryProgress(AggregatedItem item) {
+    final type = item.type;
+    if (type != 'Movie' && type != 'Episode' && type != 'Video') return item;
+    if (!GetIt.instance.isRegistered<VoltixWatchRegistryService>()) return item;
+    final ticks =
+        GetIt.instance<VoltixWatchRegistryService>().getItemProgressTicks(item);
+    if (ticks == null || ticks <= 0) return item;
+
+    final serverTicks = item.playbackPositionTicks ?? 0;
+    if (_isSharedServer) {
+      // The registry is the only trustworthy record on a shared account.
+      if (serverTicks == ticks && !item.isPlayed) return item;
+    } else {
+      // On the user's own server, the server wins unless it is behind.
+      if (item.isPlayed || serverTicks >= ticks) return item;
+    }
+
+    final userData = Map<String, dynamic>.from(
+      (item.rawData['UserData'] as Map?) ?? const <String, dynamic>{},
+    );
+    userData['PlaybackPositionTicks'] = ticks;
+    userData['Played'] = false;
+    final runtime = item.runTimeTicks;
+    if (runtime != null && runtime > 0) {
+      userData['PlayedPercentage'] = (ticks / runtime * 100).clamp(0.0, 100.0);
+    }
+    return AggregatedItem(
+      id: item.id,
+      serverId: item.serverId,
+      serverName: item.serverName,
+      rawData: Map<String, dynamic>.from(item.rawData)..['UserData'] = userData,
+    );
   }
 
   Future<void> _loadAlbums() async {
@@ -673,14 +745,36 @@ class ItemDetailViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  static const _playbackHeadStart = Duration(milliseconds: 2500);
+
+  Future<void> _afterPlaybackHeadStart(Future<void> Function() load) async {
+    await Future<void>.delayed(_playbackHeadStart);
+    await load();
+  }
+
+  /// Servers that answered 404 to /Items/{id}/Ancestors (e.g. supersilo).
+  /// Their parent-collection look-up is skipped entirely: the fallback query
+  /// below took ~10 s there and competed with starting playback.
+  static final Set<String> _noAncestorsServers = <String>{};
+
   Future<void> _loadParentCollection() async {
     final item = _item;
     if (item == null) {
       return;
     }
+    if (_noAncestorsServers.contains(_client.baseUrl)) return;
 
     try {
-      final ancestors = await _client.itemsApi.getAncestors(item.id);
+      List<Map<String, dynamic>> ancestors;
+      try {
+        ancestors = await _client.itemsApi.getAncestors(item.id);
+      } on DioException catch (e) {
+        if (e.response?.statusCode == 404) {
+          _noAncestorsServers.add(_client.baseUrl);
+          return;
+        }
+        rethrow;
+      }
       var boxSet = ancestors.firstWhere(
         (ancestor) => ancestor['Type'] == 'BoxSet',
         orElse: () => const <String, dynamic>{},
@@ -712,9 +806,11 @@ class ItemDetailViewModel extends ChangeNotifier {
           resolvedBoxSetId = boxSetId;
         }
       }
-      resolvedBoxSetId ??= await _findParentCollectionByScanningBoxSets(
-        item.id,
-      );
+      if (_scanCollectionsForParent) {
+        resolvedBoxSetId ??= await _findParentCollectionByScanningBoxSets(
+          item.id,
+        );
+      }
       if (resolvedBoxSetId == null || resolvedBoxSetId.isEmpty) {
         return;
       }
@@ -878,11 +974,25 @@ class ItemDetailViewModel extends ChangeNotifier {
     } catch (_) {}
   }
 
+  /// Off while the shared server is slow: Moonfin Recommends scanned the
+  /// library three or four times per title opened (genre, actor and
+  /// unfiltered queries with cast lists, 70-80 s each on the shared server)
+  /// and held the connection slots search and browsing needed. Jellyfin's own
+  /// similar-items lookup below is a single cheap request.
+  static const _useLocalRecommendations = false;
+
+  /// Off for the same reason: the fallback scanned every collection on the
+  /// server (90 s, then timed out) to find the one this title belongs to.
+  /// The ancestor and collapsed-box-set checks still find it in normal cases.
+  static const _scanCollectionsForParent = false;
+
   Future<void> _loadSimilar() async {
     // Moonfin Recommends first: score candidates from the user's own library
     // against this item's genres, tags, cast, studio and title.
     final item = _item;
-    if (item != null && (item.type == 'Movie' || item.type == 'Series')) {
+    if (_useLocalRecommendations &&
+        item != null &&
+        (item.type == 'Movie' || item.type == 'Series')) {
       try {
         final prefs = GetIt.instance<UserPreferences>();
         final sourceSetting =

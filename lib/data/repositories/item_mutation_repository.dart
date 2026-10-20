@@ -16,7 +16,7 @@ class ItemMutationRepository {
 
     try {
       final registry = GetIt.instance<VoltixFavoritesRegistryService>();
-      final serverId = _client.baseUrl;
+      final serverId = item?.serverId ?? _client.baseUrl;
       
       if (isFavorite) {
         if (item != null) {

@@ -2,6 +2,7 @@ import 'package:get_it/get_it.dart';
 import 'package:server_core/server_core.dart';
 
 import '../../auth/store/voltix_session_store.dart';
+import '../../util/parental_rating_severity.dart';
 import '../models/aggregated_item.dart';
 
 class SearchRepository {
@@ -10,7 +11,7 @@ class SearchRepository {
   static const _searchFields =
       'Type,UserData,ProductionYear,SeriesName,ParentIndexNumber,IndexNumber,'
       'AlbumArtist,Album,ImageTags,BackdropImageTags,ParentBackdropItemId,'
-      'ParentBackdropImageTags,SeriesId,SeriesPrimaryImageTag';
+      'ParentBackdropImageTags,SeriesId,SeriesPrimaryImageTag,OfficialRating';
 
   SearchRepository(this._client);
 
@@ -32,7 +33,9 @@ class SearchRepository {
     final response = await _client.itemsApi.getItems(
       searchTerm: trimmed,
       parentId: parentId,
-      includeItemTypes: const ['Movie', 'Series', 'Person'],
+      // People (actors) left out: the most expensive part of a search on the
+      // shared server.
+      includeItemTypes: const ['Movie', 'Series'],
       limit: limit,
       recursive: true,
       fields: 'Type',
@@ -68,10 +71,17 @@ class SearchRepository {
     final searchTerm = isStudioQuery ? null : query;
     final studios = isStudioQuery ? [query.substring('studio:'.length)] : null;
 
+    final effectiveTypes = _isKids
+        ? (includeItemTypes
+                ?.where((t) => t == 'Movie' || t == 'Series' || t == 'Episode')
+                .toList() ??
+            const ['Movie', 'Series'])
+        : includeItemTypes;
+
     final response = await _client.itemsApi.getItems(
       searchTerm: searchTerm,
       parentId: parentId,
-      includeItemTypes: includeItemTypes,
+      includeItemTypes: effectiveTypes,
       limit: limit ?? 24,
       recursive: true,
       fields: _searchFields,
@@ -81,13 +91,21 @@ class SearchRepository {
     );
 
     final items = response['Items'] as List? ?? [];
-    return items.map((item) {
-      final data = item as Map<String, dynamic>;
-      return AggregatedItem(
-        id: data['Id']?.toString() ?? '',
-        serverId: data['ServerId']?.toString() ?? '',
-        rawData: data,
-      );
-    }).toList();
+    return items
+        .map((item) {
+          final data = item as Map<String, dynamic>;
+          return AggregatedItem(
+            id: data['Id']?.toString() ?? '',
+            serverId: data['ServerId']?.toString() ?? '',
+            rawData: data,
+          );
+        })
+        .where((agg) {
+          if (!_isKids) return true;
+          final rating = agg.officialRating;
+          if (rating == null || rating.trim().isEmpty) return false;
+          return parentalRatingSeverity(rating) <= kRatingGuidance;
+        })
+        .toList();
   }
 }

@@ -7,6 +7,7 @@ import 'package:voltix_design/voltix_design.dart';
 import 'package:server_core/server_core.dart';
 
 import '../../auth/repositories/user_repository.dart';
+import '../../auth/store/voltix_session_store.dart';
 import '../../data/models/aggregated_library.dart';
 import '../../data/repositories/multi_server_repository.dart';
 import '../../data/repositories/user_views_repository.dart';
@@ -23,6 +24,10 @@ import 'seerr_icons.dart';
 import 'settings/settings_panel.dart';
 import 'shuffle_overlay.dart';
 import 'user_menu_dialog.dart';
+
+/// Voltix: IPTV Movies/Series shortcuts hidden from the main menu for now.
+/// Set to true to bring them back.
+const bool _kShowIptvVodNav = false;
 
 const double _kBarHeight = 54.0;
 const double _kIconSize = 24.0;
@@ -117,6 +122,13 @@ class _MobileBottomNavBarState extends State<MobileBottomNavBar> {
         } catch (_) {}
       }
 
+      if (GetIt.instance.isRegistered<VoltixSessionStore>() &&
+          GetIt.instance<VoltixSessionStore>().isKidsProfile) {
+        filtered = filtered.where((lib) =>
+            lib.collectionType == 'movies' || lib.collectionType == 'tvshows'
+        ).toList();
+      }
+
       if (mounted && !_librariesEqual(_libraries, filtered)) {
         setState(() => _libraries = filtered);
       }
@@ -137,6 +149,11 @@ class _MobileBottomNavBarState extends State<MobileBottomNavBar> {
     BuildContext context,
     AppLocalizations l10n,
   ) {
+    final isKidsProfileNav = GetIt.instance.isRegistered<VoltixSessionStore>() &&
+        GetIt.instance<VoltixSessionStore>().isKidsProfile;
+    final liveTvEnabled = !isKidsProfileNav &&
+        _prefs.get(UserPreferences.voltixLiveTvEnabled);
+
     final actions = <_BottomNavAction>[
       _BottomNavAction(
         icon: Icons.home_rounded,
@@ -151,16 +168,44 @@ class _MobileBottomNavBarState extends State<MobileBottomNavBar> {
           context.go(Destinations.home);
         },
       ),
-      _BottomNavAction(
-        icon: Icons.search_rounded,
-        label: l10n.search,
-        isActive: _isActive(Destinations.search),
-        onTap: () {
-          if (_isActive(Destinations.search)) return;
-          context.navigateTopLevel(Destinations.search);
-        },
-      ),
     ];
+
+    // Voltix IPTV: Live TV, Movies and Series as top-level mobile nav entries.
+    if (liveTvEnabled) {
+      actions.add(_BottomNavAction(
+        icon: Icons.live_tv_rounded,
+        label: 'Live TV',
+        isActive: _isActive(Destinations.voltixLiveTv),
+        onTap: () {
+          if (_isActive(Destinations.voltixLiveTv)) return;
+          context.navigateTopLevel(Destinations.voltixLiveTv);
+        },
+      ));
+      if (_kShowIptvVodNav) {
+        actions.add(_BottomNavAction(
+          icon: Icons.movie_rounded,
+          label: 'Movies',
+          isActive: false,
+          onTap: () => context.navigateTopLevel(Destinations.voltixMovies),
+        ));
+        actions.add(_BottomNavAction(
+          icon: Icons.video_library_rounded,
+          label: 'Series',
+          isActive: false,
+          onTap: () => context.navigateTopLevel(Destinations.voltixSeries),
+        ));
+      }
+    }
+
+    actions.add(_BottomNavAction(
+      icon: Icons.search_rounded,
+      label: l10n.search,
+      isActive: _isActive(Destinations.search),
+      onTap: () {
+        if (_isActive(Destinations.search)) return;
+        context.navigateTopLevel(Destinations.search);
+      },
+    ));
 
     if (_prefs.get(UserPreferences.showShuffleButton)) {
       actions.add(
@@ -207,7 +252,10 @@ class _MobileBottomNavBarState extends State<MobileBottomNavBar> {
       );
     }
 
-    if (_prefs.get(UserPreferences.enableFolderView)) {
+    final isKidsProfile = GetIt.instance.isRegistered<VoltixSessionStore>() &&
+        GetIt.instance<VoltixSessionStore>().isKidsProfile;
+
+    if (_prefs.get(UserPreferences.enableFolderView) && !isKidsProfile) {
       actions.add(
         _BottomNavAction(
           icon: Icons.folder_rounded,
@@ -236,7 +284,7 @@ class _MobileBottomNavBarState extends State<MobileBottomNavBar> {
       );
     }
 
-    if (_seerrEnabled()) {
+    if (_seerrEnabled() && !isKidsProfile) {
       final seerrPrefs = GetIt.instance<SeerrPreferences>();
       final displayName = seerrPrefs.voltixDisplayName.trim();
       final label = displayName.isNotEmpty

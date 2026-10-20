@@ -48,19 +48,21 @@ class _AboutCategoryScreen extends StatelessWidget {
                   const DiagnosticsSettingsScreen(),
                 ),
               ),
-              _TvSettingsListTile(
-                leading: const Icon(Icons.auto_awesome),
-                // Not yet in app_en.arb -- ported from upstream 2.5.0 as a
-                // literal to avoid hand-editing every locale's .arb file
-                // without flutter gen-l10n available in this environment.
-                title: const Text('Run setup again'),
-                // Asking again on purpose says more than the stored answers
-                // do, so a deliberate re-run offers every question back.
-                onTap: () {
-                  GetIt.instance<SetupWizardGate>().beginRerun();
-                  context.navigateTopLevel(Destinations.setup);
-                },
-              ),
+              if (!GetIt.instance.isRegistered<VoltixSessionStore>() ||
+                  !GetIt.instance<VoltixSessionStore>().isKidsProfile)
+                _TvSettingsListTile(
+                  leading: const Icon(Icons.auto_awesome),
+                  // Not yet in app_en.arb -- ported from upstream 2.5.0 as a
+                  // literal to avoid hand-editing every locale's .arb file
+                  // without flutter gen-l10n available in this environment.
+                  title: const Text('Run setup again'),
+                  // Asking again on purpose says more than the stored answers
+                  // do, so a deliberate re-run offers every question back.
+                  onTap: () {
+                    GetIt.instance<SetupWizardGate>().beginRerun();
+                    context.navigateTopLevel(Destinations.setup);
+                  },
+                ),
             ],
           ),
           _SectionHeader(l10n.settingsLegal),

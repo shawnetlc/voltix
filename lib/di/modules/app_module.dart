@@ -1,3 +1,5 @@
+import '../../data/services/voltix_api_service.dart';
+import '../../data/services/voltix_user_data_overlay.dart';
 import 'package:get_it/get_it.dart';
 import 'package:jellyfin_preference/jellyfin_preference.dart';
 import 'package:playback_core/playback_core.dart';
@@ -40,6 +42,7 @@ import '../../data/services/seerr/seerr_cookie_jar.dart';
 import '../../data/services/socket_handler.dart';
 import '../../data/services/sync_service.dart';
 import '../../data/services/theme_music_service.dart';
+import '../../data/services/voltix_favorites_registry_service.dart';
 import '../../data/services/voltix_watch_registry_service.dart';
 import '../../data/viewmodels/media_bar_view_model.dart';
 import '../../data/viewmodels/seerr_discover_view_model.dart';
@@ -78,6 +81,7 @@ void resetUserScopedSingletons() {
   unregister<SearchRepository>();
   unregister<UserViewsRepository>();
   unregister<VoltixWatchRegistryService>();
+  unregister<VoltixFavoritesRegistryService>();
   // Registered in _registerUserScopedSingletons below; missing here meant a
   // second sign-in in the same app session (switch user, log out/in again,
   // link a device after already being signed in) hit registerLazySingleton
@@ -169,6 +173,16 @@ void registerAppModule() {
 
 void _registerUserScopedSingletons() {
   _getIt.registerLazySingleton(() => VoltixWatchRegistryService());
+  _getIt.registerLazySingleton(() => VoltixFavoritesRegistryService());
+  // Lay each Voltix user's own favorites / Continue Watching / Next Up /
+  // watched state over the shared streaming accounts.
+  ServerDioHooks.delegate ??= VoltixUserDataOverlay();
+  // Player errors go to the Azure log as `stage=play-error` (no tokens).
+  PlaybackManager.errorReporter ??= (info) {
+    if (_getIt.isRegistered<VoltixApiService>()) {
+      _getIt<VoltixApiService>().directStreamingDiag('play-error', info);
+    }
+  };
   // Never registered even though the Settings screen and the setup wizard's
   // taste-onboarding step both call GetIt.instance<TasteProfileRepository>()
   // directly in a field initializer -- with nothing registered that throws

@@ -9,7 +9,9 @@ param(
   [ValidateSet('tv', 'emulator')]
   [string]$Target = $(if ($env:VOLTIX_TIZEN_TARGET) { $env:VOLTIX_TIZEN_TARGET } else { 'tv' }),
   [string]$TizenApiVersion = $env:VOLTIX_TIZEN_API_VERSION,
-  [string]$TizenTargetFramework = $env:VOLTIX_TIZEN_TARGET_FRAMEWORK
+  [string]$TizenTargetFramework = $env:VOLTIX_TIZEN_TARGET_FRAMEWORK,
+  [switch]$NoInstaller,
+  [string]$Customer
 )
 
 $ErrorActionPreference = 'Stop'
@@ -181,6 +183,18 @@ try {
     $rootArtifact = Join-Path $repoRoot "${appName}_Tizen_v${appVersion}.tpk"
     Copy-Item $latestTpk.FullName $rootArtifact -Force
     Write-Host "==> Copied root artifact: $rootArtifact" -ForegroundColor Green
+
+    if (-not $NoInstaller) {
+      $packager = Join-Path $repoRoot "package-tizen-installer.ps1"
+      if (Test-Path $packager) {
+        try {
+          Write-Host "==> Packaging customer TV installer zip" -ForegroundColor Cyan
+          & $packager -TpkPath $rootArtifact -Version $appVersion -Customer $Customer | Out-Null
+        } catch {
+          Write-Warning "TV installer zip not created: $($_.Exception.Message)"
+        }
+      }
+    }
   }
 
   Write-Host "==> Done. Install on a TV/emulator with:" -ForegroundColor Green

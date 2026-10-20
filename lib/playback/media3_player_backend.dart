@@ -5,8 +5,10 @@ import 'package:get_it/get_it.dart';
 import 'package:playback_core/playback_core.dart';
 
 import '../data/services/log_service.dart';
+import '../data/services/voltix_api_service.dart';
 import '../preference/preference_constants.dart';
 import '../preference/user_preferences.dart';
+import '../util/device_performance_profile.dart';
 import '../util/platform_detection.dart';
 import 'audio_capability_profile.dart';
 import 'device_profile_builder.dart';
@@ -157,6 +159,128 @@ class Media3PlayerBackend extends PlayerBackend {
         if (_tracksReadyCompleter != null &&
             !_tracksReadyCompleter!.isCompleted) {
           _tracksReadyCompleter!.complete();
+        }
+      case 'rebuffer':
+        // Stall during playback -> backend diag log (stage=rebuffer).
+        try {
+          if (GetIt.instance.isRegistered<VoltixApiService>()) {
+            GetIt.instance<VoltixApiService>().directStreamingDiag('rebuffer', {
+              for (final k in const [
+                'stallMs', 'count', 'positionMs', 'videoKbps', 'audioCodec',
+                'videoHeight', 'bandwidthKbps', 'bufferBudgetMb', 'readAheadKbps', 'aheadMb',
+              ])
+                k: map[k]?.toString() ?? '',
+            });
+          }
+        } catch (_) {}
+        // Stalling again and again on the original file: the connection to
+        // the server can't carry it. Continue on the server's own stream
+        // (what the official Jellyfin app does with these files).
+        final count = int.tryParse('${map['count']}') ?? 0;
+        final stallMs = int.tryParse('${map['stallMs']}') ?? 0;
+        // Disabled: supersilo's own conversion is slow/unavailable, so moving
+        // to the server stream turned buffering into an endless "Loading".
+        const serverStreamFallbackEnabled = false;
+        if (serverStreamFallbackEnabled && count >= 2 && stallMs >= 3000) {
+          try {
+            if (GetIt.instance.isRegistered<PlaybackManager>()) {
+              unawaited(
+                GetIt.instance<PlaybackManager>()
+                    .useServerStreamForCurrentItem()
+                    .then((switched) {
+                  if (switched &&
+                      GetIt.instance.isRegistered<VoltixApiService>()) {
+                    GetIt.instance<VoltixApiService>()
+                        .directStreamingDiag('server-stream-fallback', {
+                      'positionMs': '${map['positionMs']}',
+                    });
+                  }
+                }).catchError((_) {}),
+              );
+            }
+          } catch (_) {}
+        }
+      case 'tv-speed':
+        // The TV's raw download speed from the server (outside the player).
+        try {
+          if (GetIt.instance.isRegistered<VoltixApiService>()) {
+            GetIt.instance<VoltixApiService>().directStreamingDiag('tv-speed', {
+              for (final k in const [
+                'reason', 'mbps', 'mbps4', 'mb', 'firstByteMs', 'http', 'playerKbps', 'error',
+              ])
+                k: map[k]?.toString() ?? '',
+            });
+          }
+        } catch (_) {}
+      case 'stall-ongoing':
+        // Still stuck (picture frozen on "Loading stream"): report it, and
+        // after 25 s recover - server stream -> original file, or reopen.
+        try {
+          if (GetIt.instance.isRegistered<VoltixApiService>()) {
+            GetIt.instance<VoltixApiService>().directStreamingDiag('stall-ongoing', {
+              for (final k in const [
+                'stallMs', 'state', 'bufferedMs', 'positionMs', 'static',
+                'container', 'videoMime', 'audioMime', 'videoHeight',
+                'bandwidthKbps', 'error',
+              ])
+                k: map[k]?.toString() ?? '',
+            });
+          }
+        } catch (_) {}
+        final ongoingMs = int.tryParse('${map['stallMs']}') ?? 0;
+        if (ongoingMs >= 25000) {
+          try {
+            if (GetIt.instance.isRegistered<PlaybackManager>()) {
+              unawaited(
+                GetIt.instance<PlaybackManager>()
+                    .recoverStalledPlayback()
+                    .then((action) {
+                  if (action != null &&
+                      GetIt.instance.isRegistered<VoltixApiService>()) {
+                    GetIt.instance<VoltixApiService>()
+                        .directStreamingDiag('stall-recover', {'action': action});
+                  }
+                }).catchError((_) {}),
+              );
+            }
+          } catch (_) {}
+        }
+      case 'startup-slow':
+        // Picture not started 20 s after Play -> backend diag (stage=startup-slow).
+        try {
+          if (GetIt.instance.isRegistered<VoltixApiService>()) {
+            GetIt.instance<VoltixApiService>().directStreamingDiag('startup-slow', {
+              for (final k in const [
+                'waitedMs', 'state', 'playWhenReady', 'bufferedMs', 'durationMs',
+                'host', 'static', 'container', 'videoMime', 'videoHeight',
+                'bandwidthKbps', 'error', 'loading', 'allocMb', 'budgetMb',
+                'guardHits', 'audioMime', 'audioCh',
+              ])
+                k: map[k]?.toString() ?? '',
+            });
+          }
+        } catch (_) {}
+        // Still no picture 45 s after Play: same recovery as a long stall.
+        final waited = int.tryParse('${map['waitedMs']}') ?? 0;
+        if (waited >= 40000) {
+          try {
+            if (GetIt.instance.isRegistered<PlaybackManager>()) {
+              unawaited(
+                GetIt.instance<PlaybackManager>()
+                    .recoverStalledPlayback()
+                    .then((action) {
+                  if (action != null &&
+                      GetIt.instance.isRegistered<VoltixApiService>()) {
+                    GetIt.instance<VoltixApiService>()
+                        .directStreamingDiag('stall-recover', {
+                      'action': action,
+                      'phase': 'startup',
+                    });
+                  }
+                }).catchError((_) {}),
+              );
+            }
+          } catch (_) {}
         }
       case 'completed':
         _completed = _toBool(map['completed']);
@@ -478,6 +602,8 @@ class Media3PlayerBackend extends PlayerBackend {
     });
     await _invoke<void>('setSource', {
       'url': url,
+      // Unknown (no stream info) -> keep the add-on reader as before.
+      'hasAssSubtitles': payload['hasAssSubtitles'] != false,
       'headers': headers,
       'autoPlay': true,
       'startPositionMs': startPosition.inMilliseconds,
@@ -586,8 +712,9 @@ class Media3PlayerBackend extends PlayerBackend {
   Map<String, dynamic> getDeviceProfile({
     bool useProgressiveTranscode = false,
   }) {
-    final maxBitrate = int.tryParse(_prefs.get(UserPreferences.maxBitrate));
-    final maxResolution = _prefs.get(UserPreferences.maxVideoResolution);
+    // Capped on entry-level TVs (see DevicePerformanceProfile.isConstrained).
+    final maxBitrate = DevicePerformanceProfile.effectiveMaxBitrateMbps(_prefs);
+    final maxResolution = DevicePerformanceProfile.effectiveMaxResolution(_prefs);
     final audioCapabilityProfile = PlatformDetection.hasAudioCapabilities
         ? AudioCapabilityProfile.fromMap(
             PlatformDetection.audioCapabilitiesSnapshot,

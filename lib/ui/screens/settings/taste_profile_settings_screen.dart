@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import 'package:server_core/server_core.dart';
 import 'package:voltix_design/voltix_design.dart';
 
+import '../../../auth/store/voltix_session_store.dart';
 import '../../../data/models/taste_profile/taste_profile_models.dart';
 import '../../../data/repositories/taste_profile_repository.dart';
 import '../../../data/services/taste_profile/taste_refresh_service.dart';
@@ -110,6 +111,32 @@ class _TasteProfileSettingsScreenState
 
   @override
   Widget build(BuildContext context) {
+    final isKids = GetIt.instance.isRegistered<VoltixSessionStore>() &&
+        GetIt.instance<VoltixSessionStore>().isKidsProfile;
+    if (isKids) {
+      return RequestInitialFocus(
+        child: withCleanSettingsTypography(
+          context,
+          Scaffold(
+            appBar: buildSettingsAppBar(
+              context,
+              const Text('Taste Profile & Recommendations'),
+            ),
+            body: const Center(
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Text(
+                  'Taste profile and recommendations are disabled for Kids profiles.',
+                  style: TextStyle(fontSize: 16, color: Colors.white70),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
     final theme = Theme.of(context);
     final profile = _tasteRepo.currentProfile;
     final serverContext = _tasteRepo.serverContext;

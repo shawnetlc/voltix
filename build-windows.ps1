@@ -18,9 +18,9 @@ $vcpkgTriplet = "$Architecture-windows"
 # Rewritten in place by Step-BuildNumbers below, and by deploy-app.ps1. Still
 # asserted against pubspec.yaml before building, so a hand-edit that desyncs
 # them fails loudly rather than stamping one version while checking another.
-$sharedVersionName = "2.0.62"
-$mobileVersionCode = "40000420"
-$tvVersionCode     = "40000421"
+$sharedVersionName = "2.0.85"
+$mobileVersionCode = "40000466"
+$tvVersionCode     = "40000467"
 
 function Read-Utf8([string] $Path) { Get-Content -LiteralPath $Path -Raw }
 

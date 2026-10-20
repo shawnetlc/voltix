@@ -166,3 +166,14 @@ web/drift_worker.js.map
 
 # Scratch copies made while editing. Never meant to be committed.
 *.bak-*
+
+# ── Non-source clutter (added 2026-09) ───────────────────────────────
+# Parked old 2.4 tree — not part of the 2.5.0 application source
+/_parked_2_4/
+# Tooling scratch output
+/Claude outputs/
+# Generated/exported artefacts, not source
+/exported_vault_posters/
+# Stray backup metadata and one-off fix scripts
+.metadata.tizen-backup
+/fix_screens*.py

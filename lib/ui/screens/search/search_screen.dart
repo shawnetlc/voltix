@@ -814,6 +814,7 @@ class _SearchScreenState extends State<SearchScreen> {
         selected.id,
         serverId: selected.serverId,
         type: selected.type,
+        serverLocked: true,
       ),
     );
   }

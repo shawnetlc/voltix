@@ -8,6 +8,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:playback_core/playback_core.dart';
+import 'package:server_core/server_core.dart';
 
 import '../preference/preference_constants.dart';
 import '../preference/user_preferences.dart';
@@ -370,6 +371,8 @@ class MediaKitPlayerBackend extends PlayerBackend {
     final platform = player.platform;
     if (platform is NativePlayer) {
       _nativeSetProperty(platform, 'network-timeout', '120');
+      // mpv's default agent is "libmpv"; use the app's browser agent instead.
+      _nativeSetProperty(platform, 'user-agent', serverUserAgent);
 
       final maxChannels = prefs.get(UserPreferences.maxAudioChannels);
       final audioChannelsLayout = (maxChannels == 0 || _passthroughActive(prefs))
@@ -382,24 +385,35 @@ class MediaKitPlayerBackend extends PlayerBackend {
       _nativeSetProperty(platform, 'hwdec-codecs', 'all');
 
       // ── Picture Quality & Anti-Pixelation ──
-      // Spline36 & Mitchell scalers give sharp, clean upscaling from FHD without bilinear blur
-      _nativeSetProperty(platform, 'scale', 'spline36');
-      _nativeSetProperty(platform, 'cscale', 'spline36');
-      _nativeSetProperty(platform, 'dscale', 'mitchell');
-      _nativeSetProperty(platform, 'correct-downscaling', 'yes');
-      _nativeSetProperty(platform, 'linear-downscaling', 'yes');
-      _nativeSetProperty(platform, 'sigmoid-upscaling', 'yes');
+      // On TV devices (with mobile/embedded GPUs like Mali-450 / Mali-G31 on Skyworth TVs),
+      // 36-tap Spline36, deband shaders and heavy demuxer buffers cause GPU VRAM exhaustion,
+      // severe frame drops, and OOM crashes upon streaming. Use lightweight scalers on TV.
+      if (PlatformDetection.isTV) {
+        _nativeSetProperty(platform, 'scale', 'bilinear');
+        _nativeSetProperty(platform, 'cscale', 'bilinear');
+        _nativeSetProperty(platform, 'dscale', 'bilinear');
+        _nativeSetProperty(platform, 'deband', 'no');
+        _nativeSetProperty(platform, 'deinterlace', 'no');
+      } else {
+        // Spline36 & Mitchell scalers give sharp, clean upscaling from FHD without bilinear blur
+        _nativeSetProperty(platform, 'scale', 'spline36');
+        _nativeSetProperty(platform, 'cscale', 'spline36');
+        _nativeSetProperty(platform, 'dscale', 'mitchell');
+        _nativeSetProperty(platform, 'correct-downscaling', 'yes');
+        _nativeSetProperty(platform, 'linear-downscaling', 'yes');
+        _nativeSetProperty(platform, 'sigmoid-upscaling', 'yes');
 
-      // Debanding eliminates macroblocking / banding from compressed 8-bit FHD streams
-      _nativeSetProperty(platform, 'deband', 'yes');
-      _nativeSetProperty(platform, 'deband-iterations', '2');
-      _nativeSetProperty(platform, 'deband-threshold', '48');
-      _nativeSetProperty(platform, 'deband-range', '16');
-      _nativeSetProperty(platform, 'deband-grain', '24');
-      _nativeSetProperty(platform, 'dither-depth', 'auto');
+        // Debanding eliminates macroblocking / banding from compressed 8-bit FHD streams
+        _nativeSetProperty(platform, 'deband', 'yes');
+        _nativeSetProperty(platform, 'deband-iterations', '2');
+        _nativeSetProperty(platform, 'deband-threshold', '48');
+        _nativeSetProperty(platform, 'deband-range', '16');
+        _nativeSetProperty(platform, 'deband-grain', '24');
+        _nativeSetProperty(platform, 'dither-depth', 'auto');
 
-      // Deinterlace 1080i broadcasts (eliminates horizontal comb lines & jagged edges)
-      _nativeSetProperty(platform, 'deinterlace', 'yes');
+        // Deinterlace 1080i broadcasts (eliminates horizontal comb lines & jagged edges)
+        _nativeSetProperty(platform, 'deinterlace', 'yes');
+      }
       _nativeSetProperty(platform, 'video-sync', 'audio');
 
       // Network resilience & demuxer threading
@@ -419,12 +433,18 @@ class MediaKitPlayerBackend extends PlayerBackend {
           _nativeSetProperty(platform, 'af', 'scaletempo2');
           _nativeSetProperty(platform, 'audio-normalize-downmix', 'no');
           _nativeSetProperty(platform, 'audio-fallback-to-null', 'no');
-        }
 
-        // Buffer optimizations for Android / TV
-        _nativeSetProperty(platform, 'demuxer-readahead-secs', '30');
-        _nativeSetProperty(platform, 'demuxer-max-bytes', '64MiB');
-        _nativeSetProperty(platform, 'demuxer-max-back-bytes', '20MiB');
+          // Ultra-lean buffer optimizations for Android TV (prevents OOM crashes on Skyworth / 1GB RAM TVs)
+          _nativeSetProperty(platform, 'demuxer-readahead-secs', '10');
+          _nativeSetProperty(platform, 'demuxer-max-bytes', '16MiB');
+          _nativeSetProperty(platform, 'demuxer-max-back-bytes', '4MiB');
+          _nativeSetProperty(platform, 'cache-pause-wait', '2');
+        } else {
+          // Buffer optimizations for Android mobile
+          _nativeSetProperty(platform, 'demuxer-readahead-secs', '30');
+          _nativeSetProperty(platform, 'demuxer-max-bytes', '64MiB');
+          _nativeSetProperty(platform, 'demuxer-max-back-bytes', '20MiB');
+        }
         _nativeSetProperty(platform, 'network-timeout', '120');
         _nativeSetProperty(platform, 'autosync', '30');
       }
@@ -614,13 +634,13 @@ class MediaKitPlayerBackend extends PlayerBackend {
       // seconds itself, so those asked the demuxer to analyze essentially
       // without limit and left probesize as the only thing ending the probe.
       if (isTsStream) {
-        await _nativeSetProperty(native, 'demuxer-lavf-probesize', '32M');
+        await _nativeSetProperty(native, 'demuxer-lavf-probesize', '${32 * 1024 * 1024}');
         await _nativeSetProperty(native, 'demuxer-lavf-analyzeduration', '10');
         await _nativeSetProperty(native, 'stream-lavf-o',
             'reconnect=1,reconnect_streamed=1,reconnect_delay_max=5,reconnect_on_network_error=1,reconnect_on_http_error=4xx,5xx');
         await _nativeSetProperty(native, 'network-timeout', '300');
       } else {
-        await _nativeSetProperty(native, 'demuxer-lavf-probesize', '5M');
+        await _nativeSetProperty(native, 'demuxer-lavf-probesize', '${5 * 1024 * 1024}'); // bytes: mpv rejects "5M"
         await _nativeSetProperty(native, 'demuxer-lavf-analyzeduration', '2');
       }
       await _nativeSetProperty(native, 'aid', 'auto');

@@ -25,6 +25,91 @@ class VoltixLibraryBranding {
 ///
 /// Returns `null` when the library does not map to a known Voltix category, in
 /// which case the caller should leave the original image and name untouched.
+/// Prefix marking an image bundled with the app (MediaCard loads it with
+/// Image.asset instead of from the network).
+const String kAppAssetImagePrefix = 'asset:';
+
+/// My Media artwork shipped inside the app (assets/categories), keyed by the
+/// server's library name (lower-case, decorations stripped). Injected on the
+/// device -- no server or web front end involved.
+const Map<String, (String, String)> _voltixMyMediaArtwork = {
+  '4k movies': ('4K Movies', 'assets/categories/4k_movies.jpg'),
+  '4k movies - dolbyvision': ('4K Movies - DolbyVision', 'assets/categories/4k_movies_dv.jpg'),
+  '4k tv shows - dolbyvision': ('4K Series - DolbyVision', 'assets/categories/4k_series_dv.jpg'),
+  '4k movies dolbyvision': ('4K Movies - DolbyVision', 'assets/categories/4k_movies_dv.jpg'),
+  '4k tv shows dolbyvision': ('4K Series - DolbyVision', 'assets/categories/4k_series_dv.jpg'),
+  '4k tv shows': ('4K Series', 'assets/categories/4k_series.jpg'),
+  'anime': ('Anime Series', 'assets/categories/anime_series.jpg'),
+  'anime movies': ('Anime Movies', 'assets/categories/anime_movies.jpg'),
+  'collections': ('Collections', 'assets/categories/collections.jpg'),
+  'movies': ('Movies', 'assets/categories/movies.jpg'),
+  'tv shows': ('Series', 'assets/categories/series.jpg'),
+  'series': ('Series', 'assets/categories/series.jpg'),
+  'playlists': ('Playlists', 'assets/categories/playlists.jpg'),
+  'sports': ('Sport', 'assets/categories/sport.jpg'),
+  'sports events': ('Sport Events', 'assets/categories/sport_events.jpg'),
+  // supersilo library names
+  'television': ('TV Series', 'assets/categories/series.jpg'),
+  'movies 3d': ('3D Movies', 'assets/categories/3d_movies.jpg'),
+  'anime tv': ('Anime Series', 'assets/categories/anime_series.jpg'),
+  'movies international': ('Movies Foreign', 'assets/categories/foreign_movies.jpg'),
+  'tv international': ('TV Series Foreign', 'assets/categories/foreign_series.jpg'),
+  'movies 4k': ('4K Movies', 'assets/categories/4k_movies.jpg'),
+  'movies 4k dv': ('4K Movies DV', 'assets/categories/4k_movies_dv.jpg'),
+  'movies 4k-dv': ('4K Movies DV', 'assets/categories/4k_movies_dv.jpg'),
+  'tv 4k': ('4K TV Series', 'assets/categories/4k_series.jpg'),
+  'tv 4k-dv': ('4K TV Series DolbyVision', 'assets/categories/4k_series_dv.jpg'),
+  'tv 4k dv': ('4K TV Series DolbyVision', 'assets/categories/4k_series_dv.jpg'),
+};
+
+/// Built-in posters for studio / network collections (Collections library).
+/// Matched on the collection name with punctuation and spacing ignored, so
+/// "HBO / Max", "HBO Max", "Warner Bros." and "Netflix Originals" all match.
+const List<(List<String>, String)> _voltixCollectionArtwork = [
+  (['a24'], 'assets/vault/vault_a24.jpg'),
+  (['appletv', 'appletvplus'], 'assets/vault/vault_apple_tv.jpg'),
+  (['bbc'], 'assets/vault/vault_bbc.jpg'),
+  (['disney'], 'assets/vault/vault_disney.jpg'),
+  (['hbomax', 'hbo'], 'assets/vault/vault_hbo_max.jpg'),
+  (['hulu'], 'assets/vault/vault_hulu.jpg'),
+  (['netflix'], 'assets/vault/vault_netflix.jpg'),
+  (['nickelodeon', 'nick'], 'assets/vault/vault_nickelodeon.jpg'),
+  (['paramount'], 'assets/vault/vault_paramount.jpg'),
+  (['primevideo', 'amazonprimevideo', 'amazonprime', 'prime'], 'assets/vault/vault_prime_video.jpg'),
+  (['universal'], 'assets/vault/vault_universal_studios.jpg'),
+  (['warnerbros', 'warnerbrothers', 'warner'], 'assets/vault/vault_warner_bros.jpg'),
+];
+
+/// App-bundled poster (with [kAppAssetImagePrefix]) for a studio / network
+/// collection such as "Netflix" or "HBO / Max"; null for any other name.
+String? voltixCollectionArtwork(String rawName) {
+  final key = rawName.toLowerCase().replaceAll('+', 'plus').replaceAll(RegExp(r'[^a-z0-9]'), '');
+  if (key.isEmpty) return null;
+  if (key == 'max') return '${kAppAssetImagePrefix}assets/vault/vault_hbo_max.jpg';
+  for (final (prefixes, asset) in _voltixCollectionArtwork) {
+    for (final p in prefixes) {
+      if (key == p || key.startsWith(p)) return '$kAppAssetImagePrefix$asset';
+    }
+  }
+  return null;
+}
+
+/// Exact-name My Media artwork for [rawName]: (display name, image ref with
+/// [kAppAssetImagePrefix]). Null when the library is not one of the above.
+(String, String)? voltixMyMediaArtwork(String rawName) {
+  final key = rawName
+      .replaceAll(RegExp(r'[★☆*]'), '')
+      .replaceAll(RegExp(r'[\u2013\u2014]'), '-')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim()
+      .toLowerCase();
+  final hit = _voltixMyMediaArtwork[key] ??
+      _voltixMyMediaArtwork[key.replaceAll(RegExp(r'\s*-\s*'), '-')] ??
+      _voltixMyMediaArtwork[key.replaceAll(RegExp(r'\s*-\s*'), ' ')];
+  if (hit == null) return null;
+  return (hit.$1, '$kAppAssetImagePrefix${hit.$2}');
+}
+
 VoltixLibraryBranding? voltixLibraryBranding(
   String rawName,
   String? serverName,

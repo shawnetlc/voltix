@@ -25,6 +25,7 @@ import 'ui/navigation/app_router.dart';
 import 'ui/theme/app_theme.dart';
 import 'ui/theme/app_theme_controller.dart';
 import 'ui/widgets/cast_mini_player.dart';
+import 'ui/widgets/server_unavailable_banner.dart';
 // import 'ui/widgets/offline_banner.dart'; // Voltix: removed
 import 'ui/widgets/app_update_dialog.dart';
 import 'ui/widgets/exit_confirmation_dialog.dart';
@@ -199,6 +200,7 @@ class _VoltixAppState extends State<VoltixApp> {
                       builder: (context) {
                         final Widget shell = Column(
                           children: [
+                            const ServerUnavailableBanner(),
                             // OfflineBanner removed — Voltix handles connectivity via session pings
                             Expanded(
                               child: _ConnectivityListener(
@@ -926,7 +928,15 @@ class _ConnectivityListenerState extends ConsumerState<_ConnectivityListener>
     try {
       // Every launch: ask Google Play first. When Play answers (update started
       // or up to date) that is the final word for a Play install.
-      final play = await PlayStoreUpdater.checkAndUpdate();
+      // When the server's minimum version is above this build (set in the
+      // admin portal), Play's full-screen "immediate" update is used so the
+      // old build cannot be used any further. Otherwise it updates quietly.
+      final mandatory =
+          await GetIt.instance<AppUpdateService>().isUpdateMandatory();
+      final play = await PlayStoreUpdater.checkAndUpdate(
+        forced: mandatory,
+        mandatory: mandatory,
+      );
       if (play != PlayUpdateCheck.unavailable) return;
 
       final update = await GetIt.instance<AppUpdateService>()

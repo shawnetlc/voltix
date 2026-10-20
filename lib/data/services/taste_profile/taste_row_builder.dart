@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../../models/aggregated_item.dart';
 import '../../models/taste_profile/taste_profile_models.dart';
 import '../../utils/bounded_concurrency.dart';
+import 'foreign_content_filter.dart';
 import 'taste_awards_index.dart';
 import 'taste_candidate_service.dart';
 import 'taste_recommendation_engine.dart';
@@ -91,16 +92,16 @@ class TasteRowBuilder {
 
     if (!forceRefresh) {
       final cached = _cache[key];
-      if (cached != null && !cached.isStale(_ttl)) return cached.items;
+      if (cached != null && !cached.isStale(_ttl)) return _cleanRow(cached.items);
     }
 
     try {
       if (rowType == PersonalizationRowType.becauseYouWatched) {
-        return _buildSeededRow(
+        return _cleanRow(await _buildSeededRow(
           profile: profile,
           serverId: targetServerId,
           key: key,
-        );
+        ));
       }
 
       final candidates = await _candidates.fetchCandidates(
@@ -110,7 +111,11 @@ class TasteRowBuilder {
       );
       if (candidates.isEmpty) return const [];
 
-      var library = candidates.map((c) => c.item).toList(growable: false);
+      var library = candidates
+          .map((c) => c.item)
+          .where(_isRecommendable)
+          .toList(growable: false);
+      if (library.isEmpty) return const [];
 
       if (_needsAwards.contains(rowType)) {
         library = await _filterByAwards(rowType, library);
@@ -132,6 +137,23 @@ class TasteRowBuilder {
       return const [];
     }
   }
+
+  /// Titles that never belong in a recommendation row: foreign-language or
+  /// sport (UFC, wrestling...) titles, titles without a poster (mostly
+  /// obscure foreign entries with no metadata) and shorts (old cartoons etc.,
+  /// movies under 40 minutes). Same rules as the taste wizard.
+  static bool _isRecommendable(AggregatedItem item) {
+    final raw = item.rawData;
+    if (ForeignContentFilter.isExcludedItem(raw)) return false;
+    if (ForeignContentFilter.isKnownExcludedId(item.id)) return false;
+    final type = (item.type ?? raw['Type']?.toString() ?? '').toLowerCase();
+    final ticks = (raw['RunTimeTicks'] as num?)?.toInt() ?? 0;
+    if (type == 'movie' && ticks > 0 && ticks < 40 * 60 * 10000000) return false;
+    return true;
+  }
+
+  static List<RecommendationItem> _cleanRow(List<RecommendationItem> items) =>
+      items.where((r) => _isRecommendable(r.item)).toList(growable: false);
 
   /// Narrows a candidate pool to titles that actually won or were nominated.
   ///

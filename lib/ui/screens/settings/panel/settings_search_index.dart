@@ -415,7 +415,8 @@ List<_SettingsSearchEntry> _buildSettingsSearchIndex({
         matchText: '${l10n.themeEditor} theme editor web',
       ),
     account.screen(keywords: const ['security','login','password','account']),
-    account.leaf('0', 'Use Local Test Server'),
+    // Test-server toggle removed from the app; search entry kept disabled.
+    // account.leaf('0', 'Use Local Test Server'),
     account.leaf('1', l10n.autoLogin),
     account.leaf('2', l10n.alwaysAuthenticate),
     account.leaf('3', l10n.interfaceLanguage),
@@ -567,8 +568,10 @@ List<_SettingsSearchEntry> _buildSettingsSearchIndex({
     ],
     libraries.screen(keywords: const ['library','libraries','visibility']),
     libraries.leaf('0', l10n.enableFolderView),
-    libraries.leaf('1', l10n.multiServerLibraries),
-    libraries.leaf('2', 'Enable multi-server search'),
+    if (UserPreferences.multiServerLibrariesSettingEnabled)
+      libraries.leaf('1', l10n.multiServerLibraries),
+    if (UserPreferences.multiServerSearchSettingEnabled)
+      libraries.leaf('2', 'Enable multi-server search'),
     libraries.leaf('3', l10n.showMediaDetailsOnLibraryPage),
     libraries.leaf('4', l10n.useDetailedSubHeadings),
     libraries.leaf('5', 'Merge recent rows by type'),
@@ -671,7 +674,9 @@ List<_SettingsSearchEntry> _buildSettingsSearchIndex({
     rowImageType.screen(keywords: const ['image','thumbnail','poster','backdrop','row']),
     libraryVisibility.screen(keywords: const ['library','hide','visibility','show']),
     mediaBar.screen(keywords: const ['media bar','featured','hero','trailer']),
-    tasteProfile.screen(keywords: const ['taste profile','recommendations','ai','personalization','awards','oscar','omdb']),
+    if (!GetIt.instance.isRegistered<VoltixSessionStore>() ||
+        !GetIt.instance<VoltixSessionStore>().isKidsProfile)
+      tasteProfile.screen(keywords: const ['taste profile','recommendations','ai','personalization','awards','oscar','omdb']),
     parental.screen(keywords: const ['parental','rating','block','kids','age']),
     pin.screen(keywords: const ['pin','lock','code','passcode']),
     profile.screen(keywords: const ['profile','user','avatar']),

@@ -445,9 +445,14 @@ Future<void> _startVoltix() async {
   final prefs = GetIt.instance<UserPreferences>();
   // Raises the image memory budget only if this device was set up as
   // "Performance"; entry level keeps the limits configured above.
-  DevicePerformanceProfile.applyImageCache(prefs);
+  // Also detects entry-level hardware (Skyworth-class TVs) so heavy options
+  // are refused on them even when roamed in from the user's other devices.
+  await DevicePerformanceProfile.applyStartupLimits(prefs);
   WidgetsBinding.instance.addObserver(_PreferenceWriteFlushObserver(prefs));
-  await _detectAndApplyAudioCapabilities(prefs);
+  // Never let a hung platform call keep the app on a black screen: every
+  // non-essential startup step below is time-boxed (Fire TV has no Google
+  // Play Services, so Firebase calls there can wait forever).
+  await _startupStep('audio caps', _detectAndApplyAudioCapabilities(prefs));
 
   try {
     // Register Theme Store themes before the active theme is resolved so a
@@ -470,13 +475,14 @@ Future<void> _startVoltix() async {
 
   final notificationService = GetIt.instance<DownloadNotificationService>();
   try {
-    await notificationService.initialize();
+    await _startupStep('notifications', notificationService.initialize());
   } catch (_) {}
 
   if (PlatformDetection.isAndroid || PlatformDetection.isIOS) {
     try {
       if (GetIt.instance.isRegistered<PushMessagingService>()) {
-        await GetIt.instance<PushMessagingService>().initialize();
+        // Runs in the background: never blocks the first screen.
+        unawaited(GetIt.instance<PushMessagingService>().initialize());
       }
     } catch (e) {
       debugPrint('PushMessagingService init error: $e');
@@ -490,9 +496,12 @@ Future<void> _startVoltix() async {
   if (PlatformDetection.isMobile ||
       (PlatformDetection.isAndroid && PlatformDetection.isTV)) {
     try {
-      await initAudioService(
-        manager: GetIt.instance<PlaybackManager>(),
-        clientFactory: GetIt.instance<MediaServerClientFactory>(),
+      await _startupStep(
+        'audio service',
+        initAudioService(
+          manager: GetIt.instance<PlaybackManager>(),
+          clientFactory: GetIt.instance<MediaServerClientFactory>(),
+        ),
       );
     } catch (e, st) {
       debugPrint('initAudioService failed (lock-screen controls disabled): $e\n$st');
@@ -520,13 +529,13 @@ Future<void> _startVoltix() async {
   if (PlatformDetection.isAndroid) {
     try {
       final session = await AudioSession.instance;
-      await session.configure(AudioSessionConfiguration(
+      await _startupStep('audio session', session.configure(AudioSessionConfiguration(
         androidAudioAttributes: AndroidAudioAttributes(
           contentType: AndroidAudioContentType.music,
           usage: AndroidAudioUsage.media,
         ),
-      ));
-      await session.setActive(true);
+      )));
+      unawaited(session.setActive(true).catchError((_) => false));
       session.becomingNoisyEventStream.listen((_) {
         GetIt.instance<PlaybackManager>().pause();
       });
@@ -561,7 +570,21 @@ Future<void> _startVoltix() async {
     GetIt.instance<AirPlayCommandBridge>().start();
   } catch (_) {}
 
+  debugPrint('[VoltixStartup] runApp');
   runApp(const VoltixApp());
+}
+
+/// Waits for an optional startup step, but at most [limit]; a step that hangs
+/// (or fails) is logged and skipped so the app always reaches its first screen.
+Future<void> _startupStep(String name, Future<dynamic> step,
+    {Duration limit = const Duration(seconds: 5)}) async {
+  try {
+    await step.timeout(limit);
+  } on TimeoutException {
+    debugPrint('[VoltixStartup] $name timed out after ${limit.inSeconds}s; continuing');
+  } catch (e) {
+    debugPrint('[VoltixStartup] $name failed (non-fatal): $e');
+  }
 }
 
 /// Startup used to run unguarded: any exception thrown before [runApp] (a

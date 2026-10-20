@@ -33,6 +33,7 @@ import '../../widgets/media_card.dart';
 import '../../widgets/overlay_sheet.dart';
 import '../../widgets/rating_display.dart';
 import '../../../l10n/app_localizations.dart';
+import '../../../util/voltix_library_branding.dart' show voltixCollectionArtwork;
 
 Color get _navyBackground => AppColorScheme.background;
 Color get _jellyfinBlue => AppColorScheme.accent;
@@ -972,6 +973,12 @@ class _LibraryBrowseScreenState extends State<LibraryBrowseScreen>
   void _onChanged() {
     if (mounted) setState(() {});
     _maybeBumpGridVersion();
+    final sortNotice = _vm.takeSortNotice();
+    if (sortNotice != null && mounted) {
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(content: Text(sortNotice), duration: const Duration(seconds: 4)),
+      );
+    }
     if (_isBookExperience && _vm.state == LibraryBrowseState.ready) {
       unawaited(_refreshLocalBookProgress());
     }
@@ -3045,7 +3052,7 @@ class _LibraryBrowseScreenState extends State<LibraryBrowseScreen>
         items: items,
         organizeMode: organizeMode,
         prefs: _prefs,
-        imageUrlBuilder: _imageUrl,
+        imageUrlBuilder: _cardImageUrl,
         primaryAuthorBuilder: _primaryAuthor,
         primaryGenreBuilder: _primaryGenre,
         playedPercentageBuilder: _displayPlayedPercentage,
@@ -3411,7 +3418,7 @@ class _LibraryBrowseScreenState extends State<LibraryBrowseScreen>
             return MediaCard(
               title: item.name,
               subtitle: _primaryAuthor(item),
-              imageUrl: _imageUrl(item),
+              imageUrl: _cardImageUrl(item),
               width: double.infinity,
               aspectRatio: 2 / 3,
               focusColor: _bookAccent,
@@ -3756,6 +3763,18 @@ class _LibraryBrowseScreenState extends State<LibraryBrowseScreen>
     final tags = item.rawData['ImageTags'];
     if (tags is! Map) return null;
     return tags[imageType] as String?;
+  }
+
+  /// Card artwork: studio / network collections (Netflix, HBO / Max, A24...)
+  /// use the app's own bundled posters ("asset:" - MediaCard draws those from
+  /// the app); everything else the server image.
+  String? _cardImageUrl(AggregatedItem item) {
+    const collectionLike = {'BoxSet', 'Folder', 'CollectionFolder', 'UserView'};
+    if (collectionLike.contains(item.type ?? '')) {
+      final bundled = voltixCollectionArtwork(item.name);
+      if (bundled != null) return bundled;
+    }
+    return _imageUrl(item);
   }
 
   String? _imageUrl(AggregatedItem item) {
@@ -4161,7 +4180,7 @@ class _LibraryBrowseScreenState extends State<LibraryBrowseScreen>
                   Widget card = MediaCard(
                     title: item.name,
                     subtitle: _cardSubtitle(item),
-                    imageUrl: _imageUrl(item),
+                    imageUrl: _cardImageUrl(item),
                     width: double.infinity,
                     aspectRatio: itemAspectRatio,
                     focusColor: focusColor,
@@ -4356,7 +4375,7 @@ class _LibraryBrowseScreenState extends State<LibraryBrowseScreen>
                           return MediaCard(
                             title: item.name,
                             subtitle: _primaryAuthor(item),
-                            imageUrl: _imageUrl(item),
+                            imageUrl: _cardImageUrl(item),
                             width: double.infinity,
                             aspectRatio: 2 / 3,
                             focusColor: _bookAccent,
@@ -5044,7 +5063,7 @@ class _FilterSortDialogState extends State<_FilterSortDialog> {
                         o != LibrarySortBy.rating &&
                         o != LibrarySortBy.criticRating &&
                         o != LibrarySortBy.communityRating
-                      )))
+                      )).where(vm.isSortSupported))
               _radioTile(
                 label: (vm.isMusicBrowse && option == LibrarySortBy.premiereDate)
                     ? 'Release Date'
@@ -5071,6 +5090,30 @@ class _FilterSortDialogState extends State<_FilterSortDialog> {
                 },
                 onSurface: onSurface,
               ),
+            // Order: always shown as its own choice (ascending / descending) for
+            // every sort except Random, so it works with the remote too - the
+            // small arrow next to the selected sort was easy to miss on a TV.
+            if (vm.sortBy != LibrarySortBy.random) ...[
+              Divider(color: dividerColor),
+              _sectionHeader('Order', sectionColor),
+              for (final dir in SortDirection.values)
+                _radioTile(
+                  label: _orderLabel(vm.sortBy, dir),
+                  selected: vm.sortDirection == dir,
+                  trailing: Icon(
+                    dir == SortDirection.ascending
+                        ? Icons.arrow_upward
+                        : Icons.arrow_downward,
+                    color: vm.sortDirection == dir
+                        ? accent
+                        : onSurface.withValues(alpha: 0.5),
+                    size: 18,
+                  ),
+                  onTap: () => vm.setSortDirection(dir),
+                  accent: accent,
+                  onSurface: onSurface,
+                ),
+            ],
             Divider(color: dividerColor),
             _sectionHeader(l10n.filters, sectionColor),
             _checkboxTile(
@@ -5140,6 +5183,30 @@ class _FilterSortDialogState extends State<_FilterSortDialog> {
         ),
       ),
     );
+  }
+
+  /// Plain-language order labels for the chosen sort.
+  static String _orderLabel(LibrarySortBy sort, SortDirection dir) {
+    final asc = dir == SortDirection.ascending;
+    switch (sort) {
+      case LibrarySortBy.name:
+      case LibrarySortBy.playlistOrder:
+      case LibrarySortBy.album:
+      case LibrarySortBy.albumArtist:
+      case LibrarySortBy.genre:
+        return asc ? 'Ascending (A to Z)' : 'Descending (Z to A)';
+      case LibrarySortBy.dateAdded:
+      case LibrarySortBy.premiereDate:
+        return asc ? 'Ascending (oldest first)' : 'Descending (newest first)';
+      case LibrarySortBy.rating:
+      case LibrarySortBy.criticRating:
+      case LibrarySortBy.communityRating:
+        return asc ? 'Ascending (lowest first)' : 'Descending (highest first)';
+      case LibrarySortBy.runtime:
+        return asc ? 'Ascending (shortest first)' : 'Descending (longest first)';
+      case LibrarySortBy.random:
+        return asc ? 'Ascending' : 'Descending';
+    }
   }
 
   Widget _sectionHeader(String title, Color sectionColor) {

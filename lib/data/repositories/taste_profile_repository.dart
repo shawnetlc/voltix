@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:get_it/get_it.dart';
 import 'package:jellyfin_preference/jellyfin_preference.dart';
@@ -24,8 +23,10 @@ import '../services/taste_profile/taste_seed_registry.dart';
 import '../services/taste_profile/taste_server_context.dart';
 import '../services/taste_profile/taste_sync_manager.dart';
 
+
 /// Repository managing taste profiles, atomic local persistence, Azure cloud backup,
 /// server-genre discovery, Grok AI intelligence, and candidate refresh pipelines for the Primary Jellyfin Server.
+
 class TasteProfileRepository extends ChangeNotifier {
   final MediaServerClient _client;
   final TasteServerContext _serverContext;
@@ -179,25 +180,10 @@ class TasteProfileRepository extends ChangeNotifier {
       return _currentProfile!;
     }
 
-    // 3. Fallback check: Jellyfin DisplayPreferences (roaming across clients)
-    try {
-      final disp = await _client.displayPreferencesApi.getDisplayPreferences(
-        'voltix_taste_profile',
-        client: 'voltix',
-      );
-      final custom = disp.customPrefs;
-      if (custom.containsKey('profile_json')) {
-        final map = jsonDecode(custom['profile_json']!) as Map<String, dynamic>;
-        _currentProfile = TasteProfile.fromJson(map);
-        await _localStore.saveProfileAtomic(_currentProfile!, profileId: profileId);
-        notifyListeners();
-        return _currentProfile!;
-      }
-    } catch (_) {
-      // Display preferences not available or network error
-    }
-
-    // 4. Fallback check: Azure Cloud Storage backup (for fresh installs / new devices)
+    // 3. Fallback check: Azure Cloud Storage backup (for fresh installs / new
+    // devices). This is the roaming layer. The taste profile is deliberately
+    // NOT stored on the media server (Lumistream) - that copy sent Voltix data
+    // to Lumistream for no benefit, since Azure already roams it.
     try {
       final remote = await _azureSync
           .fetchRemoteBackup(serverId: serverId, userId: userId, profileId: profileId)
@@ -318,13 +304,13 @@ class TasteProfileRepository extends ChangeNotifier {
   /// Silently starts background pre-population of taste profile home rows with zero server impact.
   /// Runs gently with throttled inter-row delays so users can watch and stream with uninterrupted performance.
   void startSilentBackgroundPopulation({
-    Duration interRowDelay = const Duration(milliseconds: 650),
+    Duration interRowDelay = Duration.zero,
   }) {
     unawaited(_runSilentBackgroundPopulation(interRowDelay: interRowDelay));
   }
 
   Future<void> _runSilentBackgroundPopulation({
-    Duration interRowDelay = const Duration(milliseconds: 650),
+    Duration interRowDelay = Duration.zero,
   }) async {
     final profile = _currentProfile;
     if (profile == null || profile.status != TasteProfileStatus.completed) return;
@@ -339,19 +325,13 @@ class TasteProfileRepository extends ChangeNotifier {
         languageSettings: profile.languageSettings,
       );
 
-      // Yield to event loop
-      await Future.delayed(interRowDelay);
 
-      // 2. Pre-compute and cache each enabled row type sequentially with inter-row throttle
+      // 2. Pre-compute and cache every enabled row type in parallel (no throttle)
       if (GetIt.instance.isRegistered<RowDataSource>()) {
         final dataSource = GetIt.instance<RowDataSource>();
-        for (final rowType in PersonalizationRowType.values) {
-          final isEnabled = profile.enabledHomeRows[rowType.key] ?? false;
-          if (!isEnabled) continue;
-
-          // Yield / pause between rows to protect playback bandwidth and server CPU
-          await Future.delayed(interRowDelay);
-
+        await Future.wait(PersonalizationRowType.values
+            .where((rowType) => profile.enabledHomeRows[rowType.key] ?? false)
+            .map((rowType) async {
           try {
             await dataSource.loadTasteProfileSingleRow(
               profile.serverId,
@@ -361,7 +341,7 @@ class TasteProfileRepository extends ChangeNotifier {
           } catch (e) {
             debugPrint('[TasteProfileRepository] Background warmup error for ${rowType.key}: $e');
           }
-        }
+        }));
       }
       debugPrint('[TasteProfileRepository] Gentle background population finished successfully.');
     } catch (e) {
@@ -562,27 +542,10 @@ class TasteProfileRepository extends ChangeNotifier {
     required String userId,
   }) => checkCloudBackup(serverId: serverId, userId: userId);
 
-  Future<void> _syncRoamingPreferences(TasteProfile profile) async {
-    try {
-      final jsonStr = jsonEncode(profile.toJson());
-      final dp = await _client.displayPreferencesApi.getDisplayPreferences(
-        'voltix_taste_profile',
-        client: 'voltix',
-      );
-      final updated = DisplayPreferences(
-        id: dp.id,
-        sortBy: dp.sortBy,
-        sortOrder: dp.sortOrder,
-        viewType: dp.viewType,
-        customPrefs: {...dp.customPrefs, 'profile_json': jsonStr},
-      );
-      await _client.displayPreferencesApi.saveDisplayPreferences(
-        'voltix_taste_profile',
-        updated,
-        client: 'voltix',
-      );
-    } catch (_) {}
-  }
+  // Roaming of the taste profile is handled by the Azure backup
+  // (AzureTasteSyncService), not the media server, so nothing is written to
+  // Lumistream. Kept as a no-op so the existing call sites need no change.
+  Future<void> _syncRoamingPreferences(TasteProfile profile) async {}
 }
 
 /// Fallback wrapper for MediaServerClientFactory

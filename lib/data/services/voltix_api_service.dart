@@ -26,13 +26,13 @@ class VoltixApiService {
 
   String get baseUrl {
     if (_baseUrlOverride != null) return _baseUrlOverride;
-    try {
-      final preferenceStore = GetIt.instance<PreferenceStore>();
-      final useTest = preferenceStore.get(UserPreferences.voltixUseTestServer);
-      return useTest ? 'http://192.168.0.31:3000' : 'https://www.voltixstudio.com';
-    } catch (_) {
-      return defaultBaseUrl;
-    }
+    // On web the app is served by the same Azure environment that fronts the
+    // API, so it calls the API same-origin (relative URLs like /api/...). This
+    // is what lets one app serve both the web frontend and the backend.
+    // Native builds (Android/TV/iOS/desktop) have no same origin, so they keep
+    // the absolute API host.
+    if (PlatformDetection.isWeb) return '';
+    return defaultBaseUrl;
   }
 
   // ─────────────────────── app version ───────────────────────

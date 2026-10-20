@@ -124,6 +124,7 @@ const _authRoutes = {
   Destinations.startup,
   Destinations.voltixLogin,
   Destinations.profileSelect,
+  Destinations.profileEdit,
   Destinations.register,
   Destinations.serverSelect,
   Destinations.embyConnect,
@@ -134,6 +135,10 @@ const _authRoutes = {
 
 bool _shouldRunSetupWizard() {
   try {
+    if (GetIt.instance.isRegistered<VoltixSessionStore>() &&
+        GetIt.instance<VoltixSessionStore>().isKidsProfile) {
+      return false;
+    }
     final client = GetIt.instance<MediaServerClientFactory>().getActiveClient();
     return GetIt.instance<SetupWizardGate>().shouldRun(client);
   } catch (_) {
@@ -260,6 +265,20 @@ final appRouter = GoRouter(
       }
     }
 
+    final isKids = getIt.isRegistered<VoltixSessionStore>() &&
+        getIt<VoltixSessionStore>().isKidsProfile;
+    if (isKids) {
+      if (path == Destinations.setup ||
+          path.startsWith('/setup') ||
+          path == Destinations.voltixLiveTv ||
+          path.startsWith('/live-tv') ||
+          path.startsWith('/music') ||
+          path.startsWith('/folder-view') ||
+          path == Destinations.seerrDiscover) {
+        return Destinations.home;
+      }
+    }
+
     final connectivity = GetIt.instance<ConnectivityService>();
     if (!connectivity.isOnline && !_isOfflineAllowed(path)) {
       return Destinations.downloads;
@@ -286,13 +305,31 @@ final appRouter = GoRouter(
     ),
     GoRoute(
       path: Destinations.profileSelect,
-      builder: (context, state) => const ProfileSelectScreen(),
+      builder: (context, state) {
+        final forceSelect = state.uri.queryParameters['force'] == '1';
+        final initialEditMode = state.uri.queryParameters['manage'] == '1';
+        return ProfileSelectScreen(
+          forceSelect: forceSelect,
+          initialEditMode: initialEditMode,
+        );
+      },
     ),
     GoRoute(
       path: Destinations.profileEdit,
       builder: (context, state) {
-        final profile = state.extra as VoltixProfile?;
-        return ProfileEditScreen(profile: profile);
+        VoltixProfile? profile;
+        bool isFirstProfile = state.uri.queryParameters['isInitial'] == '1';
+        if (state.extra is VoltixProfile) {
+          profile = state.extra as VoltixProfile;
+        } else if (state.extra is Map) {
+          final map = state.extra as Map;
+          profile = map['profile'] as VoltixProfile?;
+          isFirstProfile = map['isFirstProfile'] == true || isFirstProfile;
+        }
+        return ProfileEditScreen(
+          profile: profile,
+          isFirstProfile: isFirstProfile,
+        );
       },
     ),
     GoRoute(
@@ -652,6 +689,7 @@ final appRouter = GoRouter(
           builder: (context, state) => VoltixLiveTvScreen(
             initialStreamId: state.uri.queryParameters['streamId'],
             initialChannelName: state.uri.queryParameters['channelName'],
+            initialSection: state.uri.queryParameters['section'],
           ),
         ),
       ],

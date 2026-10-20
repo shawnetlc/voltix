@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:dio/dio.dart';
 import 'package:get_it/get_it.dart';
@@ -893,7 +894,188 @@ class VoltixIptvRepository {
   // auth via the `token` query parameter (same path the existing native home
   // row playback uses in home_screen._playIptvChannel).
 
-  /// Direct playable URL for a live [channel].
+  /// Live channels play straight from the provider on the user's own
+  /// connection: the provider refuses cloud servers (403 from Azure), so the
+  /// backend relay at /api/iptv/stream/live can't carry them. The backend
+  /// still authenticates the session and checks entitlement (sport pass)
+  /// before it hands out the provider URL.
+  ///
+  /// Live TV and Jellyfin are switched separately: Jellyfin's direct
+  /// streaming is controlled by the backend (DIRECT_STREAMING_ENABLED /
+  /// getDirectCredentials) and is unaffected by this flag. false = Live TV
+  /// goes through the Voltix backend relay (/api/iptv/stream/live).
+  static const bool liveDirectFromDevice = true;
+
+  /// Request headers for streams played straight from the provider: the
+  /// player's real identity (Media3) instead of the default desktop-browser
+  /// agent, which Cloudflare challenges and a TV player can never pass.
+  static const Map<String, String> providerStreamHeaders = {
+    'User-Agent': 'PLIXI(3.0)',
+  };
+
+  /// Asks the backend for the provider URL of live stream [streamId]
+  /// (`/api/iptv/stream-url?direct=true`). Null when unavailable.
+  static Future<String?> fetchDirectLiveUrl(
+    VoltixApiService api,
+    String token,
+    String streamId,
+  ) async {
+    if (!liveDirectFromDevice || token.isEmpty || streamId.isEmpty) return null;
+    try {
+      final data = await api.restGet(
+        '/api/iptv/stream-url',
+        query: {
+          'type': 'live',
+          'streamId': streamId,
+          'containerExtension': 'ts',
+          'direct': 'true',
+        },
+        sessionToken: token,
+        timeout: const Duration(seconds: 6),
+      );
+      if (data is Map) {
+        final url = data['url']?.toString() ?? '';
+        if (url.startsWith('http://') || url.startsWith('https://')) {
+          // Default: the account's own URL exactly as issued, e.g.
+          // http://m3.iptv.cab/live/<user>/<pass>/<id>.ts
+          if (!rewriteLiveUrlViaLogin) return url;
+          return await _toStreamingServerUrl(url, api);
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // ── Xtream login hand-off (same flow as the provider's own app) ────────────
+  //
+  // The portal host (the one the account is registered on) sits behind
+  // Cloudflare and refuses stream requests. Standard Xtream clients -- the
+  // provider's own app included -- log in at the portal with
+  // player_api.php, then build every stream URL from the `server_info` the
+  // login returns ({protocol}://{url}:{port}) and use a format listed in
+  // `user_info.allowed_output_formats` (HLS first, like that app). The login
+  // runs from this device, on the viewer's own connection.
+
+  static final Dio _xtreamDio = Dio(BaseOptions(
+    connectTimeout: const Duration(seconds: 8),
+    receiveTimeout: const Duration(seconds: 10),
+  ));
+
+  /// portal base -> (stream base, allowed formats), cached for the session.
+  static final Map<String, (String, List<String>)> _xtreamServerCache = {};
+
+  static final RegExp _xtreamLivePath = RegExp(
+    r'^(https?://[^/]+)/live/([^/]+)/([^/]+)/([^/.]+)\.([A-Za-z0-9]+)$',
+  );
+
+  /// When false (current), streams use the IPTV account's own server URL
+  /// (e.g. http://m3.iptv.cab:80) for both login and playback. When true,
+  /// playback switches to the `server_info` host the login returns
+  /// (e.g. go.blizzo.cc), as standard Xtream clients do.
+  static const bool useLoginServerInfoHost = true;
+
+  /// false (current): play the account URL unchanged
+  /// (http://m3.iptv.cab/live/<user>/<pass>/<id>.ts). true: log in first and
+  /// rewrite it (server_info host / explicit port / HLS) via
+  /// [_toStreamingServerUrl].
+  static const bool rewriteLiveUrlViaLogin = false;
+
+  static String _withExplicitPort(String base) {
+    final uri = Uri.tryParse(base);
+    if (uri == null || uri.host.isEmpty) return base;
+    final port = uri.hasPort ? uri.port : (uri.scheme == 'https' ? 443 : 80);
+    return '${uri.scheme}://${uri.host}:$port';
+  }
+
+  static Future<String> _toStreamingServerUrl(
+    String portalUrl,
+    VoltixApiService api,
+  ) async {
+    final m = _xtreamLivePath.firstMatch(portalUrl);
+    if (m == null) return portalUrl;
+    // The IPTV account's server exactly as configured, with its port made
+    // explicit (http://m3.iptv.cab -> http://m3.iptv.cab:80).
+    final portal = _withExplicitPort(m.group(1)!);
+    final user = m.group(2)!;
+    final pass = m.group(3)!;
+    final id = m.group(4)!;
+
+    var info = _xtreamServerCache[portal];
+    if (info == null) {
+      try {
+        final res = await _xtreamDio.get(
+          '$portal/player_api.php',
+          queryParameters: {'username': user, 'password': pass},
+        );
+        var data = res.data;
+        if (data is String) data = jsonDecode(data);
+        if (data is Map) {
+          final si = data['server_info'];
+          final ui = data['user_info'];
+          String base = portal;
+          if (useLoginServerInfoHost && si is Map) {
+            final host = si['url']?.toString().trim() ?? '';
+            final proto =
+                (si['server_protocol']?.toString().trim().toLowerCase() ?? '');
+            final https = proto == 'https';
+            final port = (https ? si['https_port'] : si['port'])
+                    ?.toString()
+                    .trim() ??
+                '';
+            if (host.isNotEmpty) {
+              base = '${https ? 'https' : 'http'}://$host'
+                  '${port.isEmpty ? '' : ':$port'}';
+            }
+          }
+          final formats = <String>[];
+          if (ui is Map && ui['allowed_output_formats'] is List) {
+            for (final f in ui['allowed_output_formats'] as List) {
+              formats.add(f.toString().toLowerCase());
+            }
+          }
+          info = (base, formats);
+          _xtreamServerCache[portal] = info;
+          api.directStreamingDiag('iptv-login', {
+            'status': '${res.statusCode}',
+            'streamHost': Uri.tryParse(base)?.host ?? '',
+            'formats': formats.join(','),
+            // Account state, to tell a connection-limit / IP-lock 403 apart
+            // from a player restriction. No credentials are sent.
+            if (ui is Map) ...{
+              'acct': ui['status']?.toString() ?? '',
+              'activeCons': ui['active_cons']?.toString() ?? '',
+              'maxCons': ui['max_connections']?.toString() ?? '',
+              'exp': ui['exp_date']?.toString() ?? '',
+              'trial': ui['is_trial']?.toString() ?? '',
+            },
+          });
+        }
+      } catch (e) {
+        final status = e is DioException ? '${e.response?.statusCode ?? ''}' : '';
+        api.directStreamingDiag('iptv-login', {
+          'status': status,
+          'error': e.runtimeType.toString(),
+        });
+      }
+    }
+    if (info == null) return portalUrl;
+
+    final (base, formats) = info;
+    final ext = formats.isEmpty || formats.contains('m3u8')
+        ? 'm3u8'
+        : (formats.contains('ts') ? 'ts' : 'm3u8');
+    return '$base/live/$user/$pass/$id.$ext';
+  }
+
+  /// Playable URL for a live [channel]: the provider URL (played from this
+  /// device), falling back to the backend relay.
+  Future<String> fetchLiveStreamUrl(IptvContentItem channel) async {
+    final streamId = channel.streamId?.toString() ?? channel.id;
+    return await fetchDirectLiveUrl(_api, _token, streamId) ??
+        resolveLiveStreamUrl(channel);
+  }
+
+  /// Backend-relay URL for a live [channel].
   String resolveLiveStreamUrl(IptvContentItem channel) {
     final streamId = channel.streamId?.toString() ?? channel.id;
     return '${_api.baseUrl}/api/iptv/stream/live/$streamId?token=$_token';

@@ -271,7 +271,15 @@ class _NavigationLayoutState extends State<NavigationLayout> with WidgetsBinding
       showBackButton: widget.showBackButton,
     );
 
-    if (PlatformDetection.isTV || (PlatformDetection.isDesktop || (PlatformDetection.isWeb && !PlatformDetection.useMobileUi))) {
+    final mediaQuery = MediaQuery.maybeOf(context);
+    final isLandscapeWidescreen = mediaQuery != null &&
+        mediaQuery.size.width > mediaQuery.size.height &&
+        mediaQuery.size.width >= 800;
+
+    if (PlatformDetection.isTV ||
+        isLandscapeWidescreen ||
+        (PlatformDetection.isDesktop ||
+            (PlatformDetection.isWeb && !PlatformDetection.useMobileUi))) {
       return Column(
         children: [
           Expanded(

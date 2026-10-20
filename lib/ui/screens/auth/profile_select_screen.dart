@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:get_it/get_it.dart';
 import '../../../auth/store/voltix_session_store.dart';
 import '../../../data/models/voltix_profile.dart';
 import '../../../data/repositories/voltix_profile_repository.dart';
+import '../../../data/services/user_settings_sync_service.dart';
 import 'package:voltix_design/voltix_design.dart';
 import '../../navigation/destinations.dart';
 import '../../widgets/login_scaffold.dart';
@@ -76,6 +78,12 @@ class _ProfileSelectScreenState extends State<ProfileSelectScreen> {
     if (_selectedProfileTransition != null) return;
     setState(() => _selectedProfileTransition = profile);
     final saveFuture = _sessionStore.setActiveProfile(profile);
+    // Pull this profile's cloud Continue Watching / Favourites once it is set.
+    unawaited(saveFuture.then((_) {
+      if (GetIt.instance.isRegistered<UserSettingsSyncService>()) {
+        return GetIt.instance<UserSettingsSyncService>().onProfileSelected();
+      }
+    }).catchError((_) {}));
     await Future.delayed(const Duration(milliseconds: 300));
     if (!mounted) return;
     setState(() => _showWelcome = true);

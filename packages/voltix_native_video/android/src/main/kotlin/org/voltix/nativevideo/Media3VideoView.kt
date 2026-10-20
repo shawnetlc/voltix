@@ -47,7 +47,6 @@ import androidx.media3.common.util.ExperimentalApi
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.common.util.Util
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.decoder.av1.Dav1dLibrary
 import androidx.media3.decoder.av1.Libdav1dVideoRenderer
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -336,6 +335,28 @@ private class AdjustableAudioDelayProcessor : BaseAudioProcessor() {
     }
 }
 
+/** User-Agent for media requests; matches serverUserAgent in server_core. */
+private const val BROWSER_USER_AGENT =
+    "Jellyfin Android/0.19.10"
+
+/** One OkHttp client (connection pool) for every player instance. */
+internal val sharedOkHttp: okhttp3.OkHttpClient by lazy {
+    okhttp3.OkHttpClient.Builder()
+        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .connectionPool(okhttp3.ConnectionPool(8, 5, java.util.concurrent.TimeUnit.MINUTES))
+        // HTTP/1.1 only: over HTTP/2 every request to the server shares ONE TCP
+        // connection, so the player and the 4 read-ahead downloads were all
+        // squeezed through a single connection (~40 Mbps from supersilo). With
+        // HTTP/1.1 each download gets its own connection.
+        .protocols(listOf(okhttp3.Protocol.HTTP_1_1))
+        .build()
+}
+
+
+
 @UnstableApi
 class Media3VideoView(
     private val context: Context,
@@ -477,6 +498,9 @@ class Media3VideoView(
     private var allowExternalAudioEffects = Media3Bridge.allowExternalAudioEffectsEnabled()
     private var frameRateSwitchingBehavior = Media3Bridge.frameRateSwitchingBehavior()
     private var decoderPreferenceDirty = false
+    // Declared before the player is first built (see buildPlayer).
+    private var useAssExtractor = true
+    private var builtWithAssExtractor = true
     private val audioDelayProcessor = AdjustableAudioDelayProcessor()
     // Downmixes multichannel PCM (e.g. AAC 7.1) to stereo. Inactive (identity)
     // by default; enabled per-session after an AudioTrack init failure so a
@@ -503,7 +527,383 @@ class Media3VideoView(
     private var ticker: Runnable? = null
     private var currentUrl: String? = null
     private var currentHeaders: Map<String, String> = emptyMap()
-    private lateinit var httpDataSourceFactory: DefaultHttpDataSource.Factory
+    private lateinit var httpDataSourceFactory: androidx.media3.datasource.okhttp.OkHttpDataSource.Factory
+
+    /**
+     * Applies the current source's request headers. A "User-Agent" header, when
+     * the source supplies one (IPTV streams do), replaces the default browser
+     * agent -- DefaultHttpDataSource would otherwise overwrite it.
+     */
+    /**
+     * Who refused an HTTP request: the responding server, whether Cloudflare
+     * answered (cf-ray / its block page), the host asked and a hint from the
+     * body. No URL path or query (credentials) is included.
+     */
+    private fun describeHttpRefusal(cause: Throwable?): String {
+        val e = cause as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
+            ?: return ""
+        return try {
+            fun header(name: String): String =
+                e.headerFields.entries
+                    .firstOrNull { it.key?.equals(name, ignoreCase = true) == true }
+                    ?.value?.firstOrNull().orEmpty()
+            val body = try { String(e.responseBody, Charsets.UTF_8) } catch (_: Throwable) { "" }
+            val lower = body.lowercase()
+            val hint = when {
+                lower.contains("just a moment") || lower.contains("challenge") -> "cf-challenge"
+                lower.contains("error code: 1020") || lower.contains("access denied") -> "cf-1020-denied"
+                lower.contains("cloudflare") -> "cf-page"
+                body.isBlank() -> "empty"
+                else -> body.replace(Regex("\\s+"), " ").take(60)
+            }
+            " | server=${header("Server")} cfRay=${header("CF-Ray").isNotEmpty()} " +
+                "host=${e.dataSpec.uri.host ?: ""} len=${body.length} body=$hint"
+        } catch (_: Throwable) {
+            ""
+        }
+    }
+
+    // ── Rebuffer telemetry ────────────────────────────────────────────────
+    // A stall AFTER playback started (not the initial load or a seek) is
+    // reported with how long it lasted, the stream's bitrate and the
+    // measured download speed, so "the connection is too slow" can be told
+    // apart from "the server is slow" without guessing.
+    // ── Read-ahead to storage (see ReadAhead.kt) ──────────────────────────
+    private var readAheadPrefetcher: ReadAhead.Prefetcher? = null
+    private val readAheadTick = object : Runnable {
+        override fun run() {
+            try {
+                if (!isDisposed) {
+                    readAheadPrefetcher?.update(player.currentPosition, player.duration, player.bufferedPosition)
+                }
+            } catch (_: Throwable) {
+            }
+            // Every second while starting (keep the parallel downloads fed), then every 2 s.
+            if (!isDisposed) mainHandler.postDelayed(this, if (readySinceSource) 2_000 else 1_000)
+        }
+    }
+
+    /// (Previously read-ahead waited until the picture was on screen: started together with
+    /// the player, its 3 parallel downloads competed with the player's own
+    /// first reads, so big files took far longer to start on a slow server.
+    private var pendingReadAheadUrl: String? = null
+
+    private fun startReadAhead(url: String) {
+        mainHandler.removeCallbacks(readAheadTick)
+        // Read-ahead waits until the picture is on screen (+10 s): the start
+        // gets the whole connection; afterwards the parallel downloads keep the
+        // next minute on disk to ride out slow patches.
+        if (!readySinceSource) {
+            pendingReadAheadUrl = url
+            return
+        }
+        pendingReadAheadUrl = null
+        try {
+            val uri = android.net.Uri.parse(url)
+            val prefetcher = readAheadPrefetcher
+            if (prefetcher == null) {
+                // Open the cache off the UI thread, then come back and start.
+                if (!ReadAhead.isEligible(uri)) return
+                val appContext = context.applicationContext
+                val upstreamHttp = httpDataSourceFactory
+                Thread({
+                    val c = ReadAhead.cache(appContext) ?: return@Thread
+                    mainHandler.post {
+                        if (isDisposed || readAheadPrefetcher != null || currentUrl != url) return@post
+                        readAheadPrefetcher = ReadAhead.Prefetcher(c, ReadAhead.cacheFactory(c, upstreamHttp), upstreamHttp)
+                        startReadAhead(url)
+                    }
+                }, "VoltixReadAheadInit").start()
+                return
+            }
+            prefetcher.start(uri)
+            if (ReadAhead.isEligible(uri)) mainHandler.postDelayed(readAheadTick, 500)
+        } catch (_: Throwable) {
+        }
+    }
+
+    /**
+     * The TV's own download speed from the server, measured outside the player:
+     * one plain download of the same file for 6 s, from far ahead of the
+     * playhead. Run once per source on the first stall / slow start. If this is
+     * well above the speed the player managed, the player (not the network) is
+     * the bottleneck - and the reverse.
+     */
+    private var tvSpeedTestDoneFor: String? = null
+
+    /** Downloads [from] (one range per connection, all at once) for [ms]; returns (bytes, firstByteMs, http). */
+    private fun downloadFor(url: String, headers: Map<String, String>, from: List<Long>, ms: Long): Triple<Long, Long, Int> {
+        val total = java.util.concurrent.atomic.AtomicLong(0)
+        val firstByte = java.util.concurrent.atomic.AtomicLong(-1)
+        val code = java.util.concurrent.atomic.AtomicInteger(0)
+        val end = android.os.SystemClock.elapsedRealtime() + ms
+        val threads = from.map { offset ->
+            Thread({
+                try {
+                    val req = okhttp3.Request.Builder().url(url).header("Range", "bytes=$offset-")
+                    headers.forEach { (k, v) -> req.header(k, v) }
+                    val t = android.os.SystemClock.elapsedRealtime()
+                    sharedOkHttp.newCall(req.build()).execute().use { r ->
+                        code.compareAndSet(0, r.code)
+                        firstByte.compareAndSet(-1, android.os.SystemClock.elapsedRealtime() - t)
+                        val src = r.body?.byteStream() ?: return@use
+                        val buf = ByteArray(256 * 1024)
+                        while (android.os.SystemClock.elapsedRealtime() < end) {
+                            val n = src.read(buf)
+                            if (n < 0) break
+                            total.addAndGet(n.toLong())
+                        }
+                    }
+                } catch (_: Throwable) {
+                }
+            }, "VoltixTvSpeed").apply { isDaemon = true; start() }
+        }
+        threads.forEach { it.join(ms + 20_000) }
+        return Triple(total.get(), firstByte.get(), code.get())
+    }
+
+    /**
+     * The TV's own download speed from the server, measured outside the player
+     * (from far ahead of the playhead): 6 s on ONE connection, then 6 s on FOUR
+     * at once. One connection much slower than four -> parallel downloading
+     * helps on this TV; both about the same -> the TV's network link is the
+     * limit. Run once per source on the first stall / slow start.
+     */
+    private fun runTvSpeedTest(reason: String) {
+        val url = currentUrl ?: return
+        if (tvSpeedTestDoneFor == url) return
+        tvSpeedTestDoneFor = url
+        val headers = currentHeaders
+        val durationMs = player.duration
+        val positionMs = player.currentPosition
+        Thread({
+            var error = ""
+            var one = Triple(0L, -1L, 0)
+            var four = Triple(0L, -1L, 0)
+            try {
+                val probe = okhttp3.Request.Builder().url(url).header("Range", "bytes=0-0")
+                headers.forEach { (k, v) -> probe.header(k, v) }
+                val total = sharedOkHttp.newCall(probe.build()).execute().use { r ->
+                    r.header("Content-Range")?.substringAfterLast('/')?.trim()?.toLongOrNull() ?: -1L
+                }
+                fun offset(aheadMs: Long): Long = if (total > 0 && durationMs > 0) {
+                    (total.toDouble() * (positionMs + aheadMs) / durationMs).toLong().coerceIn(0, total - 1)
+                } else 0L
+                one = downloadFor(url, headers, listOf(offset(300_000)), 6_000)
+                four = downloadFor(url, headers, listOf(600_000L, 900_000L, 1_200_000L, 1_500_000L).map { offset(it) }, 6_000)
+            } catch (t: Throwable) {
+                error = "${t.javaClass.simpleName}: ${t.message ?: ""}".take(120)
+            }
+            fun mbps(b: Long) = String.format(java.util.Locale.US, "%.1f", b * 8 / 1_000_000.0 / 6.0)
+            mainHandler.post {
+                Media3Bridge.emitEvent(
+                    mapOf(
+                        "event" to "tv-speed",
+                        "reason" to reason,
+                        "mbps" to mbps(one.first),
+                        "mbps4" to mbps(four.first),
+                        "mb" to ((one.first + four.first) / (1024 * 1024)),
+                        "firstByteMs" to one.second,
+                        "http" to one.third,
+                        "playerKbps" to (androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
+                            .getSingletonInstance(context).bitrateEstimate / 1000),
+                        "error" to error,
+                    ),
+                )
+            }
+        }, "VoltixTvSpeedTest").apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1 }.start()
+    }
+
+    private fun readAheadStats(): Pair<Long, Long> = try {
+        readAheadPrefetcher?.stats(player.currentPosition, player.duration) ?: Pair(0L, 0L)
+    } catch (_: Throwable) {
+        Pair(0L, 0L)
+    }
+
+    private fun stopReadAhead() {
+        mainHandler.removeCallbacks(readAheadTick)
+        try {
+            readAheadPrefetcher?.stop()
+        } catch (_: Throwable) {
+        }
+    }
+
+    private var readySinceSource = false
+    private var rebufferStartMs = 0L
+    private var lastRebufferReportMs = 0L
+    private var rebufferCount = 0
+    private var lastSeekAtMs = 0L
+
+    // Start-up watchdog: if the picture hasn't started 20 s after a source was
+    // set, report what the player is waiting on (stage=startup-slow in the
+    // backend log). In direct mode the backend sees nothing else of playback.
+    private var startupSetAtMs = 0L
+    private val startupWatch = Runnable {
+        try {
+            if (isDisposed || readySinceSource) return@Runnable
+            val url = currentUrl ?: return@Runnable
+            val uri = android.net.Uri.parse(url)
+            val bw = androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
+                .getSingletonInstance(context).bitrateEstimate
+            Media3Bridge.emitEvent(
+                mapOf(
+                    "event" to "startup-slow".also { runTvSpeedTest("startup-slow") },
+                    "waitedMs" to (android.os.SystemClock.elapsedRealtime() - startupSetAtMs),
+                    "state" to when (player.playbackState) {
+                        Player.STATE_IDLE -> "idle"
+                        Player.STATE_BUFFERING -> "buffering"
+                        Player.STATE_READY -> "ready"
+                        else -> "ended"
+                    },
+                    "playWhenReady" to player.playWhenReady,
+                    "bufferedMs" to (player.bufferedPosition - player.currentPosition),
+                    "durationMs" to player.duration,
+                    "host" to (uri.host ?: ""),
+                    "static" to (uri.getQueryParameter("static") ?: uri.getQueryParameter("Static") ?: ""),
+                    "container" to (uri.lastPathSegment ?: ""),
+                    "videoMime" to (player.videoFormat?.sampleMimeType ?: ""),
+                    "videoHeight" to (player.videoFormat?.height ?: 0),
+                    "bandwidthKbps" to (bw / 1000),
+                    "error" to (player.playerError?.let { "${it.errorCodeName}: ${it.cause?.javaClass?.simpleName}" } ?: ""),
+                    // Loading still running? memory used by the buffer, and whether the
+                    // starvation guard had to step in (one track full, another empty).
+                    "loading" to player.isLoading,
+                    "budgetMb" to (computeTargetBufferBytes() / (1024 * 1024)),
+                    "audioMime" to (player.audioFormat?.sampleMimeType ?: ""),
+                    "audioCh" to (player.audioFormat?.channelCount ?: 0),
+                ),
+            )
+            // Report again at 45 s and 70 s so the log shows whether it is
+            // creeping forward (slow server) or not moving at all.
+            if (++startupReports < 3) mainHandler.postDelayed(startupWatchRef, 25_000)
+        } catch (_: Throwable) {
+        }
+    }
+    private var startupReports = 0
+    private val startupWatchRef: Runnable get() = startupWatch
+
+    // A stall that never ends was invisible: "rebuffer" is only reported when
+    // the stall finishes. Report it while it lasts (15 s, 30 s, 60 s, 90 s).
+    private var stallReports = 0
+    private val stallWatch = object : Runnable {
+        override fun run() {
+            try {
+                if (isDisposed || rebufferStartMs == 0L) return
+                val url = currentUrl ?: return
+                val uri = android.net.Uri.parse(url)
+                val bw = androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
+                    .getSingletonInstance(context).bitrateEstimate
+                Media3Bridge.emitEvent(
+                    mapOf(
+                        "event" to "stall-ongoing",
+                        "stallMs" to (android.os.SystemClock.elapsedRealtime() - rebufferStartMs),
+                        "state" to when (player.playbackState) {
+                            Player.STATE_IDLE -> "idle"
+                            Player.STATE_BUFFERING -> "buffering"
+                            Player.STATE_READY -> "ready"
+                            else -> "ended"
+                        },
+                        "bufferedMs" to (player.bufferedPosition - player.currentPosition),
+                        "positionMs" to player.currentPosition,
+                        "static" to (uri.getQueryParameter("static") ?: uri.getQueryParameter("Static") ?: ""),
+                        "container" to (uri.lastPathSegment ?: ""),
+                        "videoMime" to (player.videoFormat?.sampleMimeType ?: ""),
+                        "audioMime" to (player.audioFormat?.sampleMimeType ?: ""),
+                        "videoHeight" to (player.videoFormat?.height ?: 0),
+                        "bandwidthKbps" to (bw / 1000),
+                        "error" to (player.playerError?.let { "${it.errorCodeName}: ${it.cause?.javaClass?.simpleName}" } ?: ""),
+                    ),
+                )
+                stallReports++
+                val next = when (stallReports) { 1 -> 15_000L; 2 -> 30_000L; 3 -> 30_000L; else -> 0L }
+                if (next > 0) mainHandler.postDelayed(this, next)
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun resetRebufferTracking() {
+        mainHandler.removeCallbacks(startupWatch)
+        startupSetAtMs = android.os.SystemClock.elapsedRealtime()
+        startupReports = 0
+        mainHandler.postDelayed(startupWatch, 20_000)
+        readySinceSource = false
+        rebufferStartMs = 0L
+        rebufferCount = 0
+        mainHandler.removeCallbacks(stallWatch)
+    }
+
+    private fun trackRebuffer(state: Int) {
+        try {
+            when (state) {
+                Player.STATE_READY -> {
+                    mainHandler.removeCallbacks(stallWatch)
+                    if (rebufferStartMs > 0L) {
+                        val now = android.os.SystemClock.elapsedRealtime()
+                        val stallMs = now - rebufferStartMs
+                        rebufferStartMs = 0L
+                        rebufferCount++
+                        if (stallMs >= 500 && now - lastRebufferReportMs >= 15_000) {
+                            lastRebufferReportMs = now
+                            val bw = androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
+                                .getSingletonInstance(context).bitrateEstimate
+                            runTvSpeedTest("rebuffer")
+                            Media3Bridge.emitEvent(
+                                mapOf(
+                                    "event" to "rebuffer",
+                                    "stallMs" to stallMs,
+                                    "count" to rebufferCount,
+                                    "positionMs" to player.currentPosition,
+                                    "videoKbps" to ((player.videoFormat?.bitrate ?: -1) / 1000),
+                                    "audioCodec" to (player.audioFormat?.sampleMimeType ?: ""),
+                                    "videoHeight" to (player.videoFormat?.height ?: 0),
+                                    "bandwidthKbps" to (bw / 1000),
+                                    "bufferBudgetMb" to (computeTargetBufferBytes() / (1024 * 1024)),
+                                    // Read-ahead: its download speed and how much is on disk
+                                    // past the playhead (0/0 = not running).
+                                    "readAheadKbps" to (readAheadStats().first),
+                                    "aheadMb" to (readAheadStats().second / (1024 * 1024)),
+                                ),
+                            )
+                        }
+                    }
+                    readySinceSource = true
+                    mainHandler.removeCallbacks(startupWatch)
+                    pendingReadAheadUrl?.let { url ->
+                        pendingReadAheadUrl = null
+                        // A few seconds of head start for the player, then read ahead.
+                        mainHandler.postDelayed({
+                            if (!isDisposed && currentUrl == url) startReadAhead(url)
+                        }, 10_000)
+                    }
+                }
+                Player.STATE_BUFFERING -> {
+                    // Only a stall during playback, not a user seek.
+                    val sinceSeek = android.os.SystemClock.elapsedRealtime() - lastSeekAtMs
+                    if (readySinceSource && player.playWhenReady && rebufferStartMs == 0L &&
+                        sinceSeek > 3_000) {
+                        rebufferStartMs = android.os.SystemClock.elapsedRealtime()
+                        stallReports = 0
+                        mainHandler.removeCallbacks(stallWatch)
+                        mainHandler.postDelayed(stallWatch, 15_000)
+                    }
+                }
+                else -> {}
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun applyRequestHeaders() {
+        val ua = currentHeaders.entries
+            .firstOrNull { it.key.equals("User-Agent", ignoreCase = true) }
+            ?.value
+        httpDataSourceFactory.setDefaultRequestProperties(
+            currentHeaders.filterKeys { !it.equals("User-Agent", ignoreCase = true) }
+        )
+        // null -> OkHttp's default "okhttp/<version>" agent.
+        httpDataSourceFactory.setUserAgent(ua)
+    }
     private var requestedSubtitleRendererMode: SubtitleRendererMode = SubtitleRendererMode.NATIVE
     private var activeSubtitleRendererMode: SubtitleRendererMode = SubtitleRendererMode.NATIVE
     private var selectedSubtitleCodec: String? = null
@@ -660,6 +1060,7 @@ class Media3VideoView(
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
+            trackRebuffer(playbackState)
             if (
                 playbackState == Player.STATE_READY &&
                 !firstFrameRendered &&
@@ -671,6 +1072,12 @@ class Media3VideoView(
             }
             emitState()
             if (playbackState == Player.STATE_ENDED) {
+                // Finished: delete this film's read-ahead data.
+                mainHandler.removeCallbacks(readAheadTick)
+                try {
+                    readAheadPrefetcher?.stop(deleteCached = true)
+                } catch (_: Throwable) {
+                }
                 Media3Bridge.emitEvent(
                     mapOf(
                         "event" to "completed",
@@ -696,10 +1103,22 @@ class Media3VideoView(
             }
             val nativeRetryTriggered = offloadRetryTriggered || downmixRetryTriggered
             emitRecoverablePlayerError(error, nativeRetryTriggered)
+            // Code name, HTTP status and cause travel with the message: "Source
+            // error" alone is Media3's text for every I/O failure and cannot be
+            // diagnosed.
+            val httpStatus = (error.cause as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)?.responseCode
             Media3Bridge.emitEvent(
                 mapOf(
                     "event" to "error",
                     "message" to (error.localizedMessage ?: "Unknown Media3 playback error"),
+                    "errorCode" to error.errorCode,
+                    "errorCodeName" to error.errorCodeName,
+                    "httpStatus" to (httpStatus ?: 0),
+                    "cause" to ((error.cause?.let { "${it.javaClass.simpleName}: ${it.message ?: ""}" }?.take(200) ?: "") +
+                        describeHttpRefusal(error.cause)),
+                    // Where it failed: top frames of the innermost exception
+                    // (an NPE inside the loader says nothing without them).
+                    "stack" to errorStack(error),
                 ),
             )
             emitState()
@@ -776,6 +1195,9 @@ class Media3VideoView(
             if (reason == Player.DISCONTINUITY_REASON_SEEK ||
                 reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT
             ) {
+                // A seek's reload is not a stall.
+                lastSeekAtMs = android.os.SystemClock.elapsedRealtime()
+                rebufferStartMs = 0L
                 cancelPendingSubtitleCue(clearView = true)
                 scheduleAudioRekickAfterSeek()
             }
@@ -913,6 +1335,13 @@ class Media3VideoView(
         if (isPlayerReleased) return
         isPlayerReleased = true
         isDisposed = true
+        mainHandler.removeCallbacks(readAheadTick)
+        try {
+            // Playback stopped (player closed): delete this film's read-ahead data.
+            readAheadPrefetcher?.shutdown(deleteCached = true)
+        } catch (_: Throwable) {
+        }
+        readAheadPrefetcher = null
         cancelPendingSubtitleCue(clearView = false)
         cancelPendingAudioRekick()
         stopTicker()
@@ -961,16 +1390,45 @@ class Media3VideoView(
             .setConstantBitrateSeekingEnabled(true)
             .setConstantBitrateSeekingAlwaysEnabled(true)
 
-        httpDataSourceFactory = DefaultHttpDataSource.Factory()
-            .setAllowCrossProtocolRedirects(true)
-        val bootDataSourceFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
+        // OkHttp, sending OkHttp's own User-Agent ("okhttp/4.x") for video:
+        // supersilo's admins advised this is what their streaming front end
+        // expects from apps. It is also simply true - OkHttp makes the requests.
+        // A source may still set its own agent (IPTV does, via headers).
+        httpDataSourceFactory = androidx.media3.datasource.okhttp.OkHttpDataSource.Factory(sharedOkHttp)
+        // Large direct-play files go through the on-disk read-ahead cache (see ReadAhead);
+        // everything else (live, HLS, IPTV, local files) straight to the network as before.
+        // The cache is opened lazily on Media3's loader thread (createDataSource), never on
+        // the UI thread: opening SimpleCache + its database at app start (the home-screen
+        // trailer builds a player) blocked the first frame on slow-storage devices (Fire TV).
+        val plainDataSourceFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
+        val appContext = context.applicationContext
+        val upstreamHttp = httpDataSourceFactory
+        val bootDataSourceFactory = androidx.media3.datasource.DataSource.Factory {
+            val c = ReadAhead.cache(appContext)
+            if (c == null) {
+                plainDataSourceFactory.createDataSource()
+            } else {
+                ReadAhead.switchingFactory(plainDataSourceFactory, ReadAhead.playerCacheFactory(c, upstreamHttp))
+                    .createDataSource()
+            }
+        }
+        // Player rebuilt mid-file: fresh prefetcher (new HTTP headers), same cached data.
+        try { readAheadPrefetcher?.shutdown() } catch (_: Throwable) {}
+        readAheadPrefetcher = null
+        currentUrl?.let { url -> mainHandler.post { startReadAhead(url) } }
         val assRenderType = if (isLowRamDevice) AssRenderType.OVERLAY_CANVAS else AssRenderType.OVERLAY_OPEN_GL
         val assHandler = AssHandler(assRenderType)
         registerAssFonts(assHandler)
         val assParserFactory = AssSubtitleParserFactory(assHandler)
+        // Media3's own MKV reader unless the file has styled (ASS/SSA) subtitles:
+        // the add-on reader (ass-media, built for an older Media3) is the prime
+        // suspect for 1080p remuxes stalling after ~1 s and for the loader
+        // NullPointerException after an audio-track change.
+        builtWithAssExtractor = useAssExtractor
         val bootMediaSourceFactory = DefaultMediaSourceFactory(
             bootDataSourceFactory,
-            extractorsFactory.withAssMkvSupport(assParserFactory, assHandler),
+            if (useAssExtractor) extractorsFactory.withAssMkvSupport(assParserFactory, assHandler)
+            else extractorsFactory,
         ).apply {
             setSubtitleParserFactory(assParserFactory)
         }
@@ -980,10 +1438,13 @@ class Media3VideoView(
             .setUsage(C.USAGE_MEDIA)
             .build()
 
-        val minBufferMs = if (isLowRamDevice) 8000 else 30000
-        val maxBufferMs = if (isLowRamDevice) 15000 else 60000
-        val bufferForPlaybackMs = if (isLowRamDevice) 1000 else 3000
-        val bufferForPlaybackAfterRebufferMs = if (isLowRamDevice) 2000 else 5000
+        // Large direct-play files (e.g. a 27 GB 1080p remux, ~30-60 Mbps) stream
+        // over the internet, so read further ahead and refill more before
+        // resuming after a stall. The byte budget below still caps memory.
+        val minBufferMs = if (isLowRamDevice) 15000 else 50000
+        val maxBufferMs = if (isLowRamDevice) 30000 else 120000
+        val bufferForPlaybackMs = if (isLowRamDevice) 1500 else 2000
+        val bufferForPlaybackAfterRebufferMs = if (isLowRamDevice) 4000 else 8000
 
         val loadControlBuilder = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
@@ -992,14 +1453,19 @@ class Media3VideoView(
                 bufferForPlaybackMs,
                 bufferForPlaybackAfterRebufferMs
             )
-            .setPrioritizeTimeOverSizeThresholds(true)
+            // Bytes win over time: ExoPlayer keeps buffered media on the Java heap, so a
+            // time-only limit (60s) on a high-bitrate stream (4K remux / UHD live) needs
+            // hundreds of MB and crashes TVs with a 256-512MB heap with OutOfMemoryError
+            // in MediaCodecRenderer.feedInputBuffer (seen on Xiaomi MiTV, armv7, 384MB heap).
+            // Bytes win over time: ExoPlayer keeps buffered media on the Java heap, so a
+            // time-only limit (60s) on a high-bitrate stream (4K remux / UHD live) needs
+            // hundreds of MB and crashes TVs with a 256-512MB heap with OutOfMemoryError
+            // in MediaCodecRenderer.feedInputBuffer (seen on Xiaomi MiTV, armv7, 384MB heap).
+            .setPrioritizeTimeOverSizeThresholds(false)
+            .setTargetBufferBytes(computeTargetBufferBytes())
 
-        if (isLowRamDevice) {
-            // Cap total memory buffer to 16MB on low-RAM TV devices (e.g. Skyworth TVs)
-            // to avoid exceeding the Android app heap / low-memory killer (LMK).
-            loadControlBuilder.setTargetBufferBytes(16 * 1024 * 1024)
-        }
-
+        // Plain DefaultLoadControl (a wrapper around it crashed player creation:
+        // Kotlin delegation skips LoadControl's Java default methods).
         val loadControl = loadControlBuilder.build()
 
         return ExoPlayer.Builder(context, renderersFactory.withAssSupport(assHandler))
@@ -1025,6 +1491,43 @@ class Media3VideoView(
                 it.addAnalyticsListener(analyticsListener)
                 Media3SessionController.attachPlayer(context, it)
             }
+    }
+
+    /**
+     * Memory budget for ExoPlayer's media buffer, sized from this app's real Java heap limit
+     * (Runtime.maxMemory already accounts for largeHeap). Leaves the rest of the heap for the
+     * app, decoders, subtitles and artwork.
+     *  - low-RAM devices: 1/8 of heap, max 16MB (Skyworth-class TVs)
+     *  - Android TVs with <= 2GB RAM: 1/8 of heap, max 32MB
+     *  - everything else: 1/4 of heap, max 128MB (e.g. 384MB heap -> 96MB, ~10s of 80Mbps 4K)
+     */
+    private fun computeTargetBufferBytes(): Int {
+        val mb = 1024L * 1024L
+        val heap = Runtime.getRuntime().maxMemory()
+        // 1.5-2 GB Android TVs (many Skyworth models) are not flagged low-RAM
+        // but share that memory with the TV's own UI and decoders.
+        val isTwoGbTv = isTvDevice && run {
+            val am = context.getSystemService<ActivityManager>()
+            val info = ActivityManager.MemoryInfo()
+            am?.getMemoryInfo(info)
+            info.totalMem in 1L..2147483648L
+        }
+        // Raised for high-bitrate direct play: 32 MB was ~8 s of a 30 Mbps
+        // remux, so any network dip stalled playback. Still a bounded share
+        // of the (largeHeap) Java heap to avoid the OOMs seen on 384 MB heaps.
+        val share = when {
+            isLowRamDevice -> heap / 6
+            isTwoGbTv -> heap / 5
+            else -> heap / 3
+        }
+        val cap = when {
+            isLowRamDevice -> 32 * mb
+            isTwoGbTv -> 80 * mb
+            else -> 200 * mb
+        }
+        val bytes = share.coerceIn(8 * mb, cap)
+        android.util.Log.i("VoltixMedia3", "Media buffer budget: ${bytes / mb}MB (heap ${heap / mb}MB, lowRam=$isLowRamDevice, tv2gb=$isTwoGbTv)")
+        return bytes.toInt()
     }
 
     private fun registerAssFonts(assHandler: AssHandler) {
@@ -1073,7 +1576,7 @@ class Media3VideoView(
         player.release()
         recreateVideoView()
         player = createPlayer()
-        httpDataSourceFactory.setDefaultRequestProperties(currentHeaders)
+        applyRequestHeaders()
         Media3Bridge.emitEvent(
             mapOf(
                 "event" to "playerRebuilt",
@@ -1099,6 +1602,7 @@ class Media3VideoView(
 
     private fun releaseActivePlayer() {
         if (isDisposed) return
+        stopReadAhead()
         cancelPendingAudioRekick()
         closeExternalAudioEffectSessionIfOpen()
         currentAudioSessionId = C.AUDIO_SESSION_ID_UNSET
@@ -1111,7 +1615,7 @@ class Media3VideoView(
         Media3SessionController.releaseForPlayer(player)
         player.release()
         player = createPlayer()
-        httpDataSourceFactory.setDefaultRequestProperties(currentHeaders)
+        applyRequestHeaders()
         playerHasLoadedSource = false
         firstFrameCover.visibility = View.VISIBLE
         emitState()
@@ -1475,6 +1979,8 @@ class Media3VideoView(
     private fun setSource(arguments: Any?) {
         val args = arguments as? Map<*, *> ?: return
         val url = args["url"]?.toString() ?: return
+        useAssExtractor = args["hasAssSubtitles"] as? Boolean ?: true
+        if (useAssExtractor != builtWithAssExtractor) decoderPreferenceDirty = true
         val startPositionMs = (args["startPositionMs"] as? Number)?.toLong() ?: 0L
         val autoPlay = args["autoPlay"] as? Boolean ?: false
 
@@ -1519,6 +2025,8 @@ class Media3VideoView(
         subtitleEmbeddedFontSizesEnabled = args["subtitleEmbeddedFontSizesEnabled"] as? Boolean ?: true
 
         currentUrl = url
+        resetRebufferTracking()
+        startReadAhead(url)
         currentHeaders = (args["headers"] as? Map<*, *>)
             ?.mapNotNull { (k, v) ->
                 if (k == null || v == null) {
@@ -1529,7 +2037,7 @@ class Media3VideoView(
             }
             ?.toMap()
             ?: emptyMap()
-        httpDataSourceFactory.setDefaultRequestProperties(currentHeaders)
+        applyRequestHeaders()
 
         resetTrackSelectionsForNewSource()
         externalSubtitleConfigurations.clear()
@@ -2993,4 +3501,20 @@ class Media3VideoView(
             else -> null
         }
     }
+}
+
+
+
+
+/** "Class.method:line" for the first frames of the innermost cause. */
+internal fun errorStack(error: Throwable): String = try {
+    var root: Throwable = error
+    var guard = 0
+    while (root.cause != null && root.cause !== root && guard++ < 10) root = root.cause!!
+    android.util.Log.e("VoltixMedia3", "Playback error root cause", root)
+    root.stackTrace.take(8).joinToString(" < ") {
+        "${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}"
+    }.take(600)
+} catch (_: Throwable) {
+    ""
 }

@@ -10,6 +10,7 @@ import 'package:voltix_design/voltix_design.dart';
 import 'package:server_core/server_core.dart';
 
 import '../../auth/repositories/user_repository.dart';
+import '../../auth/store/voltix_session_store.dart';
 import '../../data/models/aggregated_library.dart';
 import '../../data/repositories/multi_server_repository.dart';
 import '../../data/repositories/user_views_repository.dart';
@@ -38,6 +39,10 @@ import 'package:playback_core/playback_core.dart';
 import '../../data/models/aggregated_item.dart';
 import '../../data/services/media_server_client_factory.dart';
 import '../navigation/app_router.dart';
+
+/// Voltix: IPTV Movies/Series shortcuts hidden from the main menu for now.
+/// Set to true to bring them back.
+const bool _kShowIptvVodNav = false;
 
 const _kExpandedWidthDesktop = 240.0;
 const _kExpandedWidthMobile = 260.0;
@@ -78,6 +83,8 @@ class _LeftSidebarState extends State<LeftSidebar> {
   final _settingsFocusNode = FocusNode(debugLabel: 'LeftSidebarSettings');
   final _profileFocusNode = FocusNode(debugLabel: 'LeftSidebarProfile');
   final _musicCardFocusNode = FocusNode(debugLabel: 'SidebarMusicCard');
+  final _menuButtonFocusNode = FocusNode(debugLabel: 'HamburgerMenuButton');
+  final _backButtonFocusNode = FocusNode(debugLabel: 'SidebarBackButton');
   late final VoidCallback _focusNavbarCallback;
   late final VoidCallback _focusAvatarCallback;
   VoidCallback? _previousFocusNavbarCallback;
@@ -110,6 +117,12 @@ class _LeftSidebarState extends State<LeftSidebar> {
       if (!mounted) return;
       if (PlatformDetection.isTV || (PlatformDetection.isDesktop || (PlatformDetection.isWeb && !PlatformDetection.useMobileUi))) {
         _homeFocusNode.requestFocus();
+      } else {
+        if (_isExpanded) {
+          _homeFocusNode.requestFocus();
+        } else {
+          _menuButtonFocusNode.requestFocus();
+        }
       }
     };
     _focusAvatarCallback = () {
@@ -187,6 +200,8 @@ class _LeftSidebarState extends State<LeftSidebar> {
     _settingsFocusNode.dispose();
     _profileFocusNode.dispose();
     _musicCardFocusNode.dispose();
+    _menuButtonFocusNode.dispose();
+    _backButtonFocusNode.dispose();
     _sidebarFocus.dispose();
     _scrollController.dispose();
     _userSub?.cancel();
@@ -259,6 +274,13 @@ class _LeftSidebarState extends State<LeftSidebar> {
         } catch (_) {}
       }
 
+      if (GetIt.instance.isRegistered<VoltixSessionStore>() &&
+          GetIt.instance<VoltixSessionStore>().isKidsProfile) {
+        filtered = filtered.where((lib) =>
+            lib.collectionType == 'movies' || lib.collectionType == 'tvshows'
+        ).toList();
+      }
+
       if (mounted && !_librariesEqual(_libraries, filtered)) {
         setState(() => _libraries = filtered);
       }
@@ -308,8 +330,18 @@ class _LeftSidebarState extends State<LeftSidebar> {
   void _toggle() {
     if (_isExpanded) {
       _collapse();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _menuButtonFocusNode.canRequestFocus) {
+          _menuButtonFocusNode.requestFocus();
+        }
+      });
     } else {
       _expand();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _homeFocusNode.canRequestFocus) {
+          _homeFocusNode.requestFocus();
+        }
+      });
     }
   }
 
@@ -489,7 +521,14 @@ class _LeftSidebarState extends State<LeftSidebar> {
   }
 
   Widget _buildDrawerLayout() {
-    if (PlatformDetection.isTV || (PlatformDetection.isDesktop || (PlatformDetection.isWeb && !PlatformDetection.useMobileUi))) {
+    final mediaQuery = MediaQuery.maybeOf(context);
+    final isLandscapeWidescreen = mediaQuery != null &&
+        mediaQuery.size.width > mediaQuery.size.height &&
+        mediaQuery.size.width >= 800;
+    if (PlatformDetection.isTV ||
+        isLandscapeWidescreen ||
+        (PlatformDetection.isDesktop ||
+            (PlatformDetection.isWeb && !PlatformDetection.useMobileUi))) {
       return _buildTvLayout();
     }
     final expandedWidth = _isMobile
@@ -590,43 +629,19 @@ class _LeftSidebarState extends State<LeftSidebar> {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    GestureDetector(
+                    _buildFocusableDrawerButton(
+                      focusNode: _menuButtonFocusNode,
+                      icon: Icons.menu,
+                      tooltip: 'Menu',
                       onTap: _toggle,
-                      child: Container(
-                        width: 40,
-                        height: 40,
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.4),
-                          shape: BoxShape.circle,
-                        ),
-                        child: Icon(
-                          Icons.menu,
-                          size: 22,
-                          color: Colors.white.withValues(alpha: 0.8),
-                        ),
-                      ),
                     ),
                     if (widget.showBackButton) ...[
                       const SizedBox(width: 6),
-                      MouseRegion(
-                        cursor: SystemMouseCursors.click,
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: () => context.popOrHome(),
-                          child: Container(
-                            width: 40,
-                            height: 40,
-                            decoration: BoxDecoration(
-                              color: Colors.black.withValues(alpha: 0.4),
-                              shape: BoxShape.circle,
-                            ),
-                            child: Icon(
-                              Icons.arrow_back,
-                              size: 20,
-                              color: Colors.white.withValues(alpha: 0.9),
-                            ),
-                          ),
-                        ),
+                      _buildFocusableDrawerButton(
+                        focusNode: _backButtonFocusNode,
+                        icon: Icons.arrow_back,
+                        tooltip: 'Back',
+                        onTap: () => context.popOrHome(),
                       ),
                     ],
                   ],
@@ -635,6 +650,84 @@ class _LeftSidebarState extends State<LeftSidebar> {
             ),
           ),
       ],
+    );
+  }
+
+  Widget _buildFocusableDrawerButton({
+    required FocusNode focusNode,
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onTap,
+  }) {
+    return Focus(
+      focusNode: focusNode,
+      onKeyEvent: (node, event) {
+        if (event is KeyDownEvent) {
+          if (isActivateKey(event)) {
+            onTap();
+            return KeyEventResult.handled;
+          }
+          if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+            if (identical(focusNode, _menuButtonFocusNode) && widget.showBackButton) {
+              _backButtonFocusNode.requestFocus();
+              return KeyEventResult.handled;
+            }
+            _restoreFocusOutsideSidebar();
+            return KeyEventResult.handled;
+          }
+          if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+            if (identical(focusNode, _backButtonFocusNode)) {
+              _menuButtonFocusNode.requestFocus();
+              return KeyEventResult.handled;
+            }
+          }
+        }
+        return KeyEventResult.ignored;
+      },
+      child: Builder(
+        builder: (context) {
+          final isFocused = Focus.of(context).hasFocus;
+          final accent = AppColorScheme.accent;
+          return Tooltip(
+            message: tooltip,
+            child: MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: onTap,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 150),
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: isFocused
+                        ? accent.withValues(alpha: 0.35)
+                        : Colors.black.withValues(alpha: 0.45),
+                    shape: BoxShape.circle,
+                    border: isFocused
+                        ? Border.all(color: accent, width: 2)
+                        : Border.all(color: Colors.white24, width: 0.5),
+                    boxShadow: isFocused
+                        ? [
+                            BoxShadow(
+                              color: accent.withValues(alpha: 0.55),
+                              blurRadius: 10,
+                              spreadRadius: 1,
+                            ),
+                          ]
+                        : null,
+                  ),
+                  child: Icon(
+                    icon,
+                    size: 22,
+                    color: isFocused ? Colors.white : Colors.white.withValues(alpha: 0.85),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
     );
   }
 
@@ -799,8 +892,10 @@ class _LeftSidebarState extends State<LeftSidebar> {
                 return c;
               }
 
+              final isKidsProfile = GetIt.instance.isRegistered<VoltixSessionStore>() &&
+                  GetIt.instance<VoltixSessionStore>().isKidsProfile;
               final jellyfinEnabled = _prefs.get(UserPreferences.voltixJellyfinEnabled);
-              final liveTvEnabled = _prefs.get(UserPreferences.voltixLiveTvEnabled);
+              final liveTvEnabled = !isKidsProfile && _prefs.get(UserPreferences.voltixLiveTvEnabled);
               final items = <Widget>[
                 _SidebarItem(
                   key: const ValueKey('sidebar-home'),
@@ -834,6 +929,32 @@ class _LeftSidebarState extends State<LeftSidebar> {
                       context.navigateTopLevel(Destinations.voltixLiveTv);
                     },
                   ),
+                if (liveTvEnabled && _kShowIptvVodNav)
+                  _SidebarItem(
+                    key: const ValueKey('sidebar-movies'),
+                    icon: Icons.movie_rounded,
+                    label: 'Movies',
+                    baseColor: nextMainSidebarColor(),
+                    showLabel: _showLabels,
+                    onPressed: () {
+                      _onNavigate();
+                      _markNavigationAwayFromSidebar();
+                      context.navigateTopLevel(Destinations.voltixMovies);
+                    },
+                  ),
+                if (liveTvEnabled && _kShowIptvVodNav)
+                  _SidebarItem(
+                    key: const ValueKey('sidebar-series'),
+                    icon: Icons.video_library_rounded,
+                    label: 'Series',
+                    baseColor: nextMainSidebarColor(),
+                    showLabel: _showLabels,
+                    onPressed: () {
+                      _onNavigate();
+                      _markNavigationAwayFromSidebar();
+                      context.navigateTopLevel(Destinations.voltixSeries);
+                    },
+                  ),
                 // The server's own Jellyfin/Emby Live TV (guide, schedule,
                 // recordings) is a separate feature from Voltix's own IPTV
                 // screen above, so it gets its own entry rather than folding
@@ -841,7 +962,7 @@ class _LeftSidebarState extends State<LeftSidebar> {
                 // gated on the same condition as Search, since both need a
                 // real media server connection rather than the Voltix IPTV
                 // integration specifically.
-                if (jellyfinEnabled)
+                if (jellyfinEnabled && !isKidsProfile)
                   _SidebarItem(
                     key: const ValueKey('sidebar-lt'),
                     icon: Icons.settings_input_antenna_rounded,
@@ -922,7 +1043,7 @@ class _LeftSidebarState extends State<LeftSidebar> {
                       context.navigateTopLevel(Destinations.allFavorites);
                     },
                   ),
-                if (jellyfinEnabled && showFolders)
+                if (jellyfinEnabled && showFolders && !isKidsProfile)
                   _SidebarItem(
                     key: const ValueKey('sidebar-folders'),
                     icon: Icons.folder_rounded,
@@ -957,6 +1078,7 @@ class _LeftSidebarState extends State<LeftSidebar> {
                     },
                   ),
                 if (jellyfinEnabled &&
+                    !isKidsProfile &&
                     _prefs.get(UserPreferences.showSeerrButton) &&
                     GetIt.instance<PluginSyncService>().seerrAvailable)
                   _SidebarItem(

@@ -97,7 +97,11 @@ class SearchViewModel extends ChangeNotifier {
 
   Timer? _debounceTimer;
 
-  static const _debounceMs = 600;
+  // 1s: on a TV remote each letter takes longer than 0.6s to type, so a
+  // shorter wait searched after nearly every letter.
+  static const _debounceMs = 1000;
+  // A single letter matches most of the library and is the slowest search.
+  static const _minQueryLength = 2;
   static const _resultLimit = 24;
   static const _globalFetchLimit = 240;
 
@@ -109,34 +113,16 @@ class SearchViewModel extends ChangeNotifier {
     ];
   }
 
+  /// Only what the streaming server carries. Every group adds its item types
+  /// to the one server-side search, and asking for all 19 types (books,
+  /// episodes, music, photos, channels, folders...) made each search scan the
+  /// whole database: ~7s per search on the shared server.
   static List<SearchResultGroup> _searchGroups() {
     final l10n = currentAppLocalizations();
     return [
-      SearchResultGroup(title: l10n.books, itemTypes: const ['Book']),
       SearchResultGroup(title: l10n.movies, itemTypes: const ['Movie']),
       SearchResultGroup(title: l10n.series, itemTypes: const ['Series']),
-      SearchResultGroup(title: l10n.seasons, itemTypes: const ['Season']),
-      SearchResultGroup(title: l10n.episodes, itemTypes: const ['Episode']),
-      SearchResultGroup(title: l10n.videos, itemTypes: const ['Video']),
-      SearchResultGroup(title: l10n.musicVideos, itemTypes: const ['MusicVideo']),
-      SearchResultGroup(title: l10n.trailers, itemTypes: const ['Trailer']),
-      SearchResultGroup(title: l10n.programs, itemTypes: const ['Program']),
-      SearchResultGroup(title: l10n.channels, itemTypes: const ['LiveTvChannel']),
-      SearchResultGroup(title: l10n.playlists, itemTypes: const ['Playlist']),
-      SearchResultGroup(
-        title: l10n.artists,
-        itemTypes: const ['MusicArtist', 'AlbumArtist'],
-      ),
-      SearchResultGroup(title: l10n.albums, itemTypes: const ['MusicAlbum']),
-      SearchResultGroup(title: l10n.songs, itemTypes: const ['Audio']),
-      SearchResultGroup(title: l10n.photoAlbums, itemTypes: const ['PhotoAlbum']),
-      SearchResultGroup(title: l10n.photos, itemTypes: const ['Photo']),
       SearchResultGroup(title: l10n.collections, itemTypes: const ['BoxSet']),
-      SearchResultGroup(title: l10n.people, itemTypes: const ['Person']),
-      SearchResultGroup(
-        title: l10n.folders,
-        itemTypes: const ['Folder', 'CollectionFolder', 'UserView'],
-      ),
     ];
   }
 
@@ -151,6 +137,14 @@ class SearchViewModel extends ChangeNotifier {
       _results = const [];
       _seerrResults = const [];
       _variantsByRepKey.clear();
+      _state = SearchState.idle;
+      notifyListeners();
+      return;
+    }
+
+    if (trimmed.length < _minQueryLength) {
+      _results = const [];
+      _seerrResults = const [];
       _state = SearchState.idle;
       notifyListeners();
       return;
@@ -305,6 +299,14 @@ class SearchViewModel extends ChangeNotifier {
       final variants = byKey[key]!;
       if (variants.length < 2) {
         collapsed.add(variants.first);
+        continue;
+      }
+      // Only titles found on two or more DIFFERENT servers get the server
+      // chooser. Copies of a title in several libraries of the same server
+      // (e.g. Movies + 4K Movies) stay as their own cards, so a single-server
+      // account never sees "N servers" or a server picker.
+      if (variants.map((v) => v.serverId).toSet().length < 2) {
+        collapsed.addAll(variants);
         continue;
       }
       final representative = _pickRepresentative(variants);

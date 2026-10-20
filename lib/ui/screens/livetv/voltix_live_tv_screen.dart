@@ -64,10 +64,15 @@ class VoltixLiveTvScreen extends StatefulWidget {
   /// every page to find one channel. The name turns it into one search.
   final String? initialChannelName;
 
+  /// Section to open on: 'live' (default), 'movies' or 'series'. Lets the
+  /// Movies and Series menu entries land directly on their section.
+  final String? initialSection;
+
   const VoltixLiveTvScreen({
     super.key,
     this.initialStreamId,
     this.initialChannelName,
+    this.initialSection,
   });
 
   @override
@@ -402,7 +407,7 @@ class _VoltixLiveTvScreenState extends State<VoltixLiveTvScreen> {
     _repo = VoltixIptvRepository();
     _recentStore = GetIt.instance<IptvRecentStore>();
     _prefs = GetIt.instance<UserPreferences>();
-    _loadSection(IptvSection.live);
+    _loadSection(_sectionFromName(widget.initialSection));
     unawaited(_loadContinueWatching());
     // Admin gate for the series download feature (hidden for non-admins and
     // when the backend endpoint is absent).
@@ -415,6 +420,19 @@ class _VoltixLiveTvScreenState extends State<VoltixLiveTvScreen> {
             widget.initialChannelName!.isNotEmpty);
     if (wantsChannel) {
       unawaited(_tuneToInitialChannel());
+    }
+  }
+
+  /// Maps the optional [VoltixLiveTvScreen.initialSection] route value onto a
+  /// section, defaulting to Live TV for a missing or unrecognised value.
+  IptvSection _sectionFromName(String? name) {
+    switch (name) {
+      case 'movies':
+        return IptvSection.movies;
+      case 'series':
+        return IptvSection.series;
+      default:
+        return IptvSection.live;
     }
   }
 
@@ -670,29 +688,47 @@ class _VoltixLiveTvScreenState extends State<VoltixLiveTvScreen> {
     setState(() {
       _searchQuery = query;
       _searchLoading = true;
+      _searchLive = const [];
+      _searchMovies = const [];
+      _searchSeries = const [];
     });
-    try {
-      final results = await Future.wait([
-        _repo.getContent(IptvSection.live,
-            search: query, limit: 40, cancelToken: cancel),
-        _repo.getContent(IptvSection.movies,
-            search: query, limit: 40, cancelToken: cancel),
-        _repo.getContent(IptvSection.series,
-            search: query, limit: 40, cancelToken: cancel),
-      ]);
-      if (!mounted || requestId != _searchRequestId) return;
+
+    // Each section is searched on its own and shown as soon as it answers.
+    // Previously one Future.wait meant a slow or failed movie/series lookup
+    // threw away the live results too, so the search looked like it only
+    // (or never) covered channels.
+    bool stale() =>
+        !mounted || requestId != _searchRequestId || cancel.isCancelled;
+
+    Future<void> searchSection(IptvSection section) async {
+      List<IptvContentItem> found = const [];
+      try {
+        final page = await _repo.getContent(section,
+            search: query, limit: 40, cancelToken: cancel);
+        found = page.items;
+      } on VoltixIptvException {
+        // This section failed or was cancelled; the others still show.
+      }
+      if (stale()) return;
       setState(() {
-        _searchLive = results[0].items;
-        _searchMovies = results[1].items;
-        _searchSeries = results[2].items;
-        _searchLoading = false;
+        switch (section) {
+          case IptvSection.live:
+            _searchLive = found;
+          case IptvSection.movies:
+            _searchMovies = found;
+          case IptvSection.series:
+            _searchSeries = found;
+        }
       });
-    } on VoltixIptvException {
-      // Cancelled or superseded — treat as a no-op; keep any prior results.
-      if (!mounted || requestId != _searchRequestId) return;
-      if (cancel.isCancelled) return;
-      setState(() => _searchLoading = false);
     }
+
+    await Future.wait([
+      searchSection(IptvSection.live),
+      searchSection(IptvSection.movies),
+      searchSection(IptvSection.series),
+    ]);
+    if (stale()) return;
+    setState(() => _searchLoading = false);
   }
 
   // ── EPG (throttled to the focused channel) ─────────────────────────────────
@@ -885,6 +921,7 @@ class _VoltixLiveTvScreenState extends State<VoltixLiveTvScreen> {
         'Name': title,
         'isLive': isLive,
         'Type': 'Video',
+        if (isLive) 'headers': VoltixIptvRepository.providerStreamHeaders,
       },
     );
     try {
@@ -896,7 +933,7 @@ class _VoltixLiveTvScreenState extends State<VoltixLiveTvScreen> {
       if (isLive) {
         final refreshed = await _repo.ensureTokenFresh();
         if (refreshed && mounted) {
-          final freshUrl = _repo.resolveLiveStreamUrl(
+          final freshUrl = await _repo.fetchLiveStreamUrl(
             _hero.value?.channel ??
                 IptvContentItem(id: '', title: title, categoryId: ''),
           );
@@ -909,6 +946,7 @@ class _VoltixLiveTvScreenState extends State<VoltixLiveTvScreen> {
               'Name': title,
               'isLive': true,
               'Type': 'Video',
+              'headers': VoltixIptvRepository.providerStreamHeaders,
             },
           );
           try {
@@ -951,7 +989,7 @@ class _VoltixLiveTvScreenState extends State<VoltixLiveTvScreen> {
         // Proceed anyway — the backend may still accept the current token.
       }
       await _playUrl(
-        _repo.resolveLiveStreamUrl(channel),
+        await _repo.fetchLiveStreamUrl(channel),
         _cleanChannelName(channel.title),
         isLive: true,
       );
@@ -1408,7 +1446,11 @@ class _VoltixLiveTvScreenState extends State<VoltixLiveTvScreen> {
   }
 
   Widget _buildSearchResults() {
-    if (_searchLoading) {
+    final anyResults = _searchLive.isNotEmpty ||
+        _searchMovies.isNotEmpty ||
+        _searchSeries.isNotEmpty;
+    // Spinner only until the first section answers; results then fill in.
+    if (_searchLoading && !anyResults) {
       return const Center(child: CircularProgressIndicator());
     }
     final query = _searchQuery.trim();

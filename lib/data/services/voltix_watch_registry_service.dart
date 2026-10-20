@@ -282,7 +282,13 @@ class VoltixWatchRegistryService extends ChangeNotifier {
 
     final isCompleted = item.isPlayed || progress >= 90.0;
     final existing = _entries[key];
-    final playCount = isCompleted ? ((existing?.playCount ?? 0) + 1) : (existing?.playCount ?? 0);
+    final wasPlayed = existing?.isPlayed ?? false;
+    // Count a play once, when it is finished -- not on every progress report
+    // past 90%.
+    final justFinished = isCompleted && !wasPlayed;
+    final playCount = justFinished
+        ? ((existing?.playCount ?? 0) + 1)
+        : (existing?.playCount ?? 0);
 
     // Extract actors/directors from raw item metadata if available
     final rawData = item.rawData;
@@ -335,6 +341,8 @@ class VoltixWatchRegistryService extends ChangeNotifier {
     _entries[key] = entry;
     _scheduleSave();
     notifyListeners();
+    // Finished a title, or stopped watching: sync to the cloud now.
+    if (justFinished || isStopped) syncNowTick.value++;
 
     _logger.i(
       '[WatchRegistry] Recorded for @$_currentLoadedUsername: "${entry.name}" (${entry.serverName}) -> '
@@ -378,6 +386,86 @@ class VoltixWatchRegistryService extends ChangeNotifier {
       );
       _scheduleSave();
       notifyListeners();
+      syncNowTick.value++;
+    }
+  }
+
+  /// This user's history keyed by server item id, for laying their own
+  /// watch state over shared-account responses.
+  Map<String, WatchRegistryEntry> entriesByItemId() {
+    _loadForCurrentUser();
+    return {
+      for (final e in _entries.values)
+        if (e.itemId.isNotEmpty) e.itemId: e,
+    };
+  }
+
+  /// Item ids in progress, most recently watched first. [types] are
+  /// lower-case item types (e.g. 'movie', 'episode'); empty means any.
+  List<String> inProgressItemIds({Set<String>? types}) {
+    _loadForCurrentUser();
+    final list = _entries.values
+        .where((e) =>
+            e.itemId.isNotEmpty &&
+            !e.isPlayed &&
+            e.playbackPositionTicks > 0 &&
+            e.progressPercent > 1.0 &&
+            e.progressPercent < 90.0 &&
+            (types == null ||
+                types.isEmpty ||
+                types.contains(e.type.toLowerCase())))
+        .toList()
+      ..sort((a, b) => b.lastWatchedAt.compareTo(a.lastWatchedAt));
+    return list.map((e) => e.itemId).toList();
+  }
+
+  /// Item ids this user has finished, most recently watched first. [types]
+  /// are lower-case item types; asking for 'series' also returns the series
+  /// of watched episodes (a series counts as watched once any episode is).
+  List<String> playedItemIds({Set<String>? types}) {
+    _loadForCurrentUser();
+    final played = _entries.values.where((e) => e.isPlayed).toList()
+      ..sort((a, b) => b.lastWatchedAt.compareTo(a.lastWatchedAt));
+    final any = types == null || types.isEmpty;
+    final seen = <String>{};
+    final out = <String>[];
+    for (final e in played) {
+      final type = e.type.toLowerCase();
+      if ((any || types.contains(type)) && e.itemId.isNotEmpty) {
+        if (seen.add(e.itemId)) out.add(e.itemId);
+      }
+      if (!any && types.contains('series') && type == 'episode') {
+        final sid = e.seriesId;
+        if (sid != null && sid.isNotEmpty && seen.add(sid)) out.add(sid);
+      }
+    }
+    return out;
+  }
+
+  /// Marks [item] watched or unwatched for this user only.
+  Future<void> setPlayed(AggregatedItem item, bool played) async {
+    _loadForCurrentUser();
+    final key = computeContentKey(item);
+    if (key.isEmpty) return;
+    if (played) {
+      final userData = Map<String, dynamic>.from(
+        (item.rawData['UserData'] as Map?) ?? const <String, dynamic>{},
+      )..['Played'] = true;
+      await recordPlayback(
+        AggregatedItem(
+          id: item.id,
+          serverId: item.serverId,
+          serverName: item.serverName,
+          rawData: Map<String, dynamic>.from(item.rawData)
+            ..['UserData'] = userData,
+        ),
+        0,
+        isStopped: true,
+      );
+    } else if (_entries.remove(key) != null) {
+      _scheduleSave();
+      notifyListeners();
+      syncNowTick.value++;
     }
   }
 
@@ -520,8 +608,21 @@ class VoltixWatchRegistryService extends ChangeNotifier {
     };
   }
 
+  /// Ticks when something worth saving to the cloud immediately happened
+  /// (a title finished, playback stopped, watched/unwatched toggled).
+  /// UserSettingsSyncService uploads on it.
+  static final ValueNotifier<int> syncNowTick = ValueNotifier<int>(0);
+
+  /// Ticks after a cloud restore is merged in, so screens (the home
+  /// Continue Watching / Next Up rows) can reload once instead of on every
+  /// playback progress update.
+  static final ValueNotifier<int> restoreTick = ValueNotifier<int>(0);
+
   /// Imports registry data from cloud sync.
   Future<void> importRegistryData(Map<String, dynamic> data) async {
+    // Merge into the CURRENT user/profile's list (the profile may have been
+    // picked since this registry was last touched).
+    _loadForCurrentUser();
     try {
       final entriesJson = data['entries'] as Map<String, dynamic>?;
       if (entriesJson != null) {
@@ -539,6 +640,7 @@ class VoltixWatchRegistryService extends ChangeNotifier {
         }
         await _persistLocal();
         notifyListeners();
+        restoreTick.value++;
       }
     } catch (e) {
       _logger.w('[WatchRegistry] Import error: $e');

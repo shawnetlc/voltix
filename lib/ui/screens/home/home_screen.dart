@@ -19,6 +19,7 @@ import 'package:window_manager/window_manager.dart';
 import '../../../data/models/aggregated_item.dart';
 import '../../../data/models/home_row.dart';
 import '../../../data/repositories/mdblist_repository.dart';
+import '../../../data/repositories/voltix_iptv_repository.dart';
 import '../../../data/services/voltix_api_service.dart';
 import '../../../auth/store/voltix_session_store.dart';
 import '../../../data/services/background_service.dart';
@@ -753,12 +754,69 @@ class _ContentRowsState extends State<_ContentRows>
       });
     }
 
+    // Focus dropped to nothing (or to a bare scope) - typically because the
+    // row or menu item that held it was rebuilt while home rows were still
+    // loading. On a TV that leaves the remote dead until the app is restarted,
+    // so put focus back where the viewer was.
+    if (onIdleFocus && !desktopUnfocused && !isMobileUi && _initialFocusResolved) {
+      _scheduleLostFocusRepair(wasOnSidebar: wasOnSidebar);
+    }
+
     _wasSidebarFocused = onSidebar;
     _lastGlobalPrimaryFocus = primary;
 
     if (chromeAudioActive && (chromeChanged || _activePreviewKey != null)) {
       _finishSharedPreview(releaseResources: true);
     }
+  }
+
+  bool _lostFocusRepairScheduled = false;
+
+  bool _isFocusLost() {
+    final p = FocusManager.instance.primaryFocus;
+    return p == null ||
+        p is FocusScopeNode ||
+        identical(p, globalShortcutFocusNode) ||
+        p.context == null ||
+        !p.canRequestFocus;
+  }
+
+  void _scheduleLostFocusRepair({required bool wasOnSidebar}) {
+    if (_lostFocusRepairScheduled) return;
+    _lostFocusRepairScheduled = true;
+    // A short grace period: a widget that is merely swapping focus between
+    // two of its own nodes passes through "no focus" for a frame.
+    Future<void>.delayed(const Duration(milliseconds: 180), () {
+      _lostFocusRepairScheduled = false;
+      if (!mounted ||
+          !_initialFocusResolved ||
+          !_mayRestoreHomeFocus() ||
+          !_isFocusLost()) {
+        return;
+      }
+
+      // Was in the menu: back to the menu.
+      if (wasOnSidebar) {
+        _requestFocusToNavbar();
+        return;
+      }
+
+      final rowIndex = _activeFocusedRowIndex;
+      if (rowIndex != null) {
+        final rowState = _rowKeys[rowIndex]?.currentState;
+        if (rowState is LockedFocusRowState<dynamic>) {
+          rowState.requestFocusFromMemory();
+          if (!_isFocusLost()) return;
+        }
+      }
+
+      if (_isMediaBarIncluded()) {
+        _mediaBarFocusNode.requestFocus();
+        if (!_isFocusLost()) return;
+      }
+
+      _requestFocusToNavbar();
+    });
   }
 
   void _onSettingsPanelOpenChanged() {
@@ -3356,6 +3414,8 @@ class _ContentRowsState extends State<_ContentRows>
     final actions = jellyfinEnabled
         ? <_LiveTvAction>[
             _LiveTvAction(Icons.live_tv_rounded, 'Voltix Live TV', Destinations.voltixLiveTv),
+            _LiveTvAction(Icons.movie_rounded, 'Movies', Destinations.voltixMovies),
+            _LiveTvAction(Icons.video_library_rounded, 'Series', Destinations.voltixSeries),
             _LiveTvAction(Icons.tv_rounded, l10n.guide, Destinations.liveTvGuide),
             _LiveTvAction(Icons.replay_circle_filled, 'Catch Up',
                 Destinations.liveTvRecordings),
@@ -3364,6 +3424,8 @@ class _ContentRowsState extends State<_ContentRows>
           ]
         : <_LiveTvAction>[
             _LiveTvAction(Icons.live_tv_rounded, 'Voltix Live TV', Destinations.voltixLiveTv),
+            _LiveTvAction(Icons.movie_rounded, 'Movies', Destinations.voltixMovies),
+            _LiveTvAction(Icons.video_library_rounded, 'Series', Destinations.voltixSeries),
           ];
     return _buildTitledRow(
       key: _rowContainerKey(rowIndex),
@@ -3670,6 +3732,7 @@ class _ContentRowsState extends State<_ContentRows>
                 item.id,
                 serverId: item.serverId,
                 type: item.type,
+                serverLocked: _isServerLockedRow(row),
               ),
             );
           }
@@ -3767,6 +3830,7 @@ class _ContentRowsState extends State<_ContentRows>
                   item.id,
                   serverId: item.serverId,
                   type: item.type,
+                  serverLocked: _isServerLockedRow(row),
                 ),
               );
             }
@@ -3850,11 +3914,21 @@ class _ContentRowsState extends State<_ContentRows>
                 );
               }
             }
-            final branding = voltixLibraryBranding(rawName, serverName);
-            if (branding != null) {
-              effectiveCardTitle = branding.displayName;
-              effectiveImageUrl = branding.imageUrl;
+            final artwork = voltixMyMediaArtwork(rawName);
+            final branding = artwork == null
+                ? voltixLibraryBranding(rawName, serverName)
+                : null;
+            if (artwork != null) {
+              // App-bundled My Media artwork (assets/categories).
+              effectiveCardTitle = artwork.$1;
+              effectiveImageUrl = artwork.$2;
               fallbackImageUrl = imageUrl;
+            } else if (branding != null) {
+              effectiveCardTitle = branding.displayName;
+              // Category image injection disabled for now (new server) — keep
+              // the server's own library artwork. Re-enable by restoring:
+              //   effectiveImageUrl = branding.imageUrl;
+              //   fallbackImageUrl = imageUrl;
             }
           }
 
@@ -4265,6 +4339,11 @@ class _ContentRowsState extends State<_ContentRows>
     }
   }
 
+  /// Continue Watching and Next Up already know which server the user was
+  /// watching on, so their items play from it without the server chooser.
+  static bool _isServerLockedRow(HomeRow row) =>
+      row.rowType == HomeRowType.resume || row.rowType == HomeRowType.nextUp;
+
   static void _navigateToLibrary(BuildContext context, AggregatedItem item) {
     final collectionType = (item.rawData['CollectionType'] as String? ?? '')
         .toLowerCase();
@@ -4358,7 +4437,12 @@ class _ContentRowsState extends State<_ContentRows>
     final voltixStore = GetIt.instance<VoltixSessionStore>();
     final token = voltixStore.sessionToken ?? '';
     final streamId = item.rawData['streamId']?.toString() ?? item.id;
-    final url = '${voltixApi.baseUrl}/api/iptv/stream/live/$streamId?token=$token';
+    final url = await VoltixIptvRepository.fetchDirectLiveUrl(
+          voltixApi,
+          token,
+          streamId,
+        ) ??
+        '${voltixApi.baseUrl}/api/iptv/stream/live/$streamId?token=$token';
     final title = item.name;
 
     final manager = GetIt.instance<PlaybackManager>();
@@ -4371,6 +4455,7 @@ class _ContentRowsState extends State<_ContentRows>
         'Name': title,
         'isLive': true,
         'Type': 'Video',
+        'headers': VoltixIptvRepository.providerStreamHeaders,
       },
     );
 

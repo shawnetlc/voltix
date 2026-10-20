@@ -1,3 +1,4 @@
+import '../../util/shared_server_util.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -106,6 +107,11 @@ class PluginSyncService extends ChangeNotifier {
   }
 
   Map<String, String>? _authHeaders(MediaServerClient client) {
+    // Lumistream (direct or via the Voltix proxy) must never see requests to
+    // /Moonfin/... or /Voltix/... - it rejects third-party clients. Returning
+    // null makes every plugin call below skip, exactly as with no token.
+    if ((isLumistreamBackedUrl(client.baseUrl) ||
+        isSharedServer(address: client.baseUrl))) return null;
     final token = client.accessToken;
     if (token == null || token.isEmpty) return null;
 
@@ -646,6 +652,11 @@ class PluginSyncService extends ChangeNotifier {
   /// Bounded too: this runs during login, and an unanswered probe should cost
   /// a few seconds, not the session.
   Future<Map<String, dynamic>?> _ping(MediaServerClient client) async {
+    if ((isLumistreamBackedUrl(client.baseUrl) ||
+        isSharedServer(address: client.baseUrl))) {
+      ServerLog.network('Plugin checks disabled for Lumistream (${client.baseUrl})');
+      return null;
+    }
     final headers = _authHeaders(client);
     if (headers == null) {
       ServerLog.network(

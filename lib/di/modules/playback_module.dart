@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:get_it/get_it.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:playback_core/playback_core.dart';
 import 'package:playback_jellyfin/playback_jellyfin.dart';
 import 'package:playback_emby/playback_emby.dart';
@@ -12,6 +13,7 @@ import '../../data/repositories/offline_repository.dart';
 import '../../data/services/media_server_client_factory.dart';
 import '../../data/services/offline_playback_tracker.dart';
 import '../../data/services/voltix_watch_registry_service.dart';
+import '../../data/services/voltix_api_service.dart';
 import '../../playback/audio_capability_profile.dart';
 import '../../playback/hdr_stream_capability.dart';
 import '../../playback/html_video_backend.dart';
@@ -39,6 +41,7 @@ import '../../data/services/audiobook_notes_service.dart';
 import '../../data/services/audiobook_resume_service.dart';
 import '../../playback/sleep_timer_controller.dart';
 import '../../playback/media_browse_service.dart';
+import '../../util/device_performance_profile.dart';
 
 final _getIt = GetIt.instance;
 
@@ -53,6 +56,18 @@ bool _isDolbyVisionResolution(StreamResolutionResult resolution) {
     }
   }
   return false;
+}
+
+/// Dolby Vision with an HDR10 / SDR base layer (profile 7, 8.x): a TV without
+/// (that profile of) Dolby Vision still plays the base layer from the original
+/// file. Only profile 5 has no base layer and really needs a server transcode.
+bool _dolbyVisionHasPlayableBaseLayer(StreamResolutionResult resolution) {
+  for (final stream in resolution.mediaStreams) {
+    final profile = HdrStreamCapability.requiredDolbyVisionProfile(stream);
+    if (profile == null) continue;
+    if (profile == DolbyVisionRequiredProfile.profile5) return false;
+  }
+  return true;
 }
 
 bool _shouldUseHtmlVideoBackend(StreamResolutionResult resolution) {
@@ -453,8 +468,42 @@ void registerPlaybackModule() {
     if (currentBackend is MediaKitPlayerBackend) return currentBackend;
     return _getIt<MediaKitPlayerBackend>();
   });
+  // Version choice (2160p vs 1080p file) follows the max-resolution setting.
+  void syncVersionLimit() {
+    MediaSourceVersionPicker.maxHeight =
+        DevicePerformanceProfile.effectiveMaxResolution(prefs).height;
+  }
+  syncVersionLimit();
+  prefs.addListener(syncVersionLimit);
+  unawaited(_loadUnplayableVersions());
+  // Media3+FFmpeg (Android) and mpv (phones/desktop) decode TrueHD/DTS-HD
+  // themselves: never wait on the server to convert the audio.
+  JellyfinMediaStreamResolver.deviceDecodesAllAudio =
+      !PlatformDetection.isWeb &&
+      !PlatformDetection.isTizen &&
+      (PlatformDetection.isAndroid || PlatformDetection.isDesktop);
+  PlaybackManager.onForceOriginal = (id) {
+    JellyfinMediaStreamResolver.forceOriginalItems.add(id);
+  };
+  JellyfinMediaStreamResolver.onDiag = (stage, data) {
+    try {
+      if (_getIt.isRegistered<VoltixApiService>()) {
+        _getIt<VoltixApiService>().directStreamingDiag(stage, data);
+      }
+    } catch (_) {}
+  };
+
   manager.setTranscodeSelector((resolution) {
     if (!(PlatformDetection.isAndroid && PlatformDetection.isTV)) {
+      return false;
+    }
+
+    // Never send a Dolby Vision title with a playable HDR10/SDR base layer to
+    // the server for a 4K transcode: shared servers (e.g. supersilo) can't do
+    // that in real time, so it sat on "Loading stream" forever. The TV plays
+    // the base layer from the original file instead.
+    if (_isDolbyVisionResolution(resolution) &&
+        _dolbyVisionHasPlayableBaseLayer(resolution)) {
       return false;
     }
 
@@ -744,14 +793,17 @@ class DirectUrlResolver implements MediaStreamResolver {
   }) async {
     final String url;
     String? container;
+    Map? rawHeaders;
     if (mediaItem is String) {
       url = mediaItem;
     } else if (mediaItem is Map) {
       url = mediaItem['url'] as String? ?? '';
       container = mediaItem['container'] as String?;
+      rawHeaders = mediaItem['headers'] as Map?;
     } else if (mediaItem is AggregatedItem) {
       url = mediaItem.rawData['url'] as String? ?? '';
       container = mediaItem.rawData['container'] as String?;
+      rawHeaders = mediaItem.rawData['headers'] as Map?;
     } else {
       url = '';
     }
@@ -777,6 +829,9 @@ class DirectUrlResolver implements MediaStreamResolver {
       playMethod: StreamPlayMethod.directPlay,
       mediaType: 'video',
       container: container,
+      requestHeaders: rawHeaders == null
+          ? const <String, String>{}
+          : rawHeaders.map((k, v) => MapEntry(k.toString(), v.toString())),
     );
   }
 }
@@ -840,3 +895,22 @@ Future<void> _ensureResolverForItem(dynamic item) async {
   }
 }
 
+
+
+/// Versions the server could not deliver are remembered across app restarts
+/// (hidden from the Versions list, never auto-picked).
+const _unplayableVersionsKey = 'voltix_unplayable_media_sources';
+
+Future<void> _loadUnplayableVersions() async {
+  try {
+    final sp = await SharedPreferences.getInstance();
+    final saved = sp.getStringList(_unplayableVersionsKey) ?? const <String>[];
+    MediaSourceVersionPicker.unplayable.addAll(saved);
+    MediaSourceVersionPicker.onUnplayableChanged = (ids) {
+      final list = ids.toList();
+      // Keep the most recent 500.
+      final trimmed = list.length > 500 ? list.sublist(list.length - 500) : list;
+      unawaited(sp.setStringList(_unplayableVersionsKey, trimmed));
+    };
+  } catch (_) {}
+}

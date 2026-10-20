@@ -2,9 +2,12 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get_it/get_it.dart';
+import 'package:go_router/go_router.dart';
 import 'package:jellyfin_preference/jellyfin_preference.dart';
 import 'package:server_core/server_core.dart';
 import 'package:voltix_design/voltix_design.dart';
+
+import '../../navigation/destinations.dart';
 
 import '../../../auth/models/user.dart';
 import '../../../auth/repositories/user_repository.dart';
@@ -247,6 +250,35 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
     return ListView(
       children: [
         _buildHeader(context),
+        if (_voltixStore.hasSession) ...[
+          const _Section(title: 'Voltix profiles'),
+          _ActionTile(
+            icon: Icons.manage_accounts,
+            title: 'Manage profiles',
+            subtitle: 'Create, edit, or delete Voltix profiles for this account.',
+            onTap: () {
+              Navigator.of(context, rootNavigator: true).pop();
+              context.go('${Destinations.profileSelect}?force=1&manage=1');
+            },
+          ),
+          _ActionTile(
+            icon: Icons.person_add_alt_1,
+            title: 'Add new profile',
+            subtitle: 'Set up a new personalized or kids profile.',
+            onTap: () {
+              context.push(Destinations.profileEdit);
+            },
+          ),
+          _ActionTile(
+            icon: Icons.switch_account,
+            title: 'Switch profile',
+            subtitle: 'Switch who\'s currently watching on this device.',
+            onTap: () {
+              Navigator.of(context, rootNavigator: true).pop();
+              context.go('${Destinations.profileSelect}?force=1');
+            },
+          ),
+        ],
         const _Section(title: 'Profile picture'),
         _ActionTile(
           icon: Icons.photo_camera,
@@ -337,7 +369,11 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
           CircleAvatar(
             radius: 40,
             backgroundColor: AppColorScheme.accent.withValues(alpha: 0.2),
-            backgroundImage: url == null ? null : NetworkImage(url),
+            backgroundImage: url == null
+                ? null
+                : (url.startsWith('assets/')
+                    ? AssetImage(url) as ImageProvider
+                    : NetworkImage(url)),
             child: url == null
                 ? Text(
                     initial,

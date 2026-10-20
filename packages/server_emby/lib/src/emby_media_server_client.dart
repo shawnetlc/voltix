@@ -32,6 +32,8 @@ class EmbyMediaServerClient extends MediaServerClient {
     _baseUrl = baseUrl;
     configureServerDio(_dio);
     _setupInterceptors();
+    // Last, so it sees requests after the auth header is set.
+    _dio.interceptors.add(ServerDioHooks.forwarder);
   }
 
   late String _baseUrl;

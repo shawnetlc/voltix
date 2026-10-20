@@ -1,12 +1,16 @@
 import 'dart:async';
 
+import 'package:dio/dio.dart';
+import 'package:get_it/get_it.dart';
 import 'package:logger/logger.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../auth/models/server.dart';
 import '../../auth/models/user.dart';
 import '../../auth/repositories/server_repository.dart';
+import '../../auth/repositories/session_repository.dart';
 import '../../auth/store/authentication_store.dart';
+import '../../auth/store/voltix_session_store.dart';
 import '../../util/server_url.dart';
 import 'media_server_client_factory.dart';
 import 'voltix_api_service.dart';
@@ -65,9 +69,11 @@ class VoltixDirectStreaming {
     required String voltixUsername,
     bool isVoltixAdmin = false,
   }) async {
+    api.directStreamingDiag('start', {'servers': '${voltixServers.length}'});
     final creds = await api
         .getDirectCredentials(sessionToken)
         .timeout(const Duration(seconds: 15), onTimeout: () => const []);
+    api.directStreamingDiag('credentials', {'count': '${creds.length}'});
     if (creds.isEmpty) {
       await _removeDirectServers(serverRepo);
       return const {};
@@ -75,21 +81,43 @@ class VoltixDirectStreaming {
 
     final out = <int, DirectConnection>{};
     await Future.wait(creds.map((c) async {
+      // The proxy fallback below goes through the Voltix server, which
+      // Lumistream now blocks - so a transient failure here (slow network,
+      // TV just woke up) must not drop the viewer onto a path that cannot
+      // work. Retry once before giving up. A 401/403 is not retried.
+      Future<DirectConnection?> attempt() => _connectOne(
+            c,
+            serverRepo: serverRepo,
+            authStore: authStore,
+            clientFactory: clientFactory,
+            voltixUsername: voltixUsername,
+            isVoltixAdmin: isVoltixAdmin,
+          ).timeout(const Duration(seconds: 25));
       try {
-        final connection = await _connectOne(
-          c,
-          serverRepo: serverRepo,
-          authStore: authStore,
-          clientFactory: clientFactory,
-          voltixUsername: voltixUsername,
-          isVoltixAdmin: isVoltixAdmin,
-        ).timeout(const Duration(seconds: 25));
+        DirectConnection? connection;
+        try {
+          connection = await attempt();
+        } catch (e) {
+          final status = e is DioException ? e.response?.statusCode : null;
+          if (status == 401 || status == 403) rethrow;
+          _logger.w('[DirectStreaming] ${c.displayName}: first attempt failed ($e) - retrying');
+          api.directStreamingDiag('server-retry', {'server': c.displayName});
+          await Future<void>.delayed(const Duration(seconds: 2));
+          connection = await attempt();
+        }
         if (connection != null) out[c.voltixServerId] = connection;
       } catch (e) {
         _logger.w('[DirectStreaming] ${c.displayName}: direct sign-in failed: $e');
+        final msg = e.toString().split('\n').first;
+        api.directStreamingDiag('server-failed', {
+          'server': c.displayName,
+          'status': e is DioException ? '${e.response?.statusCode}' : 'none',
+          'error': msg.length > 120 ? msg.substring(0, 120) : msg,
+        });
       }
     }));
 
+    api.directStreamingDiag('connected', {'count': '${out.length}'});
     if (out.isEmpty) {
       // Every direct sign-in failed (e.g. the viewer's network can't reach
       // Lumistream): leave the proxy entries alone so the proxy keeps working.
@@ -107,11 +135,140 @@ class VoltixDirectStreaming {
         await serverRepo.deleteServer(s.id);
       }
     }
-    await _rememberDirectServers(
+    // A server the backend no longer offers (e.g. the user was moved from
+    // jellyfin.crazyguy.cc to supersilo) must go: left signed in, its stale
+    // entry kept serving old item ids and playback/progress went to the old
+    // server, so titles sat on "Loading stream".
+    await _replaceDirectServers(
+      serverRepo,
       out.values.map((c) => c.server.address).toList(),
     );
     _logger.i('[DirectStreaming] Connected directly to ${out.length} server(s)');
     return out;
+  }
+
+  static final RegExp _proxyPath = RegExp(r'/api/jellyfin/(\d+)');
+
+  /// When the active direct server is no longer one the backend assigns to
+  /// this user, signs in to the assigned server(s), removes the old one and
+  /// switches the active session. One quick credentials call when nothing
+  /// changed. Never throws.
+  static Future<void> _moveToAssignedServer(String activeAddress, String token) async {
+    try {
+      final getIt = GetIt.instance;
+      final api = getIt<VoltixApiService>();
+      final creds = await api
+          .getDirectCredentials(token)
+          .timeout(const Duration(seconds: 15), onTimeout: () => const []);
+      if (creds.isEmpty) return; // can't tell - keep what works
+      final assigned = creds.map((c) => normalizeServerBaseUrl(c.url)).toSet();
+      if (assigned.contains(normalizeServerBaseUrl(activeAddress))) {
+        // Already on the right server: still drop any old one left signed in
+        // (it kept receiving progress reports, e.g. jellyfin.crazyguy.cc).
+        await _replaceDirectServers(
+          getIt<ServerRepository>(),
+          creds.map((c) => c.url).toList(),
+        );
+        return;
+      }
+
+      final store = getIt<VoltixSessionStore>();
+      final direct = await connect(
+        api: api,
+        sessionToken: token,
+        voltixServers: const [],
+        serverRepo: getIt<ServerRepository>(),
+        authStore: getIt<AuthenticationStore>(),
+        clientFactory: getIt<MediaServerClientFactory>(),
+        voltixUsername: store.username ?? '',
+        isVoltixAdmin: store.isAdmin,
+      );
+      if (direct.isEmpty) return;
+      final target = direct.values.first;
+      await getIt<SessionRepository>().switchCurrentSession(
+        serverId: target.server.id,
+        userId: target.user.id,
+        username: store.username,
+      );
+      api.directStreamingDiag('moved-server', {'to': target.server.address});
+      _logger.i('[DirectStreaming] Moved active session from $activeAddress to ${target.server.address}');
+    } catch (e) {
+      _logger.w('[DirectStreaming] Assigned-server check failed: $e');
+    }
+  }
+
+  /// Moves an already signed-in device off the Voltix proxy.
+  ///
+  /// A device that restores its last session at launch goes straight to Home
+  /// and never reaches the sign-in code above, so without this it would stay
+  /// on the proxy until the viewer signed out. If the active server is a
+  /// Voltix proxy entry, this signs in to the same servers directly and
+  /// switches the active session to the direct one. Does nothing (and keeps
+  /// the proxy) when direct streaming isn't available. Never throws.
+  static Future<void> upgradeActiveSession() async {
+    try {
+      final getIt = GetIt.instance;
+      final store = getIt<VoltixSessionStore>();
+      final token = store.sessionToken;
+      if (token == null || token.isEmpty) return;
+
+      final session = getIt<SessionRepository>();
+      final serverRepo = getIt<ServerRepository>();
+      final activeId = session.activeServerId;
+      if (activeId == null) return;
+      final activeAddress = serverRepo.getServer(activeId)?.address ?? '';
+      final activeMatch = _proxyPath.firstMatch(activeAddress);
+      getIt<VoltixApiService>().directStreamingDiag('upgrade-check', {
+        'onProxy': '${activeMatch != null}',
+      });
+      if (activeMatch == null) {
+        // Already direct: make sure it is still the server this user is
+        // assigned to. After an admin moves the user (e.g. jellyfin.crazyguy.cc
+        // -> supersilo) a restored session kept playing, resuming and
+        // reporting progress against the old server.
+        await _moveToAssignedServer(activeAddress, token);
+        return;
+      }
+
+      // Rebuild the Voltix server list from the stored proxy entries; only the
+      // id and proxy address are needed to match and clean them up.
+      final voltixServers = <VoltixServer>[];
+      for (final s in serverRepo.servers) {
+        final m = _proxyPath.firstMatch(s.address);
+        if (m == null) continue;
+        voltixServers.add(VoltixServer(
+          id: int.parse(m.group(1)!),
+          name: s.name,
+          proxyUrl: s.address,
+        ));
+      }
+
+      final direct = await connect(
+        api: getIt<VoltixApiService>(),
+        sessionToken: token,
+        voltixServers: voltixServers,
+        serverRepo: serverRepo,
+        authStore: getIt<AuthenticationStore>(),
+        clientFactory: getIt<MediaServerClientFactory>(),
+        voltixUsername: store.username ?? '',
+        isVoltixAdmin: store.isAdmin,
+      );
+      if (direct.isEmpty) {
+        _logger.i('[DirectStreaming] Not available - staying on the proxy');
+        return;
+      }
+
+      final target = direct[int.parse(activeMatch.group(1)!)] ??
+          direct.values.first;
+      await session.switchCurrentSession(
+        serverId: target.server.id,
+        userId: target.user.id,
+        username: store.username,
+      );
+      _logger.i('[DirectStreaming] Switched active session to ${target.server.name} (direct)');
+    } catch (e) {
+      _logger.w('[DirectStreaming] Upgrade from proxy failed: $e');
+    }
   }
 
   static Future<DirectConnection?> _connectOne(
@@ -204,15 +361,46 @@ class VoltixDirectStreaming {
     return DirectConnection(server, user);
   }
 
-  static Future<void> _rememberDirectServers(List<String> addresses) async {
+  /// Remembers exactly [current] as the direct servers and deletes any server
+  /// added for direct streaming earlier that is not in it any more.
+  static Future<void> _replaceDirectServers(
+    ServerRepository serverRepo,
+    List<String> current,
+  ) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final existing = prefs.getStringList(_prefsKey) ?? const <String>[];
-      await prefs.setStringList(
-        _prefsKey,
-        {...existing, ...addresses}.toList(),
-      );
-    } catch (_) {}
+      final previous = prefs.getStringList(_prefsKey) ?? const <String>[];
+      final keep = current.map(normalizeServerBaseUrl).toSet();
+      final stale = previous
+          .where((a) => !keep.contains(normalizeServerBaseUrl(a)))
+          .toSet();
+      // Also catch servers added by older builds that never recorded them:
+      // any other server on the same provider domain as a current one (e.g.
+      // jellyfin.crazyguy.cc after the move to supersilo.crazyguy.cc).
+      String domainOf(String url) {
+        final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
+        final parts = host.split('.');
+        return parts.length >= 2 ? parts.sublist(parts.length - 2).join('.') : host;
+      }
+      final keepDomains = current.map(domainOf).where((d) => d.isNotEmpty).toSet();
+      for (final s in serverRepo.servers) {
+        final addr = normalizeServerBaseUrl(s.address);
+        if (keep.contains(addr) || s.address.contains('/api/jellyfin/')) continue;
+        if (keepDomains.contains(domainOf(s.address))) stale.add(s.address);
+      }
+      if (stale.isNotEmpty) {
+        for (final s in serverRepo.servers
+            .where((s) => stale.contains(s.address) ||
+                stale.map(normalizeServerBaseUrl).contains(normalizeServerBaseUrl(s.address)))
+            .toList()) {
+          _logger.i('[DirectStreaming] Removing server no longer assigned: ${s.address}');
+          await serverRepo.deleteServer(s.id);
+        }
+      }
+      await prefs.setStringList(_prefsKey, current);
+    } catch (e) {
+      _logger.w('[DirectStreaming] Could not prune old direct servers: $e');
+    }
   }
 
   /// Back on the proxy: remove servers that were added for direct streaming so

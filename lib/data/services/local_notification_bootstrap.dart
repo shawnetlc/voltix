@@ -9,7 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../di/injection.dart';
 import '../../playback/headless_session_bootstrap.dart';
-import '../../ui/navigation/app_router.dart';
+import '../../ui/navigation/deep_link_navigator.dart';
 import '../repositories/seerr_repository.dart';
 import 'seerr/seerr_cookie_jar.dart';
 import 'seerr/seerr_http_client.dart';
@@ -87,7 +87,7 @@ String? _requestIdFromPayload(String? payload) {
 
 void _navigate(String? route) {
   if (route == null || route.trim().isEmpty) return;
-  appRouter.go(route.trim());
+  navigateOrLaunchUrl(route.trim());
 }
 
 /// Approves or declines a request without any UI. Prefers the running app's

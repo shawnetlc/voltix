@@ -40,12 +40,17 @@ class JellyfinMediaServerClient extends MediaServerClient {
   }) : _dio = Dio(BaseOptions(
          baseUrl: baseUrl,
          followRedirects: false,
-         connectTimeout: const Duration(seconds: 30),
-         receiveTimeout: const Duration(seconds: 30),
+         // Generous: requests queue behind the 6-per-server connection
+         // limit, and on a slow server that wait alone can pass 30s. A
+         // short limit turned slow rows into failed rows.
+         connectTimeout: const Duration(seconds: 120),
+         receiveTimeout: const Duration(seconds: 90),
        )) {
     _baseUrl = baseUrl;
     configureServerDio(_dio);
     _setupInterceptors();
+    // Last, so it sees requests after the auth header is set.
+    _dio.interceptors.add(ServerDioHooks.forwarder);
   }
 
   late String _baseUrl;
@@ -56,6 +61,20 @@ class JellyfinMediaServerClient extends MediaServerClient {
     _dio.interceptors.add(redirectInterceptor(_dio));
     _dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) {
+        // Circuit breaker: while this server is blocked (recent 403), fail fast
+        // instead of sending the request, so we stop hammering a server that is
+        // refusing the app.
+        if (ServerAvailability.instance.isBlocked(_baseUrl)) {
+          handler.reject(
+            DioException(
+              requestOptions: options,
+              type: DioExceptionType.cancel,
+              error: 'server_unavailable',
+              message: 'Server temporarily unavailable',
+            ),
+          );
+          return;
+        }
         options.headers['Authorization'] = buildServerAuthorizationHeader(
           scheme: 'MediaBrowser',
           deviceInfo: deviceInfo,
@@ -65,6 +84,7 @@ class JellyfinMediaServerClient extends MediaServerClient {
         handler.next(options);
       },
       onResponse: (response, handler) {
+        ServerAvailability.instance.markAvailable(_baseUrl);
         ServerLog.network(
           '← ${response.statusCode} ${response.requestOptions.method} '
           '${response.requestOptions.uri}',
@@ -78,6 +98,11 @@ class JellyfinMediaServerClient extends MediaServerClient {
           level: ServerLogLevel.error,
           error: error.message ?? error.toString(),
         );
+        if (error.response?.statusCode == 403) {
+          // Upstream refused this app (e.g. access block). Open the breaker so
+          // the app backs off and the UI can show a "server unavailable" state.
+          ServerAvailability.instance.markBlocked(_baseUrl);
+        }
         if (error.response?.statusCode == 401) {
           final retried = await _retryAfterReauth(error.requestOptions);
           if (retried != null) {

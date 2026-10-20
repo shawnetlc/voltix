@@ -25,6 +25,7 @@ import '../../preference/preference_constants.dart';
 import '../../preference/user_preferences.dart';
 import '../navigation/app_router.dart';
 import '../navigation/destinations.dart';
+import '../../util/device_performance_profile.dart';
 import '../../util/language_matching.dart';
 import '../../util/overlay_color_palette.dart';
 import '../../util/platform_detection.dart';
@@ -471,9 +472,8 @@ class _MediaBarState extends State<MediaBar>
       unawaited(_disposeTrailerPlayer());
     }
 
-    final trailerPreviewEnabled = widget.prefs.get(
-      UserPreferences.mediaBarTrailerPreview,
-    );
+    final trailerPreviewEnabled =
+        DevicePerformanceProfile.trailerPreviewAllowed(widget.prefs);
 
     final hardwareDecodingEnabled = widget.prefs.get(
       UserPreferences.hardwareDecoding,
@@ -673,7 +673,7 @@ class _MediaBarState extends State<MediaBar>
       _cancelTrailerPreview();
       return;
     }
-    if (!widget.prefs.get(UserPreferences.mediaBarTrailerPreview)) {
+    if (!DevicePerformanceProfile.trailerPreviewAllowed(widget.prefs)) {
       return;
     }
     if (!_isHomeRouteActive) {
@@ -699,7 +699,7 @@ class _MediaBarState extends State<MediaBar>
     unawaited(_prepareTrailerPreview(item, resolveId));
     _trailerRevealTimer = Timer(_previewRevealDelay, () async {
       if (!mounted || resolveId != _trailerResolveId) return;
-      if (!widget.prefs.get(UserPreferences.mediaBarTrailerPreview)) return;
+      if (!DevicePerformanceProfile.trailerPreviewAllowed(widget.prefs)) return;
       _trailerRevealArmed = true;
       await _tryRevealPreparedTrailer(item, resolveId);
     });

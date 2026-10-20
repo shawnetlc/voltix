@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:server_core/server_core.dart';
+
 import 'insecure_certificates.dart';
 
 void configureHttpOverrides() {
@@ -22,7 +24,16 @@ class _MoonfinHttpOverrides extends HttpOverrides {
       secContext.allowLegacyUnsafeRenegotiation = true;
     } catch (_) {}
     final client = super.createHttpClient(secContext);
-    client.maxConnectionsPerHost = 12;
+    // Six connections per server, the same ceiling a browser gives the
+    // Jellyfin web client. Extra requests queue on the device instead of
+    // hitting a slow server all at once (60+ concurrent queries made it
+    // time out and answer 502 for everything).
+    // 3 for images (was 6); see configure_server_dio_io.dart.
+    client.maxConnectionsPerHost = 3;
+    // Every plain HttpClient (poster/image loading, package:http, WebSockets)
+    // would otherwise send "Dart/x.y (dart:io)". Use the same browser agent as
+    // the media-server API so Lumistream sees one consistent client.
+    client.userAgent = serverUserAgent;
     // Only bypass certificate validation when the user has explicitly opted in
     // (self-signed / private-CA servers). The flag is read on every failed
     // handshake, so the toggle applies live without reinstalling the override.

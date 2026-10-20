@@ -135,8 +135,14 @@ class BoundedNetworkImage extends StatelessWidget {
           minWidth: minWidth,
           maxWidth: maxWidth,
         );
+        return _image(cacheW, imageUrl);
+      },
+    );
+  }
+
+  Widget _image(int cacheW, String url) {
         return CachedNetworkImage(
-          imageUrl: imageUrl,
+          imageUrl: url,
           fit: fit,
           alignment: alignment,
           fadeInDuration: fadeInDuration,
@@ -151,11 +157,66 @@ class BoundedNetworkImage extends StatelessWidget {
           // device (maxWidthDiskCache) was slow on TV boxes and stored every
           // poster twice.
           memCacheWidth: cacheW,
-          errorWidget: errorBuilder == null
-              ? null
-              : (context, url, error) => errorBuilder!(context, url, error),
+          // A failed poster (busy server, dropped connection) retries a couple
+          // of times before showing the fallback, instead of staying as title
+          // text until the app restarts.
+          errorWidget: (context, failedUrl, error) => _RetryThenFallback(
+            url: imageUrl,
+            // A different URL per attempt (Jellyfin ignores the extra
+            // parameter) so the retry is a fresh download, not the cached
+            // failure.
+            retry: (attempt) => _image(
+              cacheW,
+              '$imageUrl${imageUrl.contains('?') ? '&' : '?'}r=$attempt',
+            ),
+            fallback: () => errorBuilder == null
+                ? const SizedBox.shrink()
+                : errorBuilder!(context, failedUrl, error),
+          ),
         );
-      },
-    );
+  }
+}
+
+class _RetryThenFallback extends StatefulWidget {
+  final String url;
+  final Widget Function(int attempt) retry;
+  final Widget Function() fallback;
+
+  const _RetryThenFallback({
+    required this.url,
+    required this.retry,
+    required this.fallback,
+  });
+
+  @override
+  State<_RetryThenFallback> createState() => _RetryThenFallbackState();
+}
+
+class _RetryThenFallbackState extends State<_RetryThenFallback> {
+  static const _maxRetries = 2;
+  static final Map<String, int> _attempts = {};
+  bool _retrying = false;
+  bool _waiting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final n = _attempts[widget.url] ?? 0;
+    if (n < _maxRetries) {
+      _waiting = true;
+      if (_attempts.length > 2000) _attempts.clear();
+      Future<void>.delayed(Duration(seconds: 2 + n * 3), () {
+        _attempts[widget.url] = n + 1;
+        if (mounted) setState(() => _retrying = true);
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_retrying) return widget.retry(_attempts[widget.url] ?? 1);
+    // Blank while a retry is pending; the title fallback only when retries
+    // are used up.
+    return _waiting ? const SizedBox.expand() : widget.fallback();
   }
 }

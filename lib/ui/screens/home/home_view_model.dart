@@ -29,6 +29,7 @@ import '../../../l10n/current_app_localizations.dart';
 import '../../../preference/home_section_config.dart';
 import '../../../preference/preference_constants.dart';
 import '../../../data/services/voltix_api_service.dart';
+import '../../../data/services/voltix_watch_registry_service.dart';
 import '../../../auth/store/voltix_session_store.dart';
 import '../../../preference/user_preferences.dart';
 import '../../../data/repositories/seerr_repository.dart';
@@ -38,6 +39,7 @@ import '../../../data/utils/bounded_concurrency.dart';
 import '../../../util/platform_detection.dart';
 import '../../../preference/seerr_preferences.dart';
 import '../../../data/viewmodels/seerr_discover_view_model.dart';
+import '../../../util/voltix_query_mode.dart';
 
 class HomeViewModel extends ChangeNotifier {
   final RowDataSource _dataSource;
@@ -68,6 +70,13 @@ class HomeViewModel extends ChangeNotifier {
 
   bool get _multiServerEnabled =>
       _prefs.get(UserPreferences.enableMultiServerLibraries);
+
+  /// Continue Watching / Next Up always use the aggregated path: it builds
+  /// them from this Voltix user's own watch history (shared server), which is
+  /// where they live. The single-server path asks Jellyfin's Resume / NextUp,
+  /// and switching multi-server libraries off sent the rows down it and they
+  /// stopped showing.
+  bool get _useUserResume => true;
 
   String _homeCacheKey() {
     final userId = _ownerUserId;
@@ -319,6 +328,14 @@ class HomeViewModel extends ChangeNotifier {
        _multiServerRepo = multiServerRepo,
        _ownerUserId = client.userId ?? '' {
     _startDailySync();
+    VoltixWatchRegistryService.restoreTick.addListener(_onWatchRegistryRestored);
+  }
+
+  /// Continue Watching / Next Up come from the Voltix user's registry; when
+  /// the cloud copy lands (e.g. after a reinstall) reload so the rows fill.
+  void _onWatchRegistryRestored() {
+    if (_disposed) return;
+    unawaited(refresh(preserveExisting: true));
   }
 
   // ─── Once-a-day full resync ─────────────────────────────────────────────────
@@ -378,6 +395,7 @@ class HomeViewModel extends ChangeNotifier {
 
   @override
   void dispose() {
+    VoltixWatchRegistryService.restoreTick.removeListener(_onWatchRegistryRestored);
     _dailySyncTimer?.cancel();
     _rowNotifyTimer?.cancel();
     _disposed = true;
@@ -586,6 +604,12 @@ class HomeViewModel extends ChangeNotifier {
           .where(
             (c) => !(c.isBuiltin && merge && c.type == HomeSectionType.nextUp),
           )
+          // Temporarily off for everyone (overrides saved layouts) while the
+          // shared server is slow: these rows cost the most server queries.
+          // Remove a type from _temporarilyDisabledSections to bring it back.
+          .where(
+            (c) => !(c.isBuiltin && _temporarilyDisabledSections.contains(c.type)),
+          )
           .toList();
 
       final nonResumeEffectiveConfigs = merge
@@ -623,11 +647,27 @@ class HomeViewModel extends ChangeNotifier {
       // Collected as callables, not started futures, so the runner below
       // decides how many run at once.
       final sectionLoads = <Future<void> Function()>[];
+      // Taste rows run after everything else, one at a time: each one fans
+      // out into several server queries (seed genres, actor look-ups), and
+      // started alongside the normal rows they took the connection slots the
+      // normal rows were waiting for, so nothing loaded on a slow server.
+      final tasteLoads = <Future<void> Function()>[];
+      // Disk-cache age, so a cold start can keep fresh heavy rows from cache.
+      final diskCacheSavedAt =
+          hydratedFromCache ? await _cacheStore.savedAt() : null;
       for (final cfg in nonResumeEffectiveConfigs) {
-        sectionLoads.add(() async {
+        final heavy = _isTasteSection(cfg.type);
+        if (heavy && _isHeavyRowFresh(cfg, diskCacheSavedAt)) {
+          // Recent result already on screen -- don't hit the server again.
+          continue;
+        }
+        (heavy ? tasteLoads : sectionLoads).add(() async {
           List<HomeRow> sectionRows;
           try {
             sectionRows = await _loadConfig(cfg);
+            if (heavy && sectionRows.any((r) => r.items.isNotEmpty)) {
+              _heavyRowLoadedAt[_heavyKey(cfg)] = DateTime.now();
+            }
           } catch (e) {
             debugPrint('[Home] Failed to load section $cfg: $e');
             sectionRows = const <HomeRow>[];
@@ -715,6 +755,17 @@ class HomeViewModel extends ChangeNotifier {
       await mapBounded<Future<void> Function(), bool>(
         sectionLoads,
         PlatformDetection.isTV ? 4 : sectionLoads.length,
+        (task) async {
+          await task();
+          return true;
+        },
+      );
+
+      // Normal rows are on screen (and cached) before any taste work starts.
+      unawaited(_cacheStore.write(_homeCacheKey(), _rows));
+      await mapBounded<Future<void> Function(), bool>(
+        tasteLoads,
+        1,
         (task) async {
           await task();
           return true;
@@ -1261,6 +1312,48 @@ class HomeViewModel extends ChangeNotifier {
   }
 
 
+  // Taste, genre and "Since you watched" rows are back: they now load after
+  // the core rows, one at a time, with light queries (see
+  // RowDataSource.liteRecommendations), and reuse a recent result instead of
+  // re-querying on every refresh (see _heavyRowTtl).
+  static const _temporarilyDisabledSections = kFullHomeQueries ? <HomeSectionType>{} : <HomeSectionType>{
+    // Cast/crew look-ups (People) -- the most expensive query on the server.
+    HomeSectionType.moreWithActor1,
+    HomeSectionType.moreWithActor2,
+    HomeSectionType.moreWithActor3,
+    // Scans 50 collections (90s / dropped connections on the shared server).
+    HomeSectionType.rewatch,
+  };
+
+  /// How long a heavy row's result is reused before the server is asked
+  /// again. These rows change slowly (taste / genre / recommendations), so
+  /// re-running their queries on every app open and pull-to-refresh is pure
+  /// load on a shared server.
+  static const _heavyRowTtl = kFullHomeQueries ? Duration.zero : Duration(hours: 6);
+
+  /// When each heavy section last loaded successfully, per signed-in user.
+  static final Map<String, DateTime> _heavyRowLoadedAt = {};
+
+  String _heavyKey(HomeSectionConfig cfg) => '$_ownerUserId|${cfg.type.name}';
+
+  bool _isHeavyRowFresh(HomeSectionConfig cfg, DateTime? diskCacheSavedAt) {
+    if (!_rows.any((r) => r.items.isNotEmpty && _rowBelongsToConfig(r, cfg))) {
+      return false;
+    }
+    final at = _heavyRowLoadedAt[_heavyKey(cfg)] ?? diskCacheSavedAt;
+    return at != null && DateTime.now().difference(at) < _heavyRowTtl;
+  }
+
+  static bool _isTasteSection(HomeSectionType type) =>
+      type == HomeSectionType.sinceYouWatched1 ||
+      type == HomeSectionType.sinceYouWatched2 ||
+      type == HomeSectionType.sinceYouWatched3 ||
+      type == HomeSectionType.sinceYouWatched4 ||
+      type == HomeSectionType.sinceYouWatched5 ||
+      type == HomeSectionType.personalization ||
+      type == HomeSectionType.genreFanFavorite ||
+      type == HomeSectionType.genreMoreTitles;
+
   /// Genre labels the user rated positively in the taste profile, strongest
   /// first. Returns the server's own display label for each genre (so it can be
   /// used both in the row heading and as the genre-name filter against the
@@ -1358,8 +1451,12 @@ class HomeViewModel extends ChangeNotifier {
     final rowId = _genreRowId(section);
     final title = _genreRowTitle(section, genre);
     final isMoreTitles = section == HomeSectionType.genreMoreTitles;
-    final sortBy = isMoreTitles ? 'Random' : 'CommunityRating';
-    final sortOrder = isMoreTitles ? 'Ascending' : 'Descending';
+    // "More titles": newest in the genre. A Random sort shuffles every title
+    // in the genre on the server -- slow on big genres like Drama.
+    final sortBy = isMoreTitles
+        ? (kFullHomeQueries ? 'Random' : 'DateCreated')
+        : 'CommunityRating';
+    const sortOrder = 'Descending';
 
     try {
       final row = _multiServerEnabled
@@ -1447,7 +1544,23 @@ class HomeViewModel extends ChangeNotifier {
 
     await _tastePreload;
     final profile = GetIt.instance<TasteProfileRepository>().currentProfile;
+    final sw = Stopwatch()..start();
+    void diag(Map<String, String> data) {
+      try {
+        if (GetIt.instance.isRegistered<VoltixApiService>()) {
+          GetIt.instance<VoltixApiService>().directStreamingDiag('taste-rows', {
+            'server': _serverId,
+            'ms': '${sw.elapsedMilliseconds}',
+            ...data,
+          });
+        }
+      } catch (_) {}
+    }
     if (profile == null || profile.status != TasteProfileStatus.completed) {
+      diag({
+        'result': profile == null ? 'no-profile' : 'status-${profile.status.name}',
+        'profileServer': profile?.serverId ?? '',
+      });
       return const [];
     }
 
@@ -1455,6 +1568,13 @@ class HomeViewModel extends ChangeNotifier {
       profile: profile,
       serverId: _serverId,
     );
+    diag({
+      'result': 'built',
+      'enabled': '${profile.enabledHomeRows.values.where((v) => v).length}',
+      'rows': '${rows.length}',
+      'items': rows.map((r) => '${r.rowType.key}:${r.items.length}').join(','),
+      'profileServer': profile.serverId,
+    });
 
     return rows
         .map(
@@ -1490,19 +1610,19 @@ class HomeViewModel extends ChangeNotifier {
         // Watching / Next Up (see HomeSectionType.iptvContinue*), so it is NOT
         // merged in here — that would duplicate every item.
         return [
-          _multiServerEnabled
+          _useUserResume
               ? await _multiServerRepo.getAggregatedResume()
               : await _dataSource.loadResume(_serverId),
         ];
       case HomeSectionType.resumeAudio:
         return [
-          _multiServerEnabled
+          _useUserResume
               ? await _multiServerRepo.getAggregatedResumeAudio()
               : await _dataSource.loadResumeAudio(_serverId),
         ];
       case HomeSectionType.nextUp:
         return [
-          _multiServerEnabled
+          _useUserResume
               ? await _multiServerRepo.getAggregatedNextUp()
               : await _dataSource.loadNextUp(_serverId),
         ];
@@ -3169,7 +3289,7 @@ class HomeViewModel extends ChangeNotifier {
     _bgMergeInFlight = true;
     unawaited(() async {
       try {
-        if (_multiServerEnabled) {
+        if (_useUserResume) {
           final resumeFuture = _multiServerRepo.getAggregatedResume();
           final nextUpFuture = () async {
             try {
@@ -3236,7 +3356,7 @@ class HomeViewModel extends ChangeNotifier {
       // a failed load - keep what is already showing instead of removing the
       // row. A genuinely empty result (every server answered) still hides it.
       final mayBeIncomplete =
-          _multiServerEnabled && _multiServerRepo.lastResumeIncomplete;
+          _useUserResume && _multiServerRepo.lastResumeIncomplete;
       if (_rows[resumeIndex].items.isEmpty || !mayBeIncomplete) {
         _rows.removeAt(resumeIndex);
       } else {
@@ -3246,7 +3366,7 @@ class HomeViewModel extends ChangeNotifier {
       var items = mergedItems;
       // A server failed with nothing cached: keep the items it was showing
       // before so the row doesn't shrink to whatever the other servers sent.
-      if (_multiServerEnabled && _multiServerRepo.lastResumeIncomplete) {
+      if (_useUserResume && _multiServerRepo.lastResumeIncomplete) {
         final answeredServers = {for (final i in mergedItems) i.serverId};
         final ids = {for (final i in mergedItems) '${i.serverId}_${i.id}'};
         final kept = _rows[resumeIndex].items.where(

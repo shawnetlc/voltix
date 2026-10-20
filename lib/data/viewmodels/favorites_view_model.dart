@@ -9,6 +9,8 @@ import '../repositories/mdblist_repository.dart';
 import '../repositories/multi_server_repository.dart';
 import '../../util/user_facing_error.dart';
 import 'package:get_it/get_it.dart';
+import '../../auth/store/voltix_session_store.dart';
+import '../../util/parental_rating_severity.dart';
 import '../services/voltix_favorites_registry_service.dart';
 
 enum FavoritesState { loading, ready, error }
@@ -24,17 +26,32 @@ class FavoritesViewModel extends ChangeNotifier {
   static const _browseFields =
       'Type,UserData,CommunityRating,OfficialRating,RunTimeTicks,ProductionYear,Status,ImageTags,BackdropImageTags,ParentBackdropItemId,ParentBackdropImageTags,CriticRating,MediaStreams';
 
-  static const List<FavoriteTypeFilter> rowTypes = [
-    FavoriteTypeFilter.movie,
-    FavoriteTypeFilter.series,
-    FavoriteTypeFilter.episode,
-    FavoriteTypeFilter.collection,
-    FavoriteTypeFilter.person,
-    FavoriteTypeFilter.musicVideo,
-    FavoriteTypeFilter.musicArtist,
-    FavoriteTypeFilter.musicAlbum,
-    FavoriteTypeFilter.audio,
-  ];
+  bool get _isKids =>
+      GetIt.instance.isRegistered<VoltixSessionStore>() &&
+      GetIt.instance<VoltixSessionStore>().isKidsProfile;
+
+  static List<FavoriteTypeFilter> get rowTypes {
+    final isKids = GetIt.instance.isRegistered<VoltixSessionStore>() &&
+        GetIt.instance<VoltixSessionStore>().isKidsProfile;
+    if (isKids) {
+      return const [
+        FavoriteTypeFilter.movie,
+        FavoriteTypeFilter.series,
+        FavoriteTypeFilter.episode,
+      ];
+    }
+    return const [
+      FavoriteTypeFilter.movie,
+      FavoriteTypeFilter.series,
+      FavoriteTypeFilter.episode,
+      FavoriteTypeFilter.collection,
+      FavoriteTypeFilter.person,
+      FavoriteTypeFilter.musicVideo,
+      FavoriteTypeFilter.musicArtist,
+      FavoriteTypeFilter.musicAlbum,
+      FavoriteTypeFilter.audio,
+    ];
+  }
 
   FavoritesState _state = FavoritesState.loading;
   FavoritesState get state => _state;
@@ -213,6 +230,8 @@ class FavoritesViewModel extends ChangeNotifier {
                   isFavorite: true,
                   includeItemTypes: type.itemTypes,
                   fields: _browseFields,
+                  maxOfficialRating: _isKids ? 'PG' : null,
+                  hasParentalRating: _isKids ? true : null,
                 );
                 final rawItems = (response['Items'] as List?) ?? [];
                 final items = rawItems
@@ -244,9 +263,19 @@ class FavoritesViewModel extends ChangeNotifier {
 
           try {
             final registry = GetIt.instance<VoltixFavoritesRegistryService>();
-            uniqueItems = uniqueItems.where((item) => registry.isFavoriteByItem(item)).toList();
+            if (registry.hasEntries) {
+              uniqueItems = uniqueItems.where((item) => registry.isFavoriteByItem(item)).toList();
+            }
           } catch (_) {
             // Registry might not be available, fall back to unfiltered list
+          }
+
+          if (_isKids) {
+            uniqueItems = uniqueItems.where((item) {
+              final rating = item.officialRating;
+              if (rating == null || rating.trim().isEmpty) return false;
+              return parentalRatingSeverity(rating) <= kRatingGuidance;
+            }).toList();
           }
 
           final sortedItems = _sortItems(
@@ -270,6 +299,8 @@ class FavoritesViewModel extends ChangeNotifier {
           isFavorite: true,
           includeItemTypes: type.itemTypes,
           fields: _browseFields,
+          maxOfficialRating: _isKids ? 'PG' : null,
+          hasParentalRating: _isKids ? true : null,
         );
       } on DioException catch (e) {
         final statusCode = e.response?.statusCode ?? 0;
@@ -287,6 +318,8 @@ class FavoritesViewModel extends ChangeNotifier {
           includeItemTypes: type.itemTypes,
           fields: _browseFields,
           enableTotalRecordCount: false,
+          maxOfficialRating: _isKids ? 'PG' : null,
+          hasParentalRating: _isKids ? true : null,
         );
       }
       final rawItems = (response['Items'] as List?) ?? [];
@@ -303,9 +336,19 @@ class FavoritesViewModel extends ChangeNotifier {
 
       try {
         final registry = GetIt.instance<VoltixFavoritesRegistryService>();
-        items = items.where((item) => registry.isFavoriteByItem(item)).toList();
+        if (registry.hasEntries) {
+          items = items.where((item) => registry.isFavoriteByItem(item)).toList();
+        }
       } catch (_) {
         // Registry might not be available, fall back to unfiltered list
+      }
+
+      if (_isKids) {
+        items = items.where((item) {
+          final rating = item.officialRating;
+          if (rating == null || rating.trim().isEmpty) return false;
+          return parentalRatingSeverity(rating) <= kRatingGuidance;
+        }).toList();
       }
           
       final totalCount = items.length;
@@ -363,7 +406,10 @@ class FavoritesViewModel extends ChangeNotifier {
                 limit: pageSize,
                 recursive: true,
                 isFavorite: true,
+                includeItemTypes: _isKids ? const ['Movie', 'Series', 'Episode'] : null,
                 fields: _browseFields,
+                maxOfficialRating: _isKids ? 'PG' : null,
+                hasParentalRating: _isKids ? true : null,
               );
               final rawItems = (response['Items'] as List?) ?? [];
               final items = rawItems
@@ -389,8 +435,18 @@ class FavoritesViewModel extends ChangeNotifier {
         
         try {
           final registry = GetIt.instance<VoltixFavoritesRegistryService>();
-          allItems = allItems.where((item) => registry.isFavoriteByItem(item)).toList();
+          if (registry.hasEntries) {
+            allItems = allItems.where((item) => registry.isFavoriteByItem(item)).toList();
+          }
         } catch (_) {}
+
+        if (_isKids) {
+          allItems = allItems.where((item) {
+            final rating = item.officialRating;
+            if (rating == null || rating.trim().isEmpty) return false;
+            return parentalRatingSeverity(rating) <= kRatingGuidance;
+          }).toList();
+        }
 
         final totalCount = allItems.length;
 
@@ -423,7 +479,10 @@ class FavoritesViewModel extends ChangeNotifier {
         limit: pageSize,
         recursive: true,
         isFavorite: true,
+        includeItemTypes: _isKids ? const ['Movie', 'Series', 'Episode'] : null,
         fields: _browseFields,
+        maxOfficialRating: _isKids ? 'PG' : null,
+        hasParentalRating: _isKids ? true : null,
       );
     } on DioException catch (e) {
       final statusCode = e.response?.statusCode ?? 0;
@@ -438,8 +497,11 @@ class FavoritesViewModel extends ChangeNotifier {
         limit: pageSize,
         recursive: true,
         isFavorite: true,
+        includeItemTypes: _isKids ? const ['Movie', 'Series', 'Episode'] : null,
         fields: _browseFields,
         enableTotalRecordCount: false,
+        maxOfficialRating: _isKids ? 'PG' : null,
+        hasParentalRating: _isKids ? true : null,
       );
     }
 
@@ -465,8 +527,18 @@ class FavoritesViewModel extends ChangeNotifier {
 
     try {
       final registry = GetIt.instance<VoltixFavoritesRegistryService>();
-      mapped = mapped.where((item) => registry.isFavoriteByItem(item)).toList();
+      if (registry.hasEntries) {
+        mapped = mapped.where((item) => registry.isFavoriteByItem(item)).toList();
+      }
     } catch (_) {}
+
+    if (_isKids) {
+      mapped = mapped.where((item) {
+        final rating = item.officialRating;
+        if (rating == null || rating.trim().isEmpty) return false;
+        return parentalRatingSeverity(rating) <= kRatingGuidance;
+      }).toList();
+    }
 
     if (totalFromServer == null) {
       _gridTotalCount = startIndex + mapped.length + (mapped.length == pageSize ? 1 : 0);

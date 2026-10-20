@@ -602,6 +602,14 @@ class UserPreferences extends ChangeNotifier {
   }
 
   T get<T>(Preference<T> pref) {
+    if (!multiServerLibrariesSettingEnabled &&
+        pref.key == enableMultiServerLibraries.key) {
+      return false as T;
+    }
+    if (!multiServerSearchSettingEnabled &&
+        pref.key == enableMultiServerSearch.key) {
+      return false as T;
+    }
     if (_isScopedPreference(pref)) {
       final scoped = _scopedPreference(pref);
       if (scoped != null && _store.containsKey(scoped.key)) {
@@ -1366,6 +1374,15 @@ class UserPreferences extends ChangeNotifier {
     defaultValue: true,
   );
 
+  /// Voltix: the multi-server libraries feature is switched off for now.
+  /// While false, the setting is hidden and reads always return false (a
+  /// stored or cloud-synced `true` is ignored). Set to true to restore it.
+  static const bool multiServerLibrariesSettingEnabled = false;
+
+  /// Voltix: multi-server search is off (single supplier, one server). While
+  /// false the setting is hidden and reads always return false.
+  static const bool multiServerSearchSettingEnabled = false;
+
   static final diagnosticLoggingEnabled = Preference(
     key: 'pref_diagnostic_logging_enabled',
     defaultValue: false,
@@ -1410,12 +1427,12 @@ class UserPreferences extends ChangeNotifier {
   /// chosen a limit keeps it.
   static final maxBitrate = Preference(
     key: 'pref_max_bitrate',
-    defaultValue: '20',
+    defaultValue: '200',
   );
 
   static final maxVideoResolution = EnumPreference(
     key: 'pref_max_video_resolution',
-    defaultValue: MaxVideoResolution.res1080p,
+    defaultValue: MaxVideoResolution.auto,
     values: MaxVideoResolution.values,
   );
 
@@ -1824,7 +1841,7 @@ class UserPreferences extends ChangeNotifier {
 
   static final subtitlesDefaultToNone = Preference(
     key: 'subtitles_default_to_none',
-    defaultValue: false,
+    defaultValue: true,
   );
 
   /// Whether embedded subtitle styles (colours, positioning, fonts) should be
@@ -2411,11 +2428,6 @@ class UserPreferences extends ChangeNotifier {
         key: 'pref_plugin_sync_initialized_$serverKey',
         defaultValue: false,
       );
-
-  static final voltixUseTestServer = Preference(
-    key: 'voltix_use_test_server',
-    defaultValue: false,
-  );
 
   static final tasteOnboardingSeen = Preference(
     key: 'taste_onboarding_seen',

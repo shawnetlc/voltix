@@ -323,7 +323,7 @@ class _AccountDialogState extends State<_AccountDialog> {
                         : () {
                             Navigator.of(context).pop();
                             if (context.mounted) {
-                              context.go(Destinations.profileSelect);
+                              context.go('${Destinations.profileSelect}?force=1');
                             }
                           },
                     focusColor: focusColor,
@@ -812,25 +812,35 @@ class _AccountCardState extends State<_AccountCard> {
                             color: AppColorScheme.onSurface.withValues(alpha: 0.55),
                             size: 68,
                           )
-                        : Image.network(
-                            widget.avatarUrl!,
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, _, _) {
-                              if (!_avatarFailed) {
-                                WidgetsBinding.instance
-                                    .addPostFrameCallback((_) {
-                                      if (mounted) {
-                                        setState(() => _avatarFailed = true);
-                                      }
-                                    });
-                              }
-                              return Icon(
-                                Icons.person,
-                                color: AppColorScheme.onSurface.withValues(alpha: 0.55),
-                                size: 68,
-                              );
-                            },
-                          ),
+                        : widget.avatarUrl!.startsWith('assets/')
+                            ? Image.asset(
+                                widget.avatarUrl!,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, _, _) => Icon(
+                                  Icons.person,
+                                  color: AppColorScheme.onSurface.withValues(alpha: 0.55),
+                                  size: 68,
+                                ),
+                              )
+                            : Image.network(
+                                widget.avatarUrl!,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, _, _) {
+                                  if (!_avatarFailed) {
+                                    WidgetsBinding.instance
+                                        .addPostFrameCallback((_) {
+                                          if (mounted) {
+                                            setState(() => _avatarFailed = true);
+                                          }
+                                        });
+                                  }
+                                  return Icon(
+                                    Icons.person,
+                                    color: AppColorScheme.onSurface.withValues(alpha: 0.55),
+                                    size: 68,
+                                  );
+                                },
+                              ),
                   ),
                 ),
                 const SizedBox(height: 12),

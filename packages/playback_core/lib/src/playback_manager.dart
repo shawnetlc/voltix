@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'audio_track_preference.dart';
 import 'media_stream_resolver.dart';
 import 'playback_arbiter.dart';
 import 'player_backend.dart';
@@ -9,6 +10,10 @@ import 'queue_service.dart';
 import 'stream_resolution_result.dart';
 
 class PlaybackManager implements AudioOwnable {
+  /// Optional app hook: called with a short, token-free summary of every
+  /// player error, so failures ("source error") can be diagnosed remotely.
+  static void Function(Map<String, String> info)? errorReporter;
+
   static const _mediaReadyPollInterval = Duration(milliseconds: 100);
   static const _defaultMediaReadyTimeout = Duration(seconds: 60);
   static const _onlineStartupReadyTimeout = Duration(seconds: 15);
@@ -277,8 +282,16 @@ class PlaybackManager implements AudioOwnable {
     final videoStream = mediaStreams
         .where((s) => s['Type'] == 'Video')
         .firstOrNull;
+    // Styled (ASS/SSA) subtitles inside the file need the player's add-on
+    // MKV reader; every other file uses Media3's standard one.
+    final hasAssSubtitles = mediaStreams.any((s) =>
+        s['Type'] == 'Subtitle' &&
+        s['IsExternal'] != true &&
+        const {'ass', 'ssa'}
+            .contains((s['Codec'] ?? '').toString().toLowerCase()));
     return <String, dynamic>{
       'url': url,
+      'hasAssSubtitles': hasAssSubtitles,
       if (container != null && container.isNotEmpty) 'container': container,
       if (videoRangeType != null && videoRangeType.isNotEmpty)
         'videoRangeType': videoRangeType,
@@ -646,12 +659,51 @@ class PlaybackManager implements AudioOwnable {
     return true;
   }
 
+  static String _diagCodec(StreamResolutionResult? res, String type) {
+    try {
+      for (final s in res?.mediaStreams ?? const []) {
+        if (s is Map && s['Type'] == type) return s['Codec']?.toString() ?? '';
+      }
+    } catch (_) {}
+    return '';
+  }
+
   void _onBackendErrorEvent(Map<String, dynamic> event) {
     unawaited(_handleBackendErrorEvent(event));
   }
 
   Future<void> _handleBackendErrorEvent(Map<String, dynamic> event) async {
     final queueItem = queueService.currentItem;
+    try {
+      final reporter = errorReporter;
+      if (reporter != null) {
+        final res = _currentResolution ?? _lastPlaybackResolution;
+        var message = (event['message'] ?? event['errorCode'] ?? '').toString();
+        message = message
+            .replaceAll(RegExp(r'(api_key|ApiKey|X-Emby-Token|Token)=[^&\s]+', caseSensitive: false), r'$1=***')
+            .replaceAll(RegExp(r'https?://\S+'), '<url>');
+        if (message.length > 160) message = message.substring(0, 160);
+        reporter({
+          'event': event['event']?.toString() ?? '',
+          'kind': event['kind']?.toString() ?? '',
+          'code': event['errorCode']?.toString() ?? event['code']?.toString() ?? '',
+          'recoverable': '${event['recoverable'] == true}',
+          'playMethod': res?.playMethod.name ?? '',
+          'backend': _traceBackendName(_backend),
+          'msg': message,
+          'codeName': event['errorCodeName']?.toString() ?? '',
+          'http': event['httpStatus']?.toString() ?? '',
+          'reasons': (res?.transcodingReasons ?? const <String>[]).join(','),
+          'container': res?.container ?? '',
+          'vcodec': _diagCodec(res, 'Video'),
+          'acodec': _diagCodec(res, 'Audio'),
+          'stack': (event['stack']?.toString() ?? ''),
+          'cause': (event['cause']?.toString() ?? '')
+              .replaceAll(RegExp(r'(api_key|ApiKey|X-Emby-Token|Token)=[^&\s]+', caseSensitive: false), r'$1=***')
+              .replaceAll(RegExp(r'https?://\S+'), '<url>'),
+        });
+      }
+    } catch (_) {}
     if (_isPreroll(queueItem)) {
       _suppressNextGenericBackendError = true;
       try {
@@ -1153,6 +1205,24 @@ class PlaybackManager implements AudioOwnable {
       }
     }
 
+    // Not picked by the viewer: take the resolver's choice (it swaps a
+    // TrueHD/DTS default for a same-language AC3 5.1 track when there is one).
+    if (_audioStreamIndex != null &&
+        !_audioSelectionExplicit &&
+        resolution.selectedAudioStreamIndex != null &&
+        resolution.selectedAudioStreamIndex != _audioStreamIndex) {
+      final streams = resolution.mediaStreams
+          .where((s) => s['Type'] == 'Audio')
+          .toList();
+      final current = streams.firstWhere(
+        (s) => s['Index'] == _audioStreamIndex,
+        orElse: () => const <String, dynamic>{},
+      );
+      if (current.isNotEmpty && AudioTrackPreference.isHeavy(current)) {
+        _audioStreamIndex = resolution.selectedAudioStreamIndex;
+      }
+    }
+
     if (_audioStreamIndex == null) {
       // Keep the server-selected audio index for later re-resolves.
       // If it is missing, fall back to the file's default audio track.
@@ -1307,6 +1377,20 @@ class PlaybackManager implements AudioOwnable {
         await next();
         return;
       }
+
+      try {
+        errorReporter?.call({
+          'event': 'startup-fail',
+          'playMethod': resolution.playMethod.name,
+          'reasons': resolution.transcodingReasons.join(','),
+          'container': resolution.container ?? '',
+          'vcodec': _diagCodec(resolution, 'Video'),
+          'acodec': _diagCodec(resolution, 'Audio'),
+          'msg': (startupError?.toString() ?? '')
+              .replaceAll(RegExp(r'(api_key|ApiKey|X-Emby-Token|Token)=[^&\s]+', caseSensitive: false), r'$1=***')
+              .replaceAll(RegExp(r'https?://\S+'), '<url>'),
+        });
+      } catch (_) {}
 
       if (allowStartupRecovery) {
         final forceTranscodeFallback =
@@ -1478,7 +1562,10 @@ class PlaybackManager implements AudioOwnable {
 
   void _startProgressTimer() {
     _stopProgressTimer();
-    _progressTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+    // Every 10s, as Jellyfin's own clients do. Every 5s doubled the report
+    // traffic, and on a slow server the reports queued up and held the
+    // connection slots browsing needed.
+    _progressTimer = Timer.periodic(const Duration(seconds: 10), (_) {
       final item = queueService.currentItem;
       final resolution = _currentResolution;
       if (item == null || resolution == null) return;
@@ -1924,8 +2011,56 @@ class PlaybackManager implements AudioOwnable {
     await _reResolveAtCurrentPosition(forceTranscode: mbps != null);
   }
 
+  /// The original file can't be streamed fast enough (repeated stalls on a
+  /// big 4K remux): continue from the same position with the server's own
+  /// stream instead - video copied untouched, audio converted when needed -
+  /// which is how the official Jellyfin app plays these files. Once per
+  /// title per session; only from direct play.
+  final Set<String> _serverStreamFallbackItems = <String>{};
+
+  Future<bool> useServerStreamForCurrentItem() async {
+    final res = _currentResolution;
+    if (res == null || res.playMethod != StreamPlayMethod.directPlay) {
+      return false;
+    }
+    final item = queueService.currentItem ?? _lastPlaybackItem;
+    if (item == null) return false;
+    final id = MediaStreamResolver.extractItemId(item);
+    if (id.isEmpty || !_serverStreamFallbackItems.add(id)) return false;
+    await _reResolveAtCurrentPosition(serverStreamOnly: true);
+    return true;
+  }
+
+  /// Playback has been stuck for a long time. A server-converted stream
+  /// (transcode / direct stream) is switched to the original file; an
+  /// original file is reopened at the same position (dropped connection).
+  /// At most twice per title per session.
+  final Map<String, int> _stallRecoveries = <String, int>{};
+  static void Function(String itemId)? onForceOriginal;
+
+  Future<String?> recoverStalledPlayback() async {
+    final res = _currentResolution;
+    if (res == null) return null;
+    final item = queueService.currentItem ?? _lastPlaybackItem;
+    if (item == null) return null;
+    final id = MediaStreamResolver.extractItemId(item);
+    if (id.isEmpty) return null;
+    final n = _stallRecoveries[id] ?? 0;
+    if (n >= 2) return null;
+    _stallRecoveries[id] = n + 1;
+    if (res.playMethod != StreamPlayMethod.directPlay) {
+      _serverStreamFallbackItems.add(id); // never bounce back to the server stream
+      onForceOriginal?.call(id);
+      await _reResolveAtCurrentPosition();
+      return 'original-file';
+    }
+    await _reResolveAtCurrentPosition();
+    return 'reopen';
+  }
+
   Future<void> _reResolveAtCurrentPosition({
     bool forceTranscode = false,
+    bool serverStreamOnly = false,
   }) async {
     final backendPos = _backend?.position ?? Duration.zero;
     final currentPos = Duration(
@@ -1945,7 +2080,7 @@ class PlaybackManager implements AudioOwnable {
     await _backend?.stop();
     await _playCurrentItem(
       startPosition: currentPos,
-      enableDirectPlay: !forceTranscode,
+      enableDirectPlay: !forceTranscode && !serverStreamOnly,
       enableDirectStream: !forceTranscode,
     );
   }
@@ -2508,7 +2643,16 @@ bool _languagesMatch(Map? stream, String? targetLanguage) {
 int? _matchStreamIndexByLanguage(List<Map<String, dynamic>> streams, String? lang, String type) {
   final candidates = streams.where((s) => s['Type'] == type).toList();
   final i = candidates.indexWhere((s) => _languagesMatch(s, lang));
-  return i >= 0 ? candidates[i]['Index'] as int? : null;
+  if (i < 0) return null;
+  if (type == 'Audio') {
+    // First match is TrueHD/DTS: prefer a same-language AC3 5.1 (etc.) track.
+    final alt = AudioTrackPreference.lighterAlternative(
+      candidates.where((s) => _languagesMatch(s, lang)).toList(),
+      candidates[i],
+    );
+    if (alt != null) return alt['Index'] as int?;
+  }
+  return candidates[i]['Index'] as int?;
 }
 
 String? _extractLanguage(Map? stream) {

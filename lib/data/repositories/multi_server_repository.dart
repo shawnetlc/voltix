@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import '../services/genre_query.dart';
+import '../services/taste_profile/foreign_content_filter.dart';
 import 'package:get_it/get_it.dart';
 import 'package:logger/logger.dart';
 import 'package:server_core/server_core.dart';
@@ -1226,19 +1228,40 @@ class MultiServerRepository {
         (session) async {
           try {
             return await _withTimeout(() async {
+              // Genre id as well as the name (supersilo ignores the name
+              // filter), films and series only, then keep only titles that
+              // really have the genre and aren't foreign / sport.
+              final ids = await GenreQuery.genreIds(session.client, [genreName]);
               final response = await session.client.itemsApi.getItems(
-                genres: [genreName],
-                includeItemTypes: includeItemTypes,
+                genres: ids.isEmpty ? [genreName] : null,
+                genreIds: ids.isEmpty ? null : ids,
+                includeItemTypes: includeItemTypes ?? const ['Movie', 'Series'],
                 excludeItemTypes: const ['Episode'],
                 sortBy: sortBy,
                 sortOrder: sortOrder,
                 recursive: true,
-                limit: perServer,
+                limit: sortBy.toLowerCase().contains('rating') ? 100 : perServer,
                 fields: _fields,
                 enableImageTypes: _imageTypes,
                 imageTypeLimit: _imageTypeLimit,
               );
-              final items = _parseItems(response, session.server.id);
+              final items = _parseItems(response, session.server.id)
+                  .where((i) =>
+                      GenreQuery.itemHasGenre(i.rawData, genreName) &&
+                      !ForeignContentFilter.isExcludedItem(i.rawData))
+                  .toList();
+              // Rating sorts aren't applied by every server (supersilo): order
+              // by rating here (community rating, else critic rating).
+              if (sortBy.toLowerCase().contains('rating')) {
+                double r(AggregatedItem i) =>
+                    ((i.rawData['CommunityRating'] ?? i.rawData['CriticRating'])
+                            as num?)
+                        ?.toDouble() ??
+                    -1;
+                items.sort((a, b) => sortOrder == 'Ascending'
+                    ? r(a).compareTo(r(b))
+                    : r(b).compareTo(r(a)));
+              }
               _rowTotals['${id}_${session.server.id}'] =
                   response['TotalRecordCount'] as int? ?? items.length;
               return items;
@@ -1600,7 +1623,11 @@ class MultiServerRepository {
         case 'PremiereDate':
           return _compareNullableDate(a.premiereDate, b.premiereDate);
         case 'CommunityRating':
-          return _compareNullableNum(a.communityRating, b.communityRating);
+          // Servers without community ratings (supersilo): critic rating.
+          return _compareNullableNum(
+            a.communityRating ?? a.criticRating?.toDouble(),
+            b.communityRating ?? b.criticRating?.toDouble(),
+          );
         case 'CriticRating':
           return _compareNullableNum(
             a.criticRating?.toDouble(),
@@ -1756,9 +1783,21 @@ class MultiServerRepository {
               item.runTimeTicks! > 0 &&
               positionTicks >= (item.runTimeTicks! * 0.9));
 
+      // Progress belongs to the server this session is signed in to (the
+      // active one, chosen at sign-in / app start) - never to other saved
+      // servers. A viewer on supersilo must not write to jellyfin.crazyguy.cc
+      // (or the reverse for viewers still on that server). The only copy made
+      // is when a title was played from a different server than the active
+      // one: then the active server gets the progress too.
+      final activeServerId = GetIt.instance.isRegistered<SessionRepository>()
+          ? GetIt.instance<SessionRepository>().activeServerId
+          : null;
+      if (activeServerId == null || activeServerId == sourceServerId) return;
+
       await Future.wait(
         sessions.map((session) async {
           if (session.server.id == sourceServerId) return;
+          if (session.server.id != activeServerId) return;
 
           // Do NOT push playback reports to shared servers (Extra/4K)
           // to prevent polluting shared accounts. VoltixWatchRegistryService handles progress.
@@ -1836,9 +1875,12 @@ class MultiServerRepository {
           sessions.where((s) => s.server.id == item.serverId).firstOrNull;
       if (session == null) return;
 
-      await session.client.userLibraryApi.unmarkPlayed(item.id);
-      _logger.i(
-        'MultiServer: cleared shared-server watch state for "${item.name}" '
+      // No longer touches the server: the shared account's watch state is
+      // never read (VoltixUserDataOverlay answers it from the user's own
+      // registry), and an unmark here would now clear the user's own
+      // watched flag for the title they just finished.
+      _logger.d(
+        'MultiServer: shared-server watch state left alone for "${item.name}" '
         'on ${session.server.name}',
       );
     } catch (e) {
@@ -1862,7 +1904,13 @@ class MultiServerRepository {
   /// found on no other server. Never throws. Results are cached per item for
   /// [_variantCacheTtl], so the lookup can be started early (e.g. when the
   /// detail screen opens) and awaited cheaply when Play is pressed.
+  /// Voltix: single supplier, one Jellyfin server -- never offer a
+  /// "which server?" choice on Play (stale or duplicate server entries made
+  /// it list the same server three times). Set true to restore.
+  static const bool serverVariantsEnabled = false;
+
   Future<List<AggregatedItem>> findServerVariants(AggregatedItem item) {
+    if (!serverVariantsEnabled) return Future.value(const <AggregatedItem>[]);
     final key = '${item.serverId}|${item.id}';
     final cached = _variantCache[key];
     if (cached != null &&

@@ -1,5 +1,10 @@
 import 'package:server_core/server_core.dart';
 
+/// JPEG/WebP quality requested for posters, backdrops, thumbs and banners.
+/// The server default is 90; 80 is visually identical at card sizes and makes
+/// each image roughly a quarter smaller, so rows fill in faster.
+const _kArtworkQuality = '80';
+
 class EmbyImageApi implements ImageApi {
   final String Function() _getBaseUrl;
   final String? Function() _getApiKey;
@@ -22,6 +27,7 @@ class EmbyImageApi implements ImageApi {
   }) {
     final query = _buildQuery({
       if (maxWidth != null) 'maxWidth': maxWidth.toString(),
+      'quality': _kArtworkQuality,
       if (maxHeight != null) 'maxHeight': maxHeight.toString(),
       'tag': ?tag,
     });
@@ -38,6 +44,7 @@ class EmbyImageApi implements ImageApi {
     final idx = index ?? 0;
     final query = _buildQuery({
       if (maxWidth != null) 'maxWidth': maxWidth.toString(),
+      'quality': _kArtworkQuality,
       'tag': ?tag,
     });
     return '${_getBaseUrl()}/Items/$itemId/Images/Backdrop/$idx$query';
@@ -64,6 +71,7 @@ class EmbyImageApi implements ImageApi {
   }) {
     final query = _buildQuery({
       if (maxWidth != null) 'maxWidth': maxWidth.toString(),
+      'quality': _kArtworkQuality,
       'tag': ?tag,
     });
     return '${_getBaseUrl()}/Items/$itemId/Images/Banner$query';
@@ -77,6 +85,7 @@ class EmbyImageApi implements ImageApi {
   }) {
     final query = _buildQuery({
       if (maxWidth != null) 'maxWidth': maxWidth.toString(),
+      'quality': _kArtworkQuality,
       'tag': ?tag,
     });
     return '${_getBaseUrl()}/Items/$itemId/Images/Thumb$query';

@@ -10,7 +10,7 @@ library;
 Map<String, dynamic> chromecastDeviceProfile() {
   const bitrate = 20000000;
   return <String, dynamic>{
-    'Name': 'Moonfin Chromecast',
+    'Name': 'Chromecast',
     'MaxStaticBitrate': bitrate,
     'MaxStreamingBitrate': bitrate,
     'MusicStreamingTranscodingBitrate': 384000,
@@ -92,7 +92,7 @@ Map<String, dynamic> chromecastDeviceProfile() {
 Map<String, dynamic> airPlayDeviceProfile() {
   const bitrate = 15000000;
   return <String, dynamic>{
-    'Name': 'Moonfin AirPlay',
+    'Name': 'AirPlay',
     'MaxStaticBitrate': bitrate,
     'MaxStreamingBitrate': bitrate,
     'MusicStreamingTranscodingBitrate': 384000,

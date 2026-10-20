@@ -14,6 +14,7 @@ import '../../auth/store/voltix_session_store.dart';
 import '../../firebase_options.dart';
 import '../../preference/user_preferences.dart';
 import '../../ui/navigation/app_router.dart';
+import '../../ui/navigation/deep_link_navigator.dart';
 import '../../ui/widgets/floating_notification.dart';
 import '../../util/platform_detection.dart';
 import 'local_notification_bootstrap.dart';
@@ -102,6 +103,9 @@ class PushMessagingService {
 
   /// Repeated and concurrent callers share one initialization. A failed
   /// initialization clears itself so a later call can retry.
+  // Devices without Google Play Services (Fire TV) never answer some FCM calls.
+  static const _fcmTimeout = Duration(seconds: 8);
+
   Future<void> initialize() => _initFuture ??= _doInitialize();
 
   Future<void> _doInitialize() async {
@@ -142,7 +146,7 @@ class PushMessagingService {
         badge: true,
         sound: true,
         provisional: false,
-      );
+      ).timeout(_fcmTimeout);
     } catch (_) {}
 
     // ── Topic subscriptions ──────────────────────────────────────────────
@@ -151,11 +155,11 @@ class PushMessagingService {
     // campaigns that target "all app users" use a different mechanism, but
     // the admin panel sends to topic 'all'.
     try {
-      await messaging.subscribeToTopic('all');
+      await messaging.subscribeToTopic('all').timeout(_fcmTimeout);
       if (PlatformDetection.isAndroid) {
-        await messaging.subscribeToTopic('android');
+        await messaging.subscribeToTopic('android').timeout(_fcmTimeout);
       } else if (PlatformDetection.isIOS) {
-        await messaging.subscribeToTopic('ios');
+        await messaging.subscribeToTopic('ios').timeout(_fcmTimeout);
       }
     } catch (e) {
       debugPrint('PushMessagingService: topic subscription error: $e');
@@ -175,7 +179,7 @@ class PushMessagingService {
     }
 
     try {
-      final token = await messaging.getToken();
+      final token = await messaging.getToken().timeout(_fcmTimeout);
       if (token == null) {
         debugPrint('PushMessagingService: getToken returned null');
       }
@@ -258,7 +262,7 @@ class PushMessagingService {
       // A server switch reuses the same FCM token, so drop the dedupe and let
       // the new server get its own registration.
       _lastRegisteredToken = null;
-      final token = await FirebaseMessaging.instance.getToken();
+      final token = await FirebaseMessaging.instance.getToken().timeout(_fcmTimeout);
       await _registerToken(token);
     } catch (_) {
       _pendingRegistration = true;
@@ -477,7 +481,7 @@ class PushMessagingService {
       notification.title ?? '',
       notification.body ?? '',
       route is String && route.trim().isNotEmpty
-          ? () => appRouter.go(route.trim())
+          ? () => navigateOrLaunchUrl(route.trim())
           : null,
       duration: Duration(seconds: clamped),
       // Several spellings, because several senders. FCM maps a payload
@@ -501,7 +505,7 @@ class PushMessagingService {
 
     final route = message.data['actionUrl'] ?? message.data['route'];
     if (route is String && route.trim().isNotEmpty) {
-      appRouter.go(route.trim());
+      navigateOrLaunchUrl(route.trim());
     }
   }
 

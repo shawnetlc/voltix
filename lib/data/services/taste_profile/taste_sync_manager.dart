@@ -7,6 +7,8 @@ import 'taste_history_analyzer.dart';
 import 'taste_local_store.dart';
 import 'taste_recommendation_engine.dart';
 import 'taste_server_context.dart';
+import 'package:server_core/server_core.dart';
+import 'foreign_content_filter.dart';
 
 /// Cancellation token for synchronisation operations.
 class SyncCancellationToken {
@@ -85,6 +87,9 @@ class TasteSyncManager extends ChangeNotifier {
     }
   }
 
+  /// True while a sync is actually running (not merely incomplete).
+  bool get isSyncing => _activeSyncFuture != null;
+
   /// Cancels any in-flight synchronisation gracefully.
   void cancelSync() {
     _activeCancellationToken?.cancel();
@@ -153,7 +158,7 @@ class TasteSyncManager extends ChangeNotifier {
   static const _baseFields =
       'Genres,PrimaryImageAspectRatio,UserData,CommunityRating,VoteCount,'
       'CriticRating,ProductionYear,OfficialRating,RunTimeTicks,CollectionId,'
-      'SeriesId,ImageTags,Overview,People,ProviderIds';
+      'SeriesId,ImageTags,Overview,ProviderIds,ProductionLocations'; // no People: very slow on big servers
   static const _languageFields =
       ',OriginalLanguage,SpokenLanguages,MediaStreams';
 
@@ -282,6 +287,27 @@ class TasteSyncManager extends ChangeNotifier {
       // Finalisation. These carry no work, so they are reported rather than
       // performed -- with one short beat so the jump to "ready" is legible
       // instead of a flash.
+      // Only "complete" once both libraries actually arrived; otherwise the
+      // saved state would stop every later visit from retrying.
+      final librariesIn = completed.contains(SyncStep.movies) &&
+          completed.contains(SyncStep.series);
+      if (!librariesIn) {
+        _updateProgress(
+          step: completed.contains(SyncStep.movies)
+              ? SyncStep.series
+              : SyncStep.movies,
+          percent: _percentFor(completed),
+          status: 'Some titles could not be loaded yet - will retry.',
+          completed: completed,
+        );
+        await _localStore.saveSyncProgress(
+          serverId: serverId,
+          userId: userId,
+          state: _progressState,
+        );
+        return;
+      }
+
       completed
         ..add(SyncStep.moodsAndVibes)
         ..add(SyncStep.perfectExperience);
@@ -364,14 +390,25 @@ class TasteSyncManager extends ChangeNotifier {
         ));
     if (token.isCancelled) return;
 
-    if (movies.isNotEmpty) {
-      _cachedMovies = movies;
-      await _localStore.saveCachedMovies(
-        serverId: serverId,
-        userId: userId,
-        movies: movies,
+    if (movies.isEmpty) {
+      // Nothing came back (slow server timed out, or an error). Leave the
+      // step outstanding so the next wizard visit fetches again -- marking it
+      // done here saved an empty "completed" sync that the wizard then never
+      // retried, which is why it showed no movies at all.
+      _updateProgress(
+        step: SyncStep.movies,
+        percent: _percentFor(completed),
+        status: 'No movies received yet - will retry.',
+        completed: completed,
       );
+      return;
     }
+    _cachedMovies = movies;
+    await _localStore.saveCachedMovies(
+      serverId: serverId,
+      userId: userId,
+      movies: movies,
+    );
     await _finishStep(
       step: SyncStep.movies,
       serverId: serverId,
@@ -400,14 +437,22 @@ class TasteSyncManager extends ChangeNotifier {
         ));
     if (token.isCancelled) return;
 
-    if (series.isNotEmpty) {
-      _cachedSeries = series;
-      await _localStore.saveCachedSeries(
-        serverId: serverId,
-        userId: userId,
-        series: series,
+    if (series.isEmpty) {
+      // See _stepMovies: an empty result must not be saved as completed.
+      _updateProgress(
+        step: SyncStep.series,
+        percent: _percentFor(completed),
+        status: 'No series received yet - will retry.',
+        completed: completed,
       );
+      return;
     }
+    _cachedSeries = series;
+    await _localStore.saveCachedSeries(
+      serverId: serverId,
+      userId: userId,
+      series: series,
+    );
     await _finishStep(
       step: SyncStep.series,
       serverId: serverId,
@@ -507,48 +552,22 @@ class TasteSyncManager extends ChangeNotifier {
     final items = <AggregatedItem>[];
 
     if (client != null) {
-      try {
-        final res = await client.itemsApi.getItems(
-          recursive: true,
-          includeItemTypes: const ['Movie'],
-          sortBy: 'CommunityRating,ProductionYear',
-          sortOrder: 'Descending',
-          fields:
-              _fieldsFor(languageSettings),
-          limit: 150,
-        );
-
-        final rawItems = (res['Items'] as List? ?? [])
-            .whereType<Map<String, dynamic>>()
-            .toList();
-
-        for (final r in rawItems) {
-          final item = AggregatedItem(
-            id: r['Id']?.toString() ?? '',
-            serverId: primaryServerId,
-            rawData: r,
-          );
-          if (item.id.isNotEmpty &&
-              TasteRecommendationEngine.isLanguageAllowed(
-                item: item,
-                languageSettings: languageSettings,
-                isOnboarding: true,
-              )) {
-            items.add(item);
-          }
-        }
-      } catch (e) {
-        debugPrint('[TasteSyncManager] Primary movie query failed: $e');
-      }
+      items.addAll(await _fetchItemsPerLibrary(
+        client: client,
+        serverId: primaryServerId,
+        includeType: 'Movie',
+        collectionType: 'movies',
+        fields: _fieldsFor(languageSettings),
+        languageSettings: languageSettings,
+        token: token,
+        totalLimit: 300,
+      ));
     }
 
     // Check failover shelves if primary returned low candidates (< 24)
     if (items.length < 24) {
       final failovers = _serverContext.failoverSessions;
       if (failovers.isNotEmpty) {
-        // Holds the bar where it is rather than asserting a number: with the
-        // steps running concurrently, a hardcoded percentage here would drag
-        // the bar backwards over whatever another step had just reported.
         _updateProgress(
           step: SyncStep.movies,
           percent: _progressState.progressPercent,
@@ -558,53 +577,32 @@ class TasteSyncManager extends ChangeNotifier {
               'Primary server missed a title, checking the backup shelves...',
         );
 
-        // Backup shelves are queried together, not one after another: they
-        // are separate servers, so waiting for each in turn just adds their
-        // latencies up. Merging stays sequential afterwards, against a seen
-        // set rather than a linear scan of everything gathered so far.
         final responses = await Future.wait(
           failovers.map((failover) async {
             if (token.isCancelled) return null;
             final fClient =
                 _serverContext.getClientForServer(failover.serverId);
             if (fClient == null) return null;
-            try {
-              final fRes = await fClient.itemsApi.getItems(
-                recursive: true,
-                includeItemTypes: const ['Movie'],
-                sortBy: 'CommunityRating,ProductionYear',
-                sortOrder: 'Descending',
-                fields: _fieldsFor(languageSettings),
-                limit: 50,
-              );
-              return (failover.serverId, fRes);
-            } catch (_) {
-              return null;
-            }
+            final list = await _fetchItemsPerLibrary(
+              client: fClient,
+              serverId: failover.serverId,
+              includeType: 'Movie',
+              collectionType: 'movies',
+              fields: _fieldsFor(languageSettings),
+              languageSettings: languageSettings,
+              token: token,
+              totalLimit: 50,
+            );
+            return (failover.serverId, list);
           }),
         );
 
         final seenIds = items.map((i) => i.id).toSet();
         for (final response in responses) {
           if (response == null) continue;
-          final (failoverServerId, fRes) = response;
-          final fRaw =
-              (fRes['Items'] as List? ?? []).whereType<Map<String, dynamic>>();
-          for (final r in fRaw) {
-            final item = AggregatedItem(
-              id: r['Id']?.toString() ?? '',
-              serverId: failoverServerId,
-              rawData: r,
-            );
-            if (item.id.isNotEmpty &&
-                seenIds.add(item.id) &&
-                TasteRecommendationEngine.isLanguageAllowed(
-                  item: item,
-                  languageSettings: languageSettings,
-                  isOnboarding: true,
-                )) {
-              items.add(item);
-            }
+          final (_, list) = response;
+          for (final item in list) {
+            if (seenIds.add(item.id)) items.add(item);
           }
         }
       }
@@ -612,6 +610,139 @@ class TasteSyncManager extends ChangeNotifier {
 
     return items;
   }
+
+  /// Fetches items of [includeType] by enumerating the user's libraries and
+  /// querying each one scoped by `parentId`.
+  ///
+  /// Restrictive providers (e.g. a direct Lumistream connection) reject or
+  /// return nothing for an unscoped recursive query, while a per-library query
+  /// works -- so the taste sync always walks the libraries one by one. Falls
+  /// back to querying every view when the server does not label collection
+  /// types.
+  /// Best-rated first, as the old server-side CommunityRating sort gave --
+  /// but done here, because sorting a whole library by rating on the server
+  /// timed out (90 s) and left the wizard empty.
+  static List<AggregatedItem> _rankByRating(List<AggregatedItem> items) {
+    double r(AggregatedItem i) =>
+        (i.rawData['CommunityRating'] as num?)?.toDouble() ?? 0.0;
+    return List<AggregatedItem>.from(items)..sort((a, b) => r(b).compareTo(r(a)));
+  }
+
+  Future<List<AggregatedItem>> _fetchItemsPerLibrary({
+    required MediaServerClient client,
+    required String serverId,
+    required String includeType,
+    required String collectionType,
+    required String fields,
+    required LanguageSettings languageSettings,
+    required SyncCancellationToken token,
+    required int totalLimit,
+  }) async {
+    final items = <AggregatedItem>[];
+    final seen = <String>{};
+    // Foreign-language libraries (e.g. "Movies International") never feed the
+    // taste wizard; see ForeignContentFilter.
+    // Library list only (one quick call); excluded libraries are simply not read.
+    final foreign = await ForeignContentFilter.loadViews(client);
+
+    void addAll(Iterable<Map<String, dynamic>> raw) {
+      for (final r in raw) {
+        r.putIfAbsent('ProductionLocations', () => const <String>[]);
+        if (items.length >= totalLimit) break;
+        final item = AggregatedItem(
+          id: r['Id']?.toString() ?? '',
+          serverId: serverId,
+          rawData: r,
+        );
+        if (item.id.isNotEmpty &&
+            !foreign.isForeign(item.id) &&
+            !ForeignContentFilter.isExcludedItem(r) &&
+            seen.add(item.id) &&
+            TasteRecommendationEngine.isLanguageAllowed(
+              item: item,
+              languageSettings: languageSettings,
+              isOnboarding: true,
+            )) {
+          items.add(item);
+        }
+      }
+    }
+
+    // One server-wide query first (a single request); libraries one by one
+    // only when that returns nothing. With foreign libraries present, go
+    // straight to the non-foreign libraries so the list isn't mostly dropped.
+    if (!foreign.hasForeignLibraries) {
+    try {
+      final res = await client.itemsApi.getItems(
+        recursive: true,
+        includeItemTypes: [includeType],
+        sortBy: 'DateCreated', // fast; ranked by rating on device (a library-wide rating sort stalls the wizard)
+        sortOrder: 'Descending',
+        fields: fields,
+        limit: totalLimit,
+      ).timeout(const Duration(seconds: 30));
+      addAll((res['Items'] as List? ?? []).whereType<Map<String, dynamic>>());
+      if (items.isNotEmpty) return _rankByRating(items);
+    } catch (e) {
+      debugPrint('[TasteSyncManager] server-wide $includeType query failed, trying per library: $e');
+    }
+    }
+
+    final views = foreign.views;
+    var targets = foreign.englishViews(collectionType);
+    if (targets.isEmpty) {
+      targets = views
+          .where((v) =>
+              !ForeignContentFilter.isForeignLibraryName(v['Name']?.toString()))
+          .toList();
+    }
+
+    for (final view in targets) {
+      if (token.isCancelled) break;
+      if (items.length >= totalLimit) break;
+      final parentId = view['Id']?.toString();
+      if (parentId == null || parentId.isEmpty) continue;
+      try {
+        final res = await client.itemsApi.getItems(
+          parentId: parentId,
+          recursive: true,
+          includeItemTypes: [includeType],
+          sortBy: 'DateCreated', // fast; ranked by rating on device (a library-wide rating sort stalls the wizard)
+          sortOrder: 'Descending',
+          fields: fields,
+          limit: totalLimit,
+        ).timeout(const Duration(seconds: 30));
+        final raw =
+            (res['Items'] as List? ?? []).whereType<Map<String, dynamic>>();
+        for (final r in raw) {
+          r.putIfAbsent('ProductionLocations', () => const <String>[]);
+          if (items.length >= totalLimit) break;
+          final item = AggregatedItem(
+            id: r['Id']?.toString() ?? '',
+            serverId: serverId,
+            rawData: r,
+          );
+          if (item.id.isNotEmpty &&
+              !foreign.isForeign(item.id) &&
+              !ForeignContentFilter.isExcludedItem(r) &&
+              seen.add(item.id) &&
+              TasteRecommendationEngine.isLanguageAllowed(
+                item: item,
+                languageSettings: languageSettings,
+                isOnboarding: true,
+              )) {
+            items.add(item);
+          }
+        }
+      } catch (e) {
+        debugPrint(
+            '[TasteSyncManager] per-library query failed ($includeType, parent=$parentId): $e');
+      }
+    }
+
+    return _rankByRating(items);
+  }
+
 
   // ──────────────────────────────────────────────────────────────────────────
   // Step 2: Series Synchronisation with Failover & Binge Detection
@@ -625,41 +756,20 @@ class TasteSyncManager extends ChangeNotifier {
   }) async {
     final client = _serverContext.getPrimaryClient(primaryServerId);
     final items = <AggregatedItem>[];
+    final seriesFields =
+        '${_fieldsFor(languageSettings)},Status,CumulativeRunTimeTicks';
 
     if (client != null) {
-      try {
-        final res = await client.itemsApi.getItems(
-          recursive: true,
-          includeItemTypes: const ['Series'],
-          sortBy: 'CommunityRating,ProductionYear',
-          sortOrder: 'Descending',
-          fields:
-              '${_fieldsFor(languageSettings)},Status,CumulativeRunTimeTicks',
-          limit: 150,
-        );
-
-        final rawItems = (res['Items'] as List? ?? [])
-            .whereType<Map<String, dynamic>>()
-            .toList();
-
-        for (final r in rawItems) {
-          final item = AggregatedItem(
-            id: r['Id']?.toString() ?? '',
-            serverId: primaryServerId,
-            rawData: r,
-          );
-          if (item.id.isNotEmpty &&
-              TasteRecommendationEngine.isLanguageAllowed(
-                item: item,
-                languageSettings: languageSettings,
-                isOnboarding: true,
-              )) {
-            items.add(item);
-          }
-        }
-      } catch (e) {
-        debugPrint('[TasteSyncManager] Primary series query failed: $e');
-      }
+      items.addAll(await _fetchItemsPerLibrary(
+        client: client,
+        serverId: primaryServerId,
+        includeType: 'Series',
+        collectionType: 'tvshows',
+        fields: seriesFields,
+        languageSettings: languageSettings,
+        token: token,
+        totalLimit: 300,
+      ));
     }
 
     if (items.length < 24) {
@@ -673,53 +783,32 @@ class TasteSyncManager extends ChangeNotifier {
               'Primary server missed a series, checking the backup shelves...',
         );
 
-        // Backup shelves are queried together, not one after another: they
-        // are separate servers, so waiting for each in turn just adds their
-        // latencies up. Merging stays sequential afterwards, against a seen
-        // set rather than a linear scan of everything gathered so far.
         final responses = await Future.wait(
           failovers.map((failover) async {
             if (token.isCancelled) return null;
             final fClient =
                 _serverContext.getClientForServer(failover.serverId);
             if (fClient == null) return null;
-            try {
-              final fRes = await fClient.itemsApi.getItems(
-                recursive: true,
-                includeItemTypes: const ['Series'],
-                sortBy: 'CommunityRating,ProductionYear',
-                sortOrder: 'Descending',
-                fields: _fieldsFor(languageSettings),
-                limit: 50,
-              );
-              return (failover.serverId, fRes);
-            } catch (_) {
-              return null;
-            }
+            final list = await _fetchItemsPerLibrary(
+              client: fClient,
+              serverId: failover.serverId,
+              includeType: 'Series',
+              collectionType: 'tvshows',
+              fields: seriesFields,
+              languageSettings: languageSettings,
+              token: token,
+              totalLimit: 50,
+            );
+            return (failover.serverId, list);
           }),
         );
 
         final seenIds = items.map((i) => i.id).toSet();
         for (final response in responses) {
           if (response == null) continue;
-          final (failoverServerId, fRes) = response;
-          final fRaw =
-              (fRes['Items'] as List? ?? []).whereType<Map<String, dynamic>>();
-          for (final r in fRaw) {
-            final item = AggregatedItem(
-              id: r['Id']?.toString() ?? '',
-              serverId: failoverServerId,
-              rawData: r,
-            );
-            if (item.id.isNotEmpty &&
-                seenIds.add(item.id) &&
-                TasteRecommendationEngine.isLanguageAllowed(
-                  item: item,
-                  languageSettings: languageSettings,
-                  isOnboarding: true,
-                )) {
-              items.add(item);
-            }
+          final (_, list) = response;
+          for (final item in list) {
+            if (seenIds.add(item.id)) items.add(item);
           }
         }
       }
@@ -727,4 +816,5 @@ class TasteSyncManager extends ChangeNotifier {
 
     return items;
   }
+
 }

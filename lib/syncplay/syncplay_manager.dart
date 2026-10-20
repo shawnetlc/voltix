@@ -20,6 +20,7 @@ import '../ui/navigation/app_router.dart';
 import '../ui/navigation/destinations.dart';
 import '../util/syncplay_group_password.dart';
 import '../util/syncplay_username_util.dart';
+import 'sync_correction_policy.dart';
 import 'syncplay_state.dart';
 import 'time_sync_manager.dart';
 
@@ -101,6 +102,14 @@ class SyncPlayManager extends ChangeNotifier {
   int _lastSyncPositionMs = 0;
   int _lastSyncTimeMs = 0;
   bool _isBuffering = false;
+
+  /// Drift-correction rules: ignores sampling noise, holds off while buffering
+  /// or paused, learns how long a seek takes on this device, and stops after
+  /// repeated failed skips instead of scrubbing in a loop.
+  final SyncCorrectionPolicy _correctionPolicy = SyncCorrectionPolicy();
+
+  /// True while a speed-to-sync adjustment is running on [_driftTimer].
+  bool _speedCorrectionActive = false;
 
   SyncPlayManager(
     this._playbackManager,
@@ -750,6 +759,7 @@ class SyncPlayManager extends ChangeNotifier {
     _lastCommandKey = null;
     _lastSyncPositionMs = 0;
     _lastSyncTimeMs = 0;
+    _correctionPolicy.reset();
     _restorePlaybackRate();
     notifyListeners();
   }
@@ -1166,6 +1176,7 @@ class SyncPlayManager extends ChangeNotifier {
         _clampedPositionMs(SyncPlayUtils.ticksToMs(command.positionTicks));
     _lastSyncPositionMs = positionMs;
     _lastSyncTimeMs = targetMs;
+    _correctionPolicy.onSyncPointChanged(_localNowMs());
 
     if (!advancedCorrectionEnabled) {
       if (delayMs > 0) {
@@ -1209,6 +1220,7 @@ class SyncPlayManager extends ChangeNotifier {
     final positionMs = _clampedPositionMs(adjusted);
     _lastSyncPositionMs = positionMs;
     _lastSyncTimeMs = serverNow;
+    _correctionPolicy.onSyncPointChanged(_localNowMs());
     _performSeek(positionMs);
   }
 
@@ -1228,6 +1240,7 @@ class SyncPlayManager extends ChangeNotifier {
     _state.groupState = SyncPlayGroupState.idle;
     _lastSyncPositionMs = 0;
     _lastSyncTimeMs = 0;
+    _correctionPolicy.reset();
     notifyListeners();
   }
 
@@ -1280,6 +1293,7 @@ class SyncPlayManager extends ChangeNotifier {
   }
 
   void _restorePlaybackRate() {
+    _speedCorrectionActive = false;
     _playbackManager.setPlaybackSpeed(_defaultSpeed);
   }
 
@@ -1293,9 +1307,14 @@ class SyncPlayManager extends ChangeNotifier {
         _state.groupState != SyncPlayGroupState.playing) {
       return;
     }
+    // Rescheduling cancels a running speed adjustment's restore timer, so put
+    // the normal rate back here or it would stay at 95% / 105%.
+    if (_speedCorrectionActive) _restorePlaybackRate();
     _driftTimer?.cancel();
     _driftTimer = Timer(const Duration(milliseconds: 1500), _performDriftCorrection);
   }
+
+  int _localNowMs() => DateTime.now().millisecondsSinceEpoch;
 
   void _performDriftCorrection() {
     final tsm = _timeSync;
@@ -1305,34 +1324,60 @@ class SyncPlayManager extends ChangeNotifier {
       return;
     }
     final pm = _playbackManager;
-    final currentMs = pm.state.position.inMilliseconds;
-    final serverNow = tsm.getServerTimeNow();
-    final expectedMs =
-        _lastSyncPositionMs + (serverNow - _lastSyncTimeMs) + extraTimeOffset;
+    final decision = _correctionPolicy.evaluate(
+      nowMs: _localNowMs(),
+      serverNowMs: tsm.getServerTimeNow(),
+      currentPositionMs: pm.state.position.inMilliseconds,
+      lastSyncPositionMs: _lastSyncPositionMs,
+      lastSyncTimeMs: _lastSyncTimeMs,
+      isBuffering: _isBuffering,
+      isPlaying: pm.state.isPlaying,
+      clockJitterMs: tsm.offsetJitterMs,
+      settings: SyncCorrectionSettings(
+        useSkipToSync: useSkipToSync,
+        useSpeedToSync: useSpeedToSync,
+        minDelaySkipToSyncMs: minDelaySkipToSync,
+        minDelaySpeedToSyncMs: minDelaySpeedToSync,
+        maxDelaySpeedToSyncMs: maxDelaySpeedToSync,
+        speedToSyncDurationMs: speedToSyncDuration,
+        extraTimeOffsetMs: extraTimeOffset,
+      ),
+    );
 
-    final delay = currentMs - expectedMs;
-    final absDelay = delay.abs();
-
-    if (useSkipToSync && absDelay > minDelaySkipToSync) {
-      _performSeek(expectedMs);
-      _scheduleDriftCorrection();
-      return;
-    }
-
-    if (useSpeedToSync &&
-        absDelay > minDelaySpeedToSync &&
-        absDelay < maxDelaySpeedToSync) {
-      // Proportional smooth speed matching: gentle for small offsets (<500ms), faster for moderate offsets
-      final double delta = absDelay < 500 ? 0.03 : 0.07;
-      final speed = delay > 0 ? (1.0 - delta) : (1.0 + delta);
-      pm.setPlaybackSpeed(speed);
-      Timer(Duration(milliseconds: speedToSyncDuration), () {
+    switch (decision.action) {
+      case SyncCorrectionAction.skip:
+        // _performSeek schedules the next check itself.
+        _performSeek(_clampedPositionMs(decision.targetPositionMs));
+        return;
+      case SyncCorrectionAction.speed:
+        pm.setPlaybackSpeed(decision.speed);
+        _speedCorrectionActive = true;
+        // Held on _driftTimer so leaving the group or stopping cancels it,
+        // rather than restoring the rate on a player that has moved on.
+        _driftTimer?.cancel();
+        _driftTimer = Timer(
+          Duration(milliseconds: decision.speedDurationMs),
+          () {
+            _restorePlaybackRate();
+            _scheduleDriftCorrection();
+          },
+        );
+        return;
+      case SyncCorrectionAction.rebaseline:
+        // The residual after a group seek is the seek's own cost, which every
+        // member paid; line the baseline up with it instead of chasing it.
+        _lastSyncPositionMs += decision.measuredDelayMs;
+        break;
+      case SyncCorrectionAction.giveUp:
+        // Repeated skips did not converge (slow transcode or buffering loop).
+        // Stop correcting until the group next moves the playhead.
         _restorePlaybackRate();
-        _scheduleDriftCorrection();
-      });
-      return;
+        _logger.w('SyncPlay: drift correction paused after repeated skips');
+        return;
+      case SyncCorrectionAction.hold:
+      case SyncCorrectionAction.defer:
+        break;
     }
-
     _scheduleDriftCorrection();
   }
 

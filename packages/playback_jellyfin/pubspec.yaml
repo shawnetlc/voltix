@@ -11,5 +11,6 @@ dependencies:
     path: ../playback_core
   server_core:
     path: ../server_core
+  dio: ^5.9.2
   logger: ^2.5.0
   web: ^1.1.1

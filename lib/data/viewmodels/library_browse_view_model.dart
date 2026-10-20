@@ -9,6 +9,7 @@ import '../../preference/user_preferences.dart';
 import '../models/aggregated_item.dart';
 import '../repositories/mdblist_repository.dart';
 import '../utils/playlist_utils.dart';
+import '../../util/parental_rating_severity.dart';
 import '../../util/user_facing_error.dart';
 
 enum LibraryBrowseState { loading, ready, error }
@@ -26,7 +27,7 @@ class LibraryBrowseViewModel extends ChangeNotifier {
   static const _pageSize = 48;
   static const _firstPageSize = 75;
   static const _browseFields =
-      'PrimaryImageAspectRatio,SortName,Type,IsFolder,UserData,CommunityRating,OfficialRating,RunTimeTicks,ProductionYear,ImageTags,BackdropImageTags,ParentBackdropItemId,ParentBackdropImageTags,ParentThumbItemId,ParentThumbImageTag,SeriesId,SeriesPrimaryImageTag';
+      'PrimaryImageAspectRatio,SortName,Type,IsFolder,UserData,CommunityRating,CriticRating,OfficialRating,RunTimeTicks,ProductionYear,ImageTags,BackdropImageTags,ParentBackdropItemId,ParentBackdropImageTags,ParentThumbItemId,ParentThumbImageTag,SeriesId,SeriesPrimaryImageTag';
   // Cap image tags to one per type (server returns all by default)
   static const _imageTypes = 'Primary,Backdrop,Thumb';
   static const _imageTypeLimit = 1;
@@ -108,14 +109,27 @@ class LibraryBrowseViewModel extends ChangeNotifier {
   Future<List<AggregatedItem>> _filterLibraryItems(
     List<AggregatedItem> items,
   ) async {
-    if (!isPlaylistBrowse) return items;
+    var result = items;
+    if (isPlaylistBrowse) {
+      result = await filterBrowsablePlaylists(
+        _client,
+        result,
+        mediaType: isMusicBrowse ? 'Audio' : null,
+        assumeNonEmptyWhenUnknown: !isMusicBrowse,
+      );
+    }
 
-    return filterBrowsablePlaylists(
-      _client,
-      items,
-      mediaType: isMusicBrowse ? 'Audio' : null,
-      assumeNonEmptyWhenUnknown: !isMusicBrowse,
-    );
+    final isKids = GetIt.instance.isRegistered<VoltixSessionStore>() &&
+        GetIt.instance<VoltixSessionStore>().isKidsProfile;
+    if (isKids) {
+      result = result.where((item) {
+        final rating = item.officialRating?.trim().toUpperCase();
+        if (rating == null || rating.isEmpty) return false;
+        return parentalRatingSeverity(rating) <= kRatingGuidance;
+      }).toList();
+    }
+
+    return result;
   }
 
   void setFocusedItem(AggregatedItem? item) {
@@ -271,6 +285,57 @@ class LibraryBrowseViewModel extends ChangeNotifier {
 
     _loadingMore = false;
     notifyListeners();
+  }
+
+  /// Sorts a server was found not to apply, per server address.
+  static final Map<String, Set<LibrarySortBy>> _unsupportedSorts = {};
+
+  /// Sort options this server really applies (for the Sort & Filter dialog).
+  bool isSortSupported(LibrarySortBy sort) =>
+      !(_unsupportedSorts[_client.baseUrl]?.contains(sort) ?? false);
+
+  /// Set when a chosen sort had to fall back; the screen shows it once.
+  String? _sortNotice;
+  String? takeSortNotice() {
+    final n = _sortNotice;
+    _sortNotice = null;
+    return n;
+  }
+
+  /// True when the current sort is one we can verify and the first page is
+  /// clearly NOT in that order (or the value is missing on almost every title).
+  bool _sortUnverifiable(List<AggregatedItem> items) {
+    double? valueOf(Map<String, dynamic> r) {
+      switch (_sortBy) {
+        case LibrarySortBy.criticRating:
+          return (r['CriticRating'] as num?)?.toDouble();
+        case LibrarySortBy.communityRating:
+          return (r['CommunityRating'] as num?)?.toDouble();
+        case LibrarySortBy.runtime:
+          return (r['RunTimeTicks'] as num?)?.toDouble();
+        default:
+          return null;
+      }
+    }
+
+    if (_sortBy != LibrarySortBy.criticRating &&
+        _sortBy != LibrarySortBy.communityRating &&
+        _sortBy != LibrarySortBy.runtime) {
+      return false;
+    }
+    if (items.length < 10) return false;
+    final values = items
+        .map((i) => valueOf(i.rawData))
+        .whereType<double>()
+        .toList();
+    if (values.length < items.length * 0.3) return true; // value missing
+    final asc = _sortDirection == SortDirection.ascending;
+    var bad = 0;
+    for (var k = 1; k < values.length; k++) {
+      final c = values[k - 1].compareTo(values[k]);
+      if ((asc && c > 0) || (!asc && c < 0)) bad++;
+    }
+    return bad > (values.length - 1) * 0.2;
   }
 
   Future<void> _fetchPage(int startIndex) async {
@@ -436,6 +501,19 @@ class LibraryBrowseViewModel extends ChangeNotifier {
         .whereType<AggregatedItem>()
         .toList();
 
+    // Some servers (supersilo) accept a sort they don't actually apply:
+    // Critic Rating / Community Rating / Runtime came back in random order.
+    // Checked on the first page; such a sort is hidden for that server and
+    // the list falls back to Name.
+    if (startIndex == 0 && _sortUnverifiable(mapped)) {
+      (_unsupportedSorts[_client.baseUrl] ??= <LibrarySortBy>{}).add(_sortBy);
+      _sortNotice =
+          'This server can\'t sort by ${_sortBy.displayName} - showing by Name.';
+      _sortBy = LibrarySortBy.name;
+      await _prefs.set(UserPreferences.librarySortBy(_prefKey), _sortBy);
+      return _fetchPage(0);
+    }
+
     final filtered = await _filterLibraryItems(mapped);
 
     if (isPlaylistBrowse) {
@@ -557,8 +635,13 @@ class LibraryBrowseViewModel extends ChangeNotifier {
     try {
       final response = await _client.userViewsApi.getUserViews();
       final items = (response['Items'] as List?) ?? [];
+      final isKids = GetIt.instance.isRegistered<VoltixSessionStore>() &&
+          GetIt.instance<VoltixSessionStore>().isKidsProfile;
       _libraries = items.cast<Map<String, dynamic>>().where((lib) {
         final type = lib['CollectionType'] as String?;
+        if (isKids) {
+          return type == 'movies' || type == 'tvshows';
+        }
         return type == 'movies' || type == 'tvshows' || type == null;
       }).toList();
       notifyListeners();
@@ -634,50 +717,12 @@ class LibraryBrowseViewModel extends ChangeNotifier {
     _syncImageTypeToServer(value);
   }
 
-  Future<void> _syncImageTypeFromServer() async {
-    if (_imagePrefKey.isEmpty) return;
-    try {
-      final dp = await _client.displayPreferencesApi.getDisplayPreferences(
-        _imagePrefKey,
-        client: 'voltix',
-      );
-      final serverType = dp.customPrefs['imageType'];
-      if (serverType != null) {
-        final match = ImageType.values.where(
-          (t) => t.name.toLowerCase() == serverType.toLowerCase(),
-        );
-        if (match.isNotEmpty && match.first != _imageType) {
-          _imageType = match.first;
-          await _prefs.set(
-            UserPreferences.libraryImageType(_imagePrefKey),
-            _imageType,
-          );
-        }
-      }
-    } catch (_) {}
-  }
+  // Image-type is a per-library UI preference kept on-device only. It used to
+  // be stored in the media server's DisplayPreferences, which sent data to
+  // Lumistream; it now lives purely in local preferences.
+  Future<void> _syncImageTypeFromServer() async {}
 
-  Future<void> _syncImageTypeToServer(ImageType value) async {
-    if (_imagePrefKey.isEmpty) return;
-    try {
-      final dp = await _client.displayPreferencesApi.getDisplayPreferences(
-        _imagePrefKey,
-        client: 'voltix',
-      );
-      final updated = DisplayPreferences(
-        id: dp.id,
-        sortBy: dp.sortBy,
-        sortOrder: dp.sortOrder,
-        viewType: dp.viewType,
-        customPrefs: {...dp.customPrefs, 'imageType': value.name},
-      );
-      await _client.displayPreferencesApi.saveDisplayPreferences(
-        _imagePrefKey,
-        updated,
-        client: 'voltix',
-      );
-    } catch (_) {}
-  }
+  Future<void> _syncImageTypeToServer(ImageType value) async {}
 
   Future<void> setPosterSize(PosterSize value) async {
     if (_posterSize == value) return;

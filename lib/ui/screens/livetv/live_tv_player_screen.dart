@@ -145,6 +145,10 @@ class _LiveTvPlayerScreenState extends State<LiveTvPlayerScreen>
   @override
   void initState() {
     super.initState();
+    if (PlatformDetection.isTV) {
+      PaintingBinding.instance.imageCache.clear();
+      PaintingBinding.instance.imageCache.clearLiveImages();
+    }
     _screensaverController.setPlaybackActive(true);
     _screensaverPlayingSub = _state.playingStream.listen(
       _screensaverController.setPlaybackActive,

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'preference_constants.dart';
+import '../util/voltix_query_mode.dart';
 
 /// Categorizes a [HomeSectionConfig].
 ///
@@ -173,8 +174,8 @@ class HomeSectionConfig {
 
   /// Default home layout (2.5.0): the tuned Voltix row set and order.
   /// Enabled, in order: library tiles, Continue Watching, Next Up, taste
-  /// rows, three "More with actor" rows, the two taste genre rows, three
-  /// "Since you watched" rows, Rewatch, then Live TV continue rows.
+  /// rows, three "More with actor" rows, the two taste genre rows, Rewatch,
+  /// three "Since you watched" rows, then Live TV continue rows.
   /// Everything else is present but off, so turning it on has somewhere
   /// to persist.
   static List<HomeSectionConfig> defaults() => const [
@@ -182,15 +183,15 @@ class HomeSectionConfig {
     HomeSectionConfig(type: HomeSectionType.resume, enabled: true, order: 1),
     HomeSectionConfig(type: HomeSectionType.nextUp, enabled: true, order: 2),
     HomeSectionConfig(type: HomeSectionType.personalization, enabled: true, order: 3),
-    HomeSectionConfig(type: HomeSectionType.moreWithActor1, enabled: true, order: 4),
-    HomeSectionConfig(type: HomeSectionType.moreWithActor2, enabled: true, order: 5),
-    HomeSectionConfig(type: HomeSectionType.moreWithActor3, enabled: true, order: 6),
+    HomeSectionConfig(type: HomeSectionType.moreWithActor1, enabled: kFullHomeQueries, order: 4),
+    HomeSectionConfig(type: HomeSectionType.moreWithActor2, enabled: kFullHomeQueries, order: 5),
+    HomeSectionConfig(type: HomeSectionType.moreWithActor3, enabled: kFullHomeQueries, order: 6),
     HomeSectionConfig(type: HomeSectionType.genreFanFavorite, enabled: true, order: 7),
     HomeSectionConfig(type: HomeSectionType.genreMoreTitles, enabled: true, order: 8),
-    HomeSectionConfig(type: HomeSectionType.sinceYouWatched1, enabled: true, order: 9),
-    HomeSectionConfig(type: HomeSectionType.sinceYouWatched2, enabled: true, order: 10),
-    HomeSectionConfig(type: HomeSectionType.sinceYouWatched3, enabled: true, order: 11),
-    HomeSectionConfig(type: HomeSectionType.rewatch, enabled: true, order: 12),
+    HomeSectionConfig(type: HomeSectionType.rewatch, enabled: kFullHomeQueries, order: 9),
+    HomeSectionConfig(type: HomeSectionType.sinceYouWatched1, enabled: true, order: 10),
+    HomeSectionConfig(type: HomeSectionType.sinceYouWatched2, enabled: true, order: 11),
+    HomeSectionConfig(type: HomeSectionType.sinceYouWatched3, enabled: kFullHomeQueries, order: 12),
     HomeSectionConfig(type: HomeSectionType.iptvRecentChannels, enabled: false, order: 13),
     HomeSectionConfig(type: HomeSectionType.iptvFavoriteChannels, enabled: false, order: 14),
     HomeSectionConfig(type: HomeSectionType.iptvFavoriteMovies, enabled: false, order: 15),

@@ -27,22 +27,6 @@ class _AuthenticationCategoryScreen extends StatelessWidget {
       body: ListView(
         children: [
           _SectionHeader(l10n.settingsAuthenticationSection),
-          SwitchPreferenceTile(
-            preference: UserPreferences.voltixUseTestServer,
-            title: 'Use Local Test Server',
-            subtitle: 'Points API to http://192.168.0.31:3000/',
-            icon: Icons.dns,
-            onChanged: () async {
-              final voltixStore = GetIt.instance<VoltixSessionStore>();
-              await voltixStore.clear();
-              final sessionRepo = GetIt.instance<SessionRepository>();
-              await sessionRepo.destroyCurrentSession();
-              if (context.mounted) {
-                Navigator.of(context, rootNavigator: true).pop();
-                context.go(Destinations.voltixLogin);
-              }
-            },
-          ),
           EnumPreferenceTile<UserSelectBehavior>(
             preference: UserPreferences.autoLoginUserBehavior,
             title: l10n.autoLogin,
@@ -88,6 +72,17 @@ class _AuthenticationCategoryScreen extends StatelessWidget {
                 context.pushSettingsScreen(const PinCodeSettingsScreen()),
           ),
           _SectionHeader(l10n.accountPreferences),
+          _TvSettingsListTile(
+            leading: const Icon(Icons.manage_accounts),
+            title: const Text('Manage profiles'),
+            subtitle: const Text(
+              'Create, edit, or delete Voltix profiles for this account',
+            ),
+            onTap: () {
+              Navigator.of(context, rootNavigator: true).pop();
+              context.go('${Destinations.profileSelect}?force=1&manage=1');
+            },
+          ),
           _TvSettingsListTile(
             leading: const Icon(Icons.account_circle),
             title: const Text('Profile settings'),

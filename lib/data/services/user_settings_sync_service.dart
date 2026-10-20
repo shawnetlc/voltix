@@ -159,6 +159,7 @@ class UserSettingsSyncService {
   /// Schedules a debounced backup to server whenever settings change locally.
   /// (Disabled per user requirement: Cloud sync occurs strictly when the user pushes the explicit Sync button).
   void scheduleAutoSync() {
+    _attachRegistryAutoUpload();
     _debounceTimer?.cancel();
     _dailySyncTimer?.cancel();
     _dailySyncTimer = Timer.periodic(
@@ -170,6 +171,116 @@ class UserSettingsSyncService {
   void cancelAutoSync() {
     _dailySyncTimer?.cancel();
     _dailySyncTimer = null;
+    _registryUploadTimer?.cancel();
+    _registryUploadTimer = null;
+    _syncNowTimer?.cancel();
+    _syncNowTimer = null;
+    _registryRestoreDone = false;
+  }
+
+  // ── Continue Watching / Favorites: keep the Voltix user's cloud copy current
+  //
+  // The registries used to reach the cloud only in the once-a-day sync, so a
+  // reinstall lost everything watched since. Now every change is uploaded
+  // (debounced), and the cloud copy is merged in before the first upload of a
+  // session so a fresh install never overwrites it with an empty list.
+  Timer? _registryUploadTimer;
+  bool _registryListenersAttached = false;
+  bool _registryRestoreDone = false;
+  /// user|profile the cloud copy was last merged for. Continue Watching and
+  /// Favourites are stored per profile, and the profile is chosen AFTER login,
+  /// so a restore done before "Who's watching?" (profile not yet known) must
+  /// not count for the profile picked afterwards.
+  String? _registryRestoredFor;
+  String _registryOwnerKey() {
+    final (username, _) = _resolveCredentials(null);
+    final profileId = GetIt.instance<VoltixSessionStore>().activeProfileId;
+    return '${username.toLowerCase()}|${profileId ?? '-'}';
+  }
+
+  /// Call after a profile is selected: pulls that profile's cloud Continue
+  /// Watching / Favourites, then pushes the merged result back.
+  Future<void> onProfileSelected() async {
+    _registryRestoreDone = false;
+    await restoreRegistriesFromServer();
+    await _uploadRegistries();
+  }
+  static const _registryUploadDelay = Duration(seconds: 15);
+
+  void _attachRegistryAutoUpload() {
+    if (_registryListenersAttached) return;
+    _registryListenersAttached = true;
+    if (GetIt.instance.isRegistered<VoltixWatchRegistryService>()) {
+      GetIt.instance<VoltixWatchRegistryService>()
+          .addListener(_onRegistryChanged);
+    }
+    if (GetIt.instance.isRegistered<VoltixFavoritesRegistryService>()) {
+      GetIt.instance<VoltixFavoritesRegistryService>()
+          .addListener(_onRegistryChanged);
+    }
+    // Favourite toggled / title finished / playback stopped: don't wait for
+    // the 15 s debounce -- save favourites, watch history AND settings now.
+    VoltixWatchRegistryService.syncNowTick.addListener(_onSyncNow);
+    VoltixFavoritesRegistryService.syncNowTick.addListener(_onSyncNow);
+  }
+
+  Timer? _syncNowTimer;
+
+  void _onSyncNow() {
+    _registryUploadTimer?.cancel(); // superseded by the immediate sync
+    _syncNowTimer?.cancel();
+    // Short settle so a burst (e.g. favouriting several items, the stop +
+    // finished events of one title) becomes one upload.
+    _syncNowTimer = Timer(const Duration(seconds: 2), () {
+      unawaited(() async {
+        await _uploadRegistries();
+        try {
+          await backupSettingsToServer()
+              .timeout(const Duration(seconds: 20), onTimeout: () => false);
+        } catch (e) {
+          _logger.w('[UserSettingsSync] Settings sync after watch/favourite failed: $e');
+        }
+      }());
+    });
+  }
+
+  void _onRegistryChanged() {
+    _registryUploadTimer?.cancel();
+    _registryUploadTimer = Timer(_registryUploadDelay, () {
+      unawaited(_uploadRegistries());
+    });
+  }
+
+  Future<void> _uploadRegistries() async {
+    final token = GetIt.instance<VoltixSessionStore>().sessionToken;
+    if (token == null || token.isEmpty) return;
+    try {
+      if (!_registryRestoreDone || _registryRestoredFor != _registryOwnerKey()) {
+        await restoreRegistriesFromServer();
+      }
+      await uploadWatchRegistryToServer()
+          .timeout(const Duration(seconds: 20), onTimeout: () => false);
+      await uploadFavoritesRegistryToServer()
+          .timeout(const Duration(seconds: 20), onTimeout: () => false);
+    } catch (e) {
+      _logger.w('[UserSettingsSync] Registry auto-upload failed: $e');
+    }
+  }
+
+  /// Merges the Voltix user's cloud Continue Watching and Favorites into the
+  /// local registries (newest entry wins). Safe to call any time.
+  Future<void> restoreRegistriesFromServer({String? targetUsername}) async {
+    try {
+      await restoreWatchRegistryFromServer(targetUsername: targetUsername)
+          .timeout(const Duration(seconds: 12), onTimeout: () => false);
+      await restoreFavoritesRegistryFromServer(targetUsername: targetUsername)
+          .timeout(const Duration(seconds: 12), onTimeout: () => false);
+    } catch (e) {
+      _logger.w('[UserSettingsSync] Registry restore failed: $e');
+    } finally {
+      _registryRestoreDone = true;
+      _registryRestoredFor = _registryOwnerKey();
+    }
   }
 
   Future<void> _checkAndRunDailySync() async {
@@ -231,10 +342,18 @@ class UserSettingsSyncService {
     try {
       final voltixStore = GetIt.instance<VoltixSessionStore>();
       final azureBlobService = AzureBlobStorageService();
-      final remoteData = await azureBlobService.downloadWatchRegistryBlob(
+      var remoteData = await azureBlobService.downloadWatchRegistryBlob(
         username: username,
         profileId: voltixStore.activeProfileId,
       );
+      // History saved before a profile was selected lives in the user-level
+      // blob; merge it in when the profile has no cloud copy yet.
+      if (remoteData == null && voltixStore.activeProfileId != null) {
+        remoteData = await azureBlobService.downloadWatchRegistryBlob(
+          username: username,
+          profileId: null,
+        );
+      }
       if (remoteData != null && GetIt.instance.isRegistered<VoltixWatchRegistryService>()) {
         final registry = GetIt.instance<VoltixWatchRegistryService>();
         await registry.importRegistryData(remoteData);
@@ -383,6 +502,13 @@ class UserSettingsSyncService {
     final prefStore = GetIt.instance<PreferenceStore>();
     final hasSyncedLocally = prefStore.getString(_hasSyncedKey(username)) == 'true';
 
+    if (!hasSyncedLocally) {
+      // Fresh install / new device: Continue Watching and Favorites belong to
+      // the Voltix user, so bring them back without waiting for the
+      // import prompt (it still governs settings and the taste profile).
+      unawaited(restoreRegistriesFromServer(targetUsername: username));
+    }
+
     if (hasSyncedLocally) {
       // User has previously synced: automatically restore latest cloud data on
       // app restart.
@@ -416,6 +542,8 @@ class UserSettingsSyncService {
           _logger.w('[UserSettingsSync] Favorites registry restore timed out for @$username');
           return false;
         });
+        _registryRestoreDone = true;
+        _registryRestoredFor = _registryOwnerKey();
         _logger.i(
           '[UserSettingsSync] Startup restore for @$username — '
           'settings: $restoredSettings, watch registry: $restoredRegistry, favorites: $restoredFavorites',

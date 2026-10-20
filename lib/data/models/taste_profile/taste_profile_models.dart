@@ -64,7 +64,7 @@ class LanguageSettings {
     this.allowedOriginalLanguages = const {'eng', 'en', 'english'},
     this.allowedAudioLanguages = const {'eng', 'en', 'english'},
     this.includeSubtitled = false,
-    this.allowForeignFallback = false,
+    this.allowForeignFallback = true,
     this.foreignFallbackThreshold = 0.3,
     this.allowUnknownLanguage = true,
   });
@@ -92,10 +92,10 @@ class LanguageSettings {
               .toSet() ??
           const {'eng', 'en'},
       includeSubtitled: json['includeSubtitled'] as bool? ?? false,
-      allowForeignFallback: json['allowForeignFallback'] as bool? ?? false,
+      allowForeignFallback: json['allowForeignFallback'] as bool? ?? true,
       foreignFallbackThreshold:
           (json['foreignFallbackThreshold'] as num?)?.toDouble() ?? 0.3,
-      allowUnknownLanguage: json['allowUnknownLanguage'] as bool? ?? false,
+      allowUnknownLanguage: json['allowUnknownLanguage'] as bool? ?? true,
     );
   }
 

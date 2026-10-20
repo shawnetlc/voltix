@@ -13,7 +13,7 @@ class JellyfinDisplayPreferencesApi implements DisplayPreferencesApi {
   }) async {
     final response =
         await _dio.get('/DisplayPreferences/$id', queryParameters: {
-      'client': client ?? 'voltix',
+      'client': client ?? 'emby',
     });
     return DisplayPreferences.fromJson(response.data as Map<String, dynamic>);
   }
@@ -28,7 +28,7 @@ class JellyfinDisplayPreferencesApi implements DisplayPreferencesApi {
       '/DisplayPreferences/$id',
       data: prefs.toJson(),
       queryParameters: {
-        'client': client ?? 'voltix',
+        'client': client ?? 'emby',
       },
     );
   }

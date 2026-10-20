@@ -12,6 +12,7 @@ import 'package:server_core/server_core.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../../auth/repositories/user_repository.dart';
+import '../../auth/store/voltix_session_store.dart';
 import '../../data/models/aggregated_library.dart';
 import '../../data/repositories/multi_server_repository.dart';
 import '../../data/repositories/user_views_repository.dart';
@@ -39,6 +40,10 @@ import '../../data/models/aggregated_item.dart';
 import '../../data/services/media_server_client_factory.dart';
 import '../../util/focus/dpad_keys.dart';
 import '../navigation/app_router.dart';
+
+/// Voltix: IPTV Movies/Series shortcuts hidden from the main menu for now.
+/// Set to true to bring them back.
+const bool _kShowIptvVodNav = false;
 
 const _kToolbarHeightTV = 95.0;
 const _kToolbarHeightDesktop = 80.0;
@@ -281,6 +286,13 @@ class _TopToolbarState extends State<TopToolbar> {
             filtered = libs.where((lib) => !excluded.contains(lib.id)).toList();
           }
         } catch (_) {}
+      }
+
+      if (GetIt.instance.isRegistered<VoltixSessionStore>() &&
+          GetIt.instance<VoltixSessionStore>().isKidsProfile) {
+        filtered = filtered.where((lib) =>
+            lib.collectionType == 'movies' || lib.collectionType == 'tvshows'
+        ).toList();
       }
 
       if (mounted && !_librariesEqual(_libraries, filtered)) {
@@ -746,19 +758,22 @@ class _TopToolbarState extends State<TopToolbar> {
   }
 
   Widget _buildCenter() {
+    final isKids = GetIt.instance.isRegistered<VoltixSessionStore>() &&
+        GetIt.instance<VoltixSessionStore>().isKidsProfile;
     final isNeon = ThemeRegistry.active.id == ThemeRegistry.neonPulseId;
     final jellyfinEnabled = _prefs.get(UserPreferences.voltixJellyfinEnabled);
-    final liveTvEnabled = _prefs.get(UserPreferences.voltixLiveTvEnabled);
+    final liveTvEnabled = !isKids && _prefs.get(UserPreferences.voltixLiveTvEnabled);
     final showShuffle = _prefs.get(UserPreferences.showShuffleButton);
     final showGenres = _prefs.get(UserPreferences.showGenresButton);
     final showFavorites = _prefs.get(UserPreferences.showFavoritesButton);
     final showLibraries = _prefs.get(UserPreferences.showLibrariesInToolbar);
-    final showFolders = _prefs.get(UserPreferences.enableFolderView);
+    final showFolders = !isKids && _prefs.get(UserPreferences.enableFolderView);
     final showSyncPlay =
         _prefs.get(UserPreferences.syncPlayEnabled) &&
         _prefs.get(UserPreferences.showSyncPlayButton);
     final seerrPrefs = GetIt.instance<SeerrPreferences>();
-    final showSeerr = _prefs.get(UserPreferences.showSeerrButton) &&
+    final showSeerr = !isKids &&
+        _prefs.get(UserPreferences.showSeerrButton) &&
         GetIt.instance<PluginSyncService>().seerrAvailable;
     final l10n = AppLocalizations.of(context);
     final seerrDisplayName = seerrPrefs.voltixDisplayName.trim();
@@ -828,11 +843,39 @@ class _TopToolbarState extends State<TopToolbar> {
                       },
                     ),
                   ),
+                  if (_kShowIptvVodNav) ...[
+                    _gap(),
+                    _orderButton(
+                      order: (order++).toDouble(),
+                      child: ExpandableIconButton(
+                        key: const ValueKey('toolbar_movies'),
+                        icon: Icons.movie_rounded,
+                        label: 'Movies',
+                        baseColor: nextNavColor(),
+                        onPressed: () {
+                          context.navigateTopLevel(Destinations.voltixMovies);
+                        },
+                      ),
+                    ),
+                    _gap(),
+                    _orderButton(
+                      order: (order++).toDouble(),
+                      child: ExpandableIconButton(
+                        key: const ValueKey('toolbar_series'),
+                        icon: Icons.video_library_rounded,
+                        label: 'Series',
+                        baseColor: nextNavColor(),
+                        onPressed: () {
+                          context.navigateTopLevel(Destinations.voltixSeries);
+                        },
+                      ),
+                    ),
+                  ],
                 ],
                 // Server-native Jellyfin/Emby Live TV (guide/schedule/
                 // recordings), separate from the Voltix IPTV entry above --
                 // same gating as Search since both need a real media server.
-                if (jellyfinEnabled) ...[
+                if (jellyfinEnabled && !isKids) ...[
                   _gap(),
                   _orderButton(
                     order: (order++).toDouble(),

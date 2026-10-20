@@ -112,11 +112,19 @@ class AppDistribution {
   static bool get allowsApkSelfUpdate =>
       Platform.isAndroid && !isManagedStoreBuild;
 
+  static bool _runtimePlayStore = false;
+
+  /// Dynamically marks this instance as installed from Google Play Store.
+  static void setRuntimePlayStore(bool value) {
+    _runtimePlayStore = value;
+  }
+
   /// Whether this is a Play Store (AAB) build that should show Play Store
   /// update links instead of direct APK downloads.
   static bool get isPlayStoreBuild =>
       channel == DistributionChannel.aab ||
-      channel == DistributionChannel.androidTvAab;
+      channel == DistributionChannel.androidTvAab ||
+      _runtimePlayStore;
 
   /// Whether this build is distributed through Huawei AppGallery.
   ///

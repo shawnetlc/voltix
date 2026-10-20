@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import '../../ui/navigation/app_router.dart';
+import '../../ui/navigation/deep_link_navigator.dart';
 import '../../ui/widgets/floating_notification.dart';
 import '../../util/platform_detection.dart';
 import 'local_notification_bootstrap.dart';
@@ -112,13 +113,13 @@ class SeerrNotificationService {
       context,
       title,
       body,
-      () => appRouter.go(route),
+      () => navigateOrLaunchUrl(route),
     );
   }
 
   Future<void> handleColdStart() async {
     final route = await LocalNotificationBootstrap.instance.getLaunchRoute();
     if (route == null) return;
-    appRouter.go(route);
+    navigateOrLaunchUrl(route);
   }
 }

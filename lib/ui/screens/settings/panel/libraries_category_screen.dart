@@ -27,6 +27,7 @@ class _LibrariesCategoryScreen extends StatelessWidget {
                 icon: Icons.folder,
                 onChanged: _pushPersonalizationSync,
               ),
+              if (UserPreferences.multiServerLibrariesSettingEnabled)
               SwitchPreferenceTile(
                 preference: UserPreferences.enableMultiServerLibraries,
                 title: l10n.multiServerLibraries,
@@ -34,6 +35,7 @@ class _LibrariesCategoryScreen extends StatelessWidget {
                 icon: Icons.dns,
                 onChanged: _pushPersonalizationSync,
               ),
+              if (UserPreferences.multiServerSearchSettingEnabled)
               SwitchPreferenceTile(
                 preference: UserPreferences.enableMultiServerSearch,
                 title: 'Enable multi-server search',

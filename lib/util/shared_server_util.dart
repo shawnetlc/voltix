@@ -22,5 +22,9 @@ bool isSharedServerIdentity(String? nameOrUrl) {
 }
 
 /// True when either the server name or its address marks it as shared.
-bool isSharedServer({String? name, String? address}) =>
-    isSharedServerIdentity(name) || isSharedServerIdentity(address);
+///
+/// Every Voltix streaming server is now one Jellyfin login shared by all
+/// Voltix users, so every server is treated as shared: Continue Watching,
+/// Next Up and watched state always come from the per-user
+/// `VoltixWatchRegistryService`, never from the server account.
+bool isSharedServer({String? name, String? address}) => true;

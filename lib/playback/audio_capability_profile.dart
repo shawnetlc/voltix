@@ -59,6 +59,30 @@ class AudioCapabilityProfile {
       activeRouteType = AudioRouteType.other,
       routeSupportsHdAudio = false;
 
+  /// Samsung Tizen TV profile (Tizen 4.0+ / 2018+ models).
+  ///
+  /// Samsung TVs do not decode DTS or TrueHD natively. Reporting them as supported
+  /// causes Jellyfin to direct-play unsupported audio, stalling Tizen AVPlay's
+  /// audio clock and leading to severe video stutter/slowdown.
+  const AudioCapabilityProfile.tizen()
+    : canDecodeAc3 = true,
+      canDecodeEac3 = true,
+      canDecodeDts = false,
+      canDecodeDtsHd = false,
+      canDecodeTrueHd = false,
+      canDecodeFlac = true,
+      canPassthroughAc3 = false,
+      canPassthroughEac3 = false,
+      canPassthroughEac3Joc = false,
+      canPassthroughDts = false,
+      canPassthroughDtsHd = false,
+      canPassthroughDtsX = false,
+      canPassthroughTrueHd = false,
+      canPassthroughTrueHdJoc = false,
+      maxPcmChannels = 6,
+      activeRouteType = AudioRouteType.speaker,
+      routeSupportsHdAudio = false;
+
   final bool canDecodeAc3;
   final bool canDecodeEac3;
   final bool canDecodeDts;
