@@ -23,7 +23,8 @@ jobs:
 
     # Only submit stable releases. On a manual run there is no release payload,
     # so this passes and the tag input decides what gets published.
-    if: ${{ !github.event.release.prerelease }}
+    # Publishes the upstream Moonfin package; never from the Voltix fork.
+    if: ${{ github.repository_owner == 'Moonfin-Client' && !github.event.release.prerelease }}
 
     steps:
       - name: Submit Moonfin.Moonfin to the Windows Package Manager Community Repository

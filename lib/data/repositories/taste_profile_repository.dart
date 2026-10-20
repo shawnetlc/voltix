@@ -253,8 +253,9 @@ class TasteProfileRepository extends ChangeNotifier {
     await _localStore.saveProfileAtomic(_currentProfile!, profileId: profileId);
     await _syncRoamingPreferences(_currentProfile!);
 
-    // Silent background Azure sync
-    if (_currentProfile!.azureBackupEnabled) {
+    // Silent background Azure sync - always: the taste profile (and with it
+    // what Voltix has learned from viewing) must survive a reinstall.
+    {
       unawaited(_azureSync.uploadProfileSilently(profile: _currentProfile!, profileId: profileId).then((ok) async {
         if (ok && _currentProfile != null) {
           _currentProfile = _currentProfile!.copyWith(

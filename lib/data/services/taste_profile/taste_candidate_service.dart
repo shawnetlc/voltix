@@ -378,7 +378,12 @@ class TasteCandidateService {
     final needsLanguageFields = profile.languageSettings.excludeForeignContent;
     // People (cast/crew) is heavy on big shared servers; only person-based
     // rows need it.
-    final personFields = (query.personIds?.isNotEmpty ?? false) ? ',People' : '';
+    // People is needed to score cast / directors the viewer likes (learned
+    // from what they watch); skipped only while the profile has none.
+    final wantsPeople = (query.personIds?.isNotEmpty ?? false) ||
+        profile.inferred.actorAffinities.isNotEmpty ||
+        profile.inferred.directorAffinities.isNotEmpty;
+    final personFields = wantsPeople ? ',People' : '';
     final fields = needsLanguageFields
         ? '$_baseFields$personFields$_languageFields'
         : '$_baseFields$personFields';

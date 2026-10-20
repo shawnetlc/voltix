@@ -1,10 +1,15 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'package:get_it/get_it.dart';
+
+import '../../auth/store/voltix_session_store.dart';
 import '../../util/platform_detection.dart';
+import 'azure_blob_storage_service.dart';
 import '../models/aggregated_item.dart';
 import '../models/home_row.dart';
 
@@ -65,10 +70,78 @@ class HomeRowCacheStore {
 
   /// Returns the cached rows for [cacheKey], or null on any miss (no file,
   /// signature mismatch, too old, corrupt, or empty).
+  // ── Azure copy (home-rows/<user>_profile<N>_home_rows.json) ─────────────
+  // Every default home row, genre rows included, is kept on the device AND in
+  // the account's blob storage, so a reinstall / new device paints the same
+  // home screen straight away while it refreshes.
+  static DateTime? _lastUpload;
+  static const _uploadEvery = Duration(minutes: 2);
+
+  static String? _blobName() {
+    try {
+      final store = GetIt.instance<VoltixSessionStore>();
+      final user = (store.username ?? '').trim().toLowerCase();
+      if (user.isEmpty) return null;
+      final profile = store.activeProfileId;
+      return profile != null
+          ? 'home-rows/${user}_profile${profile}_home_rows.json'
+          : 'home-rows/${user}_home_rows.json';
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static String? _user() {
+    try {
+      final u = GetIt.instance<VoltixSessionStore>().username?.trim();
+      return (u == null || u.isEmpty) ? null : u;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _uploadCopy(String payload, {bool force = false}) async {
+    final blob = _blobName();
+    final user = _user();
+    if (blob == null || user == null) return;
+    final now = DateTime.now();
+    if (!force && _lastUpload != null && now.difference(_lastUpload!) < _uploadEvery) {
+      return;
+    }
+    _lastUpload = now;
+    try {
+      final data = jsonDecode(payload);
+      if (data is! Map<String, dynamic>) return;
+      final ok = await AzureBlobStorageService()
+          .uploadUserJsonBlob(username: user, blobName: blob, data: data);
+      debugPrint('⚡🏠 [HomeCache] Azure copy ${ok ? 'saved' : 'failed'} ($blob)');
+    } catch (_) {}
+  }
+
+  /// No local copy (reinstall / new device): fetch the Azure copy and keep it
+  /// locally. Returns true when a copy was restored.
+  Future<bool> _restoreFromAzure() async {
+    final blob = _blobName();
+    final user = _user();
+    if (blob == null || user == null) return false;
+    try {
+      final data = await AzureBlobStorageService()
+          .downloadUserJsonBlob(username: user, blobName: blob)
+          .timeout(const Duration(seconds: 10));
+      if (data == null || data['rows'] is! List) return false;
+      final file = await _file();
+      await file.writeAsString(jsonEncode(data), flush: true);
+      debugPrint('⚡🏠 [HomeCache] Restored from Azure ($blob)');
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<List<HomeRow>?> read(String cacheKey) async {
     try {
       final file = await _file();
-      if (!file.existsSync()) {
+      if (!file.existsSync() && !await _restoreFromAzure()) {
         debugPrint('⚡🏠 [HomeCache] No cache file found');
         return null;
       }
@@ -125,6 +198,7 @@ class HomeRowCacheStore {
       final file = await _file();
       await file.writeAsString(payload, flush: true);
       debugPrint('⚡🏠 [HomeCache] Wrote ${serializable.length} rows (${(payload.length / 1024).toStringAsFixed(1)} KB)');
+      unawaited(_uploadCopy(payload));
     } catch (e) {
       debugPrint('⚡🏠 [HomeCache] Write error: $e');
     }

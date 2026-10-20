@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Moonfin</string>
+	<string>Voltix</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -15,7 +15,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Moonfin</string>
+	<string>Voltix</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -81,19 +81,19 @@
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Moonfin uses your local network to discover Jellyfin and Emby servers.</string>
+	<string>Voltix uses your local network to discover Jellyfin and Emby servers.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Moonfin needs microphone access for voice search.</string>
+	<string>Voltix needs microphone access for voice search.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Moonfin needs access to your photo library so you can choose images to upload for media artwork and metadata.</string>
+	<string>Voltix needs access to your photo library so you can choose images to upload for media artwork and metadata.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Moonfin needs camera access to let you capture images for media artwork and metadata.</string>
+	<string>Voltix needs camera access to let you capture images for media artwork and metadata.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Moonfin does not track your location; this access is only used to read location metadata stored in images you choose for media artwork.</string>
+	<string>Voltix does not track your location; this access is only used to read location metadata stored in images you choose for media artwork.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Moonfin does not track your location; this access is only used to read location metadata stored in images you choose for media artwork.</string>
+	<string>Voltix does not track your location; this access is only used to read location metadata stored in images you choose for media artwork.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Moonfin needs speech recognition access for voice search.</string>
+	<string>Voltix needs speech recognition access for voice search.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_jellyfin._tcp</string>

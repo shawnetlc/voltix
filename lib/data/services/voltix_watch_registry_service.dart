@@ -402,6 +402,10 @@ class VoltixWatchRegistryService extends ChangeNotifier {
 
   /// Item ids in progress, most recently watched first. [types] are
   /// lower-case item types (e.g. 'movie', 'episode'); empty means any.
+  /// Every watch record for the current user (taste learning reads these).
+  List<WatchRegistryEntry> get allEntries =>
+      List.unmodifiable(_entries.values);
+
   List<String> inProgressItemIds({Set<String>? types}) {
     _loadForCurrentUser();
     final list = _entries.values

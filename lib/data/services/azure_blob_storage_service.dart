@@ -50,6 +50,66 @@ class AzureBlobStorageService {
     }
   }
 
+  /// Uploads a per-user JSON blob (e.g. `home-rows/<user>_profile1_home_rows.json`)
+  /// through the Voltix sync proxy. Best-effort; false on failure.
+  Future<bool> uploadUserJsonBlob({
+    required String username,
+    required String blobName,
+    required Map<String, dynamic> data,
+  }) async {
+    final cleanUser = username.toLowerCase().trim();
+    if (cleanUser.isEmpty) return false;
+    try {
+      final syncDio = Dio(BaseOptions(
+        connectTimeout: const Duration(seconds: 8),
+        receiveTimeout: const Duration(seconds: 20),
+        headers: {'Content-Type': 'application/json'},
+      ));
+      final response = await syncDio.post(
+        '${_voltixBaseUrl()}/api/voltix/azure-sync',
+        data: {
+          'username': cleanUser,
+          'blobName': blobName,
+          'settings': data,
+          'updatedAt': DateTime.now().toUtc().toIso8601String(),
+        },
+      );
+      final body = response.data;
+      return (response.statusCode == 200 || response.statusCode == 201) &&
+          !(body is Map && body['success'] == false);
+    } catch (e) {
+      _logger.w('[AzureBlob] Upload of $blobName failed: $e');
+      return false;
+    }
+  }
+
+  /// Downloads a per-user JSON blob written by [uploadUserJsonBlob]; null when
+  /// it does not exist or cannot be read.
+  Future<Map<String, dynamic>?> downloadUserJsonBlob({
+    required String username,
+    required String blobName,
+  }) async {
+    final cleanUser = username.toLowerCase().trim();
+    if (cleanUser.isEmpty) return null;
+    try {
+      final syncDio = Dio(BaseOptions(
+        connectTimeout: const Duration(seconds: 8),
+        receiveTimeout: const Duration(seconds: 20),
+      ));
+      final response = await syncDio.get(
+        '${_voltixBaseUrl()}/api/voltix/azure-sync',
+        queryParameters: {'username': cleanUser, 'blobName': blobName},
+      );
+      final data = response.data;
+      if (data is Map && data['settings'] is Map) {
+        return Map<String, dynamic>.from(data['settings'] as Map);
+      }
+    } catch (e) {
+      _logger.w('[AzureBlob] Download of $blobName failed: $e');
+    }
+    return null;
+  }
+
   String get accountName {
     if (_envAccountName.isNotEmpty) return _envAccountName;
     try {

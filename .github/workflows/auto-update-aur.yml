@@ -7,6 +7,8 @@ on:
 
 jobs:
   update-aur:
+    # Publishes the upstream Moonfin package; never from the Voltix fork.
+    if: github.repository_owner == 'Moonfin-Client'
     runs-on: ubuntu-latest
     steps:
       - name: Resolve release version

@@ -974,7 +974,7 @@ private final class NativeAirPlayEventStreamHandler: NSObject, FlutterStreamHand
       return nil
     }
 
-    let title = (item["title"] as? String) ?? "Moonfin"
+    let title = (item["title"] as? String) ?? "Voltix"
     let subtitle = item["subtitle"] as? String
     let posterUrlRaw = item["posterUrl"] as? String
     let posterUrl = posterUrlRaw.flatMap(URL.init(string:))

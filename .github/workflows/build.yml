@@ -103,8 +103,8 @@ jobs:
         with:
           name: android
           path: |
-            Moonfin_Android_v*.*
-            Moonfin_AndroidTV_v*.*
+            *_Android_v*.*
+            *_AndroidTV_v*.*
 
   # iOS unsigned IPA
   ios:
@@ -141,13 +141,13 @@ jobs:
           TMPDIR=$(mktemp -d)
           mkdir -p "$TMPDIR/Payload"
           cp -R "$APP_PATH" "$TMPDIR/Payload/"
-          (cd "$TMPDIR" && zip -qry "$OLDPWD/Moonfin_iOS_v${VERSION}_unsigned.ipa" Payload)
+          (cd "$TMPDIR" && zip -qry "$OLDPWD/Voltix_iOS_v${VERSION}_unsigned.ipa" Payload)
           rm -rf "$TMPDIR"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ios-ipa
-          path: Moonfin_iOS_v*_unsigned.ipa
+          path: Voltix_iOS_v*_unsigned.ipa
 
   # macOS signed DMG
   macos:
@@ -220,7 +220,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: macos-dmg
-          path: Moonfin_macOS_v*.dmg
+          path: '*_macOS_v*.dmg'
 
   # Windows installer EXE
   windows:
@@ -244,9 +244,9 @@ jobs:
       - name: Verify Windows artifact
         shell: pwsh
         run: |
-          $artifacts = Get-ChildItem -Path . -Filter "Moonfin_Windows_v*.exe" -File -ErrorAction SilentlyContinue
+          $artifacts = Get-ChildItem -Path . -Filter "*_Windows_v*.exe" -File -ErrorAction SilentlyContinue
           if (-not $artifacts -or $artifacts.Count -eq 0) {
-            throw "Windows build did not produce Moonfin_Windows_v*.exe"
+            throw "Windows build did not produce *_Windows_v*.exe"
           }
           Write-Host "Found Windows artifact(s):"
           $artifacts | ForEach-Object { Write-Host "  - $($_.Name)" }
@@ -254,7 +254,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: windows-exe
-          path: Moonfin_Windows_v*.exe
+          path: '*_Windows_v*.exe'
           if-no-files-found: error
 
   # Windows ARM64 installer EXE (native build on an ARM64 runner)
@@ -304,9 +304,9 @@ jobs:
       - name: Verify Windows ARM64 artifact
         shell: pwsh
         run: |
-          $artifacts = Get-ChildItem -Path . -Filter "Moonfin_WindowsARM64_v*.exe" -File -ErrorAction SilentlyContinue
+          $artifacts = Get-ChildItem -Path . -Filter "*_WindowsARM64_v*.exe" -File -ErrorAction SilentlyContinue
           if (-not $artifacts -or $artifacts.Count -eq 0) {
-            throw "Windows ARM64 build did not produce Moonfin_WindowsARM64_v*.exe"
+            throw "Windows ARM64 build did not produce *_WindowsARM64_v*.exe"
           }
           Write-Host "Found Windows ARM64 artifact(s):"
           $artifacts | ForEach-Object { Write-Host "  - $($_.Name)" }
@@ -314,7 +314,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: windows-arm64-exe
-          path: Moonfin_WindowsARM64_v*.exe
+          path: '*_WindowsARM64_v*.exe'
           if-no-files-found: error
 
   # Linux packages, built natively for each architecture
@@ -464,5 +464,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
-          files: Moonfin_*
+          files: |
+            Voltix_*
+            Moonfin_*
           generate_release_notes: true

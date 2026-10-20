@@ -128,10 +128,10 @@ final class CarPlayBridge: NSObject {
       guard !templates.isEmpty else {
         // No session yet: show a single tab whose empty state explains the fix;
         // signInStateChanged rebuilds once the user signs in on the phone.
-        let placeholder = CPListTemplate(title: "Moonfin", sections: [])
+        let placeholder = CPListTemplate(title: "Voltix", sections: [])
         placeholder.tabImage = UIImage(systemName: "music.note")
-        placeholder.tabTitle = "Moonfin"
-        placeholder.emptyViewTitleVariants = ["Open Moonfin on your iPhone to sign in"]
+        placeholder.tabTitle = "Voltix"
+        placeholder.emptyViewTitleVariants = ["Open Voltix on your iPhone to sign in"]
         let tabBar = CPTabBarTemplate(templates: [placeholder])
         interfaceController.setRootTemplate(tabBar, animated: false) { _, _ in }
         return

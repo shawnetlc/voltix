@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import '../../../data/services/taste_profile/taste_learning_service.dart';
 import 'dart:convert';
 import 'dart:io';
 
@@ -329,6 +330,10 @@ class HomeViewModel extends ChangeNotifier {
        _ownerUserId = client.userId ?? '' {
     _startDailySync();
     VoltixWatchRegistryService.restoreTick.addListener(_onWatchRegistryRestored);
+    // Taste learning from what this profile watches; when it updates the
+    // profile, the taste and genre rows are refreshed.
+    TasteLearningService.instance.start();
+    TasteLearningService.profileLearned.addListener(_onTasteLearned);
   }
 
   /// Continue Watching / Next Up come from the Voltix user's registry; when
@@ -336,6 +341,16 @@ class HomeViewModel extends ChangeNotifier {
   void _onWatchRegistryRestored() {
     if (_disposed) return;
     unawaited(refresh(preserveExisting: true));
+  }
+
+  Timer? _tasteLearnedTimer;
+  void _onTasteLearned() {
+    if (_disposed) return;
+    _tasteLearnedTimer?.cancel();
+    _tasteLearnedTimer = Timer(const Duration(seconds: 5), () {
+      if (_disposed || _isLoading) return;
+      unawaited(refresh(preserveExisting: true));
+    });
   }
 
   // ─── Once-a-day full resync ─────────────────────────────────────────────────
@@ -396,6 +411,8 @@ class HomeViewModel extends ChangeNotifier {
   @override
   void dispose() {
     VoltixWatchRegistryService.restoreTick.removeListener(_onWatchRegistryRestored);
+    TasteLearningService.profileLearned.removeListener(_onTasteLearned);
+    _tasteLearnedTimer?.cancel();
     _dailySyncTimer?.cancel();
     _rowNotifyTimer?.cancel();
     _disposed = true;
@@ -1376,10 +1393,22 @@ class HomeViewModel extends ChangeNotifier {
           TasteRating.unseen => 0,
         };
 
-    final rated = profile.explicit.genreRatings.entries
-        .where((e) => weight(e.value) > 0)
-        .toList()
-      ..sort((a, b) => weight(b.value).compareTo(weight(a.value)));
+    // Explicit wizard ratings plus what the viewer actually watches (learned
+    // genre affinity 0..1, worth up to 3 points - a "love").
+    final scores = <String, double>{};
+    for (final e in profile.explicit.genreRatings.entries) {
+      scores[e.key.trim().toLowerCase()] = weight(e.value).toDouble();
+    }
+    for (final e in profile.inferred.genreAffinities.entries) {
+      final k = e.key.trim().toLowerCase();
+      scores[k] = (scores[k] ?? 0) + e.value * 3;
+    }
+    for (final g in profile.inferred.negativeGenreSignals) {
+      final k = g.trim().toLowerCase();
+      scores[k] = (scores[k] ?? 0) - 0.5;
+    }
+    final rated = scores.entries.where((e) => e.value > 0.5).toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
     if (rated.isEmpty) return const [];
 
     // key -> label from the discovered server genres, so the heading and the
