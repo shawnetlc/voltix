@@ -41,9 +41,18 @@ class JellyfinPlaybackApi implements PlaybackApi {
       'UserId': ?userId,
       ...?requestBody,
     };
+    // "No subtitles" is index -1. Some servers (supersilo) answer 400 Bad
+    // Request to a negative index, so leave it out: no index = no subtitles
+    // burned in, and the player keeps subtitles off itself.
+    for (final k in const ['SubtitleStreamIndex', 'subtitleStreamIndex',
+        'AudioStreamIndex', 'audioStreamIndex']) {
+      final v = body[k];
+      if (v is num && v < 0) body.remove(k);
+      if (v is String && (int.tryParse(v) ?? 0) < 0) body.remove(k);
+    }
 
-    final audioStreamIndex = requestBody?['AudioStreamIndex'] ?? requestBody?['audioStreamIndex'];
-    final subtitleStreamIndex = requestBody?['SubtitleStreamIndex'] ?? requestBody?['subtitleStreamIndex'];
+    final audioStreamIndex = body['AudioStreamIndex'] ?? body['audioStreamIndex'];
+    final subtitleStreamIndex = body['SubtitleStreamIndex'] ?? body['subtitleStreamIndex'];
     final mediaSourceId = requestBody?['MediaSourceId'] ?? requestBody?['mediaSourceId'];
     final maxStreamingBitrate = requestBody?['MaxStreamingBitrate'] ?? requestBody?['maxStreamingBitrate'];
 

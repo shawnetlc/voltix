@@ -817,7 +817,79 @@ class PlaybackManager implements AudioOwnable {
     if (!canReResolve()) {
       return;
     }
+    // The file usually carries a second, compatible audio track (4K remuxes:
+    // TrueHD / DTS-HD plus an AC3 / E-AC3 one). Switching to it keeps direct
+    // play. A server transcode is the last resort: shared servers such as
+    // supersilo can't convert 4K in real time ("Playback session not found").
+    if (await _tryCompatibleAudioTrack(resolution, queueItem)) return;
     await recoverViaTranscode();
+  }
+
+  /// Audio tracks tried as a fallback, per item (so it can't loop).
+  final Set<String> _audioFallbackTried = <String>{};
+  static const _compatibleAudioCodecs = [
+    'eac3', 'ac3', 'aac', 'mp3', 'opus', 'flac', 'vorbis', 'mp2', 'pcm_s16le', 'pcm_s24le',
+  ];
+
+  Future<bool> _tryCompatibleAudioTrack(
+    StreamResolutionResult? resolution,
+    dynamic queueItem,
+  ) async {
+    if (resolution == null || resolution.playMethod == StreamPlayMethod.transcode) {
+      return false;
+    }
+    final audio = resolution.mediaStreams
+        .where((s) => s['Type'] == 'Audio' && s['Index'] is int)
+        .toList();
+    if (audio.length < 2) return false;
+    final currentIndex = _audioStreamIndex ?? resolution.selectedAudioStreamIndex;
+    final current = audio.firstWhere(
+      (s) => s['Index'] == currentIndex,
+      orElse: () => audio.first,
+    );
+    final currentCodec = current['Codec']?.toString().toLowerCase() ?? '';
+    final currentLang = current['Language']?.toString().toLowerCase();
+    final itemKey = queueItem == null ? '' : _traceItemId(queueItem);
+    Map<String, dynamic>? best;
+    var bestScore = -1;
+    for (final s in audio) {
+      final idx = s['Index'] as int;
+      if (idx == current['Index']) continue;
+      if (_audioFallbackTried.contains('$itemKey:$idx')) continue;
+      final codec = s['Codec']?.toString().toLowerCase() ?? '';
+      if (codec == currentCodec) continue;
+      final rank = _compatibleAudioCodecs.indexOf(codec);
+      if (rank < 0) continue;
+      // Same language first, then the most capable compatible codec.
+      final sameLang = currentLang != null &&
+          s['Language']?.toString().toLowerCase() == currentLang;
+      final score = (sameLang ? 100 : 0) + (_compatibleAudioCodecs.length - rank);
+      if (score > bestScore) {
+        bestScore = score;
+        best = s;
+      }
+    }
+    if (best == null) return false;
+    final idx = best['Index'] as int;
+    _audioFallbackTried.add('$itemKey:$idx');
+    try {
+      errorReporter?.call({
+        'event': 'audio-fallback',
+        'from': currentCodec,
+        'to': best['Codec']?.toString() ?? '',
+        'index': '$idx',
+        'playMethod': resolution.playMethod.name,
+      });
+    } catch (_) {}
+    _audioStreamIndex = idx;
+    _unsupportedAudioRecoveryInFlight = true;
+    try {
+      await _reResolveAtCurrentPosition();
+    } catch (_) {
+    } finally {
+      _unsupportedAudioRecoveryInFlight = false;
+    }
+    return true;
   }
 
   Future<void> _autoNext() async {

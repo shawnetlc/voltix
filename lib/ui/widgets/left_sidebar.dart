@@ -87,8 +87,6 @@ class _LeftSidebarState extends State<LeftSidebar> {
   final _backButtonFocusNode = FocusNode(debugLabel: 'SidebarBackButton');
   late final VoidCallback _focusNavbarCallback;
   late final VoidCallback _focusAvatarCallback;
-  VoidCallback? _previousFocusNavbarCallback;
-  VoidCallback? _previousFocusAvatarCallback;
   final _scrollController = ScrollController();
 
   List<AggregatedLibrary> _libraries = [];
@@ -97,7 +95,14 @@ class _LeftSidebarState extends State<LeftSidebar> {
   bool _librariesExpanded = false;
   bool _canExpandViaFocus = false;
   bool _skipExpandOnNextFocusFromNavigation = false;
-  bool get _sidebarHadFocus => LeftSidebar.isFocusedNotifier.value;
+  // When that flag was set: it only applies to the focus change caused by the
+  // navigation itself. Left set, it bounced the user's NEXT attempt to open
+  // the menu straight back to the content.
+  DateTime _skipExpandSetAt = DateTime.fromMillisecondsSinceEpoch(0);
+  // This sidebar's own last focus state. Was the shared static notifier: a
+  // sidebar on the previous screen that still "had focus" made a new screen's
+  // sidebar think it was already open, so it never expanded.
+  bool _sidebarHadFocus = false;
   Timer? _clockTimer;
   Timer? _labelTimer;
   Timer? _focusExpandGateTimer;
@@ -145,11 +150,7 @@ class _LeftSidebarState extends State<LeftSidebar> {
         _homeFocusNode.requestFocus();
       }
     };
-    _previousFocusNavbarCallback = NavigationLayout.focusNavbarNotifier.value;
-    _previousFocusAvatarCallback =
-        NavigationLayout.focusNavbarAvatarNotifier.value;
-    NavigationLayout.focusNavbarNotifier.value = _focusNavbarCallback;
-    NavigationLayout.focusNavbarAvatarNotifier.value = _focusAvatarCallback;
+    NavigationLayout.registerNavbar(this, _focusNavbarCallback, _focusAvatarCallback);
     _updateClock();
     _clockTimer = Timer.periodic(
       const Duration(seconds: 30),
@@ -175,19 +176,7 @@ class _LeftSidebarState extends State<LeftSidebar> {
 
   @override
   void dispose() {
-    if (identical(
-      NavigationLayout.focusNavbarNotifier.value,
-      _focusNavbarCallback,
-    )) {
-      NavigationLayout.focusNavbarNotifier.value = _previousFocusNavbarCallback;
-    }
-    if (identical(
-      NavigationLayout.focusNavbarAvatarNotifier.value,
-      _focusAvatarCallback,
-    )) {
-      NavigationLayout.focusNavbarAvatarNotifier.value =
-          _previousFocusAvatarCallback;
-    }
+    NavigationLayout.unregisterNavbar(this);
     FocusManager.instance.removeListener(_trackPreviousFocus);
     if (PlatformDetection.isTV || (PlatformDetection.isDesktop || (PlatformDetection.isWeb && !PlatformDetection.useMobileUi))) {
       _sidebarFocus.removeListener(_onSidebarFocusNodeChanged);
@@ -213,7 +202,9 @@ class _LeftSidebarState extends State<LeftSidebar> {
     } catch (_) {}
     _prefs.removeListener(_onPrefsChanged);
     _currentTime.dispose();
-    LeftSidebar.isFocusedNotifier.value = false;
+    // Only clear the shared flag if it was this sidebar that had focus; the
+    // next screen's sidebar may already own it.
+    if (_sidebarHadFocus) LeftSidebar.isFocusedNotifier.value = false;
     super.dispose();
   }
 
@@ -348,6 +339,11 @@ class _LeftSidebarState extends State<LeftSidebar> {
   void _onSidebarFocusNodeChanged() {
     final hasFocus = _sidebarFocus.hasFocus;
     if (hasFocus && !_sidebarHadFocus) {
+      final skipFresh = DateTime.now().difference(_skipExpandSetAt) <
+          const Duration(milliseconds: 1500);
+      if (_skipExpandOnNextFocusFromNavigation && !skipFresh) {
+        _skipExpandOnNextFocusFromNavigation = false;
+      }
       if (_skipExpandOnNextFocusFromNavigation) {
         _skipExpandOnNextFocusFromNavigation = false;
         _focusHomeTimer?.cancel();
@@ -366,12 +362,14 @@ class _LeftSidebarState extends State<LeftSidebar> {
     } else if (!hasFocus && _sidebarHadFocus && _canExpandViaFocus) {
       _collapse();
     }
+    _sidebarHadFocus = hasFocus;
     LeftSidebar.isFocusedNotifier.value = hasFocus;
   }
 
   void _markNavigationAwayFromSidebar() {
     if (PlatformDetection.isTV || (PlatformDetection.isDesktop || (PlatformDetection.isWeb && !PlatformDetection.useMobileUi))) {
       _skipExpandOnNextFocusFromNavigation = true;
+      _skipExpandSetAt = DateTime.now();
     }
   }
 

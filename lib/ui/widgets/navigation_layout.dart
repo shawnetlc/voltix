@@ -47,6 +47,33 @@ class NavigationLayout extends StatefulWidget {
 
   static final focusNavbarNotifier = ValueNotifier<VoidCallback?>(null);
   static final focusNavbarAvatarNotifier = ValueNotifier<VoidCallback?>(null);
+
+  // Every live navbar (left sidebar / top toolbar), oldest first. The newest
+  // one (the visible route's) owns the "focus the navbar" callbacks.
+  //
+  // This used to be a save-previous / restore-on-dispose chain. When screens
+  // were disposed out of order (e.g. go() replacing several routes at once),
+  // a navbar restored the callback of one that was ALREADY disposed; that
+  // callback does nothing (`!mounted`), so pressing Left / Back could no longer
+  // reach the menu until the app was restarted.
+  static final List<(Object, VoidCallback, VoidCallback)> _navbarOwners = [];
+
+  static void registerNavbar(Object owner, VoidCallback focusNavbar, VoidCallback focusAvatar) {
+    _navbarOwners.removeWhere((o) => identical(o.$1, owner));
+    _navbarOwners.add((owner, focusNavbar, focusAvatar));
+    _applyNavbarOwner();
+  }
+
+  static void unregisterNavbar(Object owner) {
+    _navbarOwners.removeWhere((o) => identical(o.$1, owner));
+    _applyNavbarOwner();
+  }
+
+  static void _applyNavbarOwner() {
+    final top = _navbarOwners.isEmpty ? null : _navbarOwners.last;
+    focusNavbarNotifier.value = top?.$2;
+    focusNavbarAvatarNotifier.value = top?.$3;
+  }
   static final focusContentFromNavbarNotifier = ValueNotifier<VoidCallback?>(
     null,
   );

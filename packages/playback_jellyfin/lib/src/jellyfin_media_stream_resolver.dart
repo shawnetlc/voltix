@@ -249,11 +249,9 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
         if (v.isNotEmpty) fromPrefetch = v;
       } catch (_) {}
     }
-    final rawInfo = fromPrefetch ??
-        await _client.playbackApi.getPlaybackInfo(
+    final rawInfo = fromPrefetch ?? await _playbackInfoWithFallback(
           itemId,
-          requestBody: request.toJson(),
-          userId: _client.userId,
+          request.toJson(),
           startTimeTicks: startTimeTicks,
         );
 
@@ -543,6 +541,80 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
     if (lowerUrl.contains('api_key=') || lowerUrl.contains('apikey=')) return url;
     final separator = url.contains('?') ? '&' : '?';
     return '$url${separator}api_key=${Uri.encodeComponent(token)}';
+  }
+
+  /// PlaybackInfo, retried without the device profile when the server refuses
+  /// the request (supersilo answered 400 Bad Request for 4K titles, so Play did
+  /// nothing at all). The app decides the play method itself (original file
+  /// first), so the server's profile check is not needed to start playback.
+  /// The server's reason is sent to the diagnostics log.
+  Future<Map<String, dynamic>> _playbackInfoWithFallback(
+    String itemId,
+    Map<String, dynamic> body, {
+    int? startTimeTicks,
+  }) async {
+    try {
+      return await _client.playbackApi.getPlaybackInfo(
+        itemId,
+        requestBody: body,
+        userId: _client.userId,
+        startTimeTicks: startTimeTicks,
+      );
+    } on DioException catch (e) {
+      final code = e.response?.statusCode ?? 0;
+      var reason = '';
+      try {
+        final d = e.response?.data;
+        reason = (d is String ? d : d?.toString() ?? '').replaceAll(RegExp(r'\s+'), ' ');
+        if (reason.length > 300) reason = reason.substring(0, 300);
+      } catch (_) {}
+      try {
+        onDiag?.call('playbackinfo-error', {
+          'item': itemId,
+          'source': body['MediaSourceId']?.toString() ?? '',
+          'http': '$code',
+          'reason': reason,
+          'audio': body['AudioStreamIndex']?.toString() ?? '',
+          'maxBitrate': body['MaxStreamingBitrate']?.toString() ?? '',
+        });
+      } catch (_) {}
+      if (code < 400 || code >= 500) rethrow;
+      // Minimal request: no device profile / stream indexes.
+      final minimal = <String, dynamic>{
+        if (body['MediaSourceId'] != null) 'MediaSourceId': body['MediaSourceId'],
+        'EnableDirectPlay': true,
+        'EnableDirectStream': true,
+        'EnableTranscoding': true,
+      };
+      try {
+        final res = await _client.playbackApi.getPlaybackInfo(
+          itemId,
+          requestBody: minimal,
+          userId: _client.userId,
+          startTimeTicks: startTimeTicks,
+        );
+        onDiag?.call('playbackinfo-retry', {'item': itemId, 'result': 'ok'});
+        return res;
+      } on DioException catch (e2) {
+        onDiag?.call('playbackinfo-retry', {
+          'item': itemId,
+          'result': 'failed',
+          'http': '${e2.response?.statusCode ?? 0}',
+        });
+        // Last try: no version either (let the server pick its default).
+        if (body['MediaSourceId'] == null) rethrow;
+        return _client.playbackApi.getPlaybackInfo(
+          itemId,
+          requestBody: const {
+            'EnableDirectPlay': true,
+            'EnableDirectStream': true,
+            'EnableTranscoding': true,
+          },
+          userId: _client.userId,
+          startTimeTicks: startTimeTicks,
+        );
+      }
+    }
   }
 
   // ── Version address check ─────────────────────────────────────────────

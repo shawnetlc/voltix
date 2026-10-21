@@ -273,6 +273,11 @@ class _LiveTvRecordingsScreenState extends State<LiveTvRecordingsScreen> {
         'Type': 'Video',
         'container': 'ts',
         'mediaType': 'video',
+        // The replay URL is usually the provider's own timeshift link, opened
+        // straight from the device. Since the player moved to OkHttp it sends
+        // "okhttp/4.x" when no agent is given, which IPTV providers refuse
+        // (source error). Send the same agent as direct live channels.
+        'headers': VoltixIptvRepository.providerStreamHeaders,
       },
     );
     try {

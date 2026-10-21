@@ -126,8 +126,6 @@ class _TopToolbarState extends State<TopToolbar> {
   final _musicBarFocusNode = FocusNode(debugLabel: 'TopMusicBar');
   late final VoidCallback _focusNavbarCallback;
   late final VoidCallback _focusAvatarCallback;
-  VoidCallback? _previousFocusNavbarCallback;
-  VoidCallback? _previousFocusAvatarCallback;
   FocusNode? _previousFocus;
   List<AggregatedLibrary> _libraries = [];
   Timer? _clockTimer;
@@ -143,11 +141,7 @@ class _TopToolbarState extends State<TopToolbar> {
     _currentTime = ValueNotifier<String>('');
     _focusNavbarCallback = () => _homeFocus.requestFocus();
     _focusAvatarCallback = () => _avatarFocus.requestFocus();
-    _previousFocusNavbarCallback = NavigationLayout.focusNavbarNotifier.value;
-    _previousFocusAvatarCallback =
-      NavigationLayout.focusNavbarAvatarNotifier.value;
-    NavigationLayout.focusNavbarNotifier.value = _focusNavbarCallback;
-    NavigationLayout.focusNavbarAvatarNotifier.value = _focusAvatarCallback;
+    NavigationLayout.registerNavbar(this, _focusNavbarCallback, _focusAvatarCallback);
     _avatarFocus.addListener(_onAvatarFocusChanged);
     FocusManager.instance.addListener(_trackPreviousFocus);
     _updateClock();
@@ -172,19 +166,7 @@ class _TopToolbarState extends State<TopToolbar> {
 
   @override
   void dispose() {
-    if (identical(
-      NavigationLayout.focusNavbarNotifier.value,
-      _focusNavbarCallback,
-    )) {
-      NavigationLayout.focusNavbarNotifier.value = _previousFocusNavbarCallback;
-    }
-    if (identical(
-      NavigationLayout.focusNavbarAvatarNotifier.value,
-      _focusAvatarCallback,
-    )) {
-      NavigationLayout.focusNavbarAvatarNotifier.value =
-          _previousFocusAvatarCallback;
-    }
+    NavigationLayout.unregisterNavbar(this);
     _clockTimer?.cancel();
     TopToolbar.isFocusedNotifier.value = false;
     _avatarFocus.removeListener(_onAvatarFocusChanged);

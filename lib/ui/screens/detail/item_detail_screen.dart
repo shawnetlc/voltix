@@ -8200,6 +8200,24 @@ Future<bool> _runWithDolbyVisionStartupFallbackPrompt(
   );
 }
 
+/// True when a title in [queue] is Dolby Vision profile 5 (no HDR10 / SDR base
+/// layer a non-Dolby-Vision TV could show).
+bool _queueHasDolbyVisionWithoutBaseLayer(
+  List<AggregatedItem> queue, {
+  String? mediaSourceId,
+}) {
+  for (final item in queue) {
+    final selectedSource = selectedMediaSourceForItem(item, mediaSourceId);
+    for (final stream in mediaStreamsForItem(item, selectedSource)) {
+      if (HdrStreamCapability.requiredDolbyVisionProfile(stream) ==
+          DolbyVisionRequiredProfile.profile5) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 Future<_DolbyVisionPlayDecision?> _showDolbyVisionFallbackDecisionDialog(
   BuildContext context,
 ) async {
@@ -8289,6 +8307,15 @@ Future<bool> _shouldForceTranscodeForDolbyVisionQueue(
     allowDolbyVisionProfile7ElDirectPlay: allowDolbyVisionProfile7ElDirectPlay,
   );
   if (!dvAnalysis.hasDolbyVision) {
+    return false;
+  }
+
+  // Dolby Vision with an HDR10 / SDR base layer (profile 7, 8.x): play the
+  // original file and let the TV show the base layer. Asking the server to
+  // convert a 4K remux fails on shared servers such as supersilo ("Playback
+  // session not found" -> source error). Same rule as the player's own check
+  // (playback_module). Only profile 5 (no base layer) still needs the server.
+  if (!_queueHasDolbyVisionWithoutBaseLayer(queue, mediaSourceId: mediaSourceId)) {
     return false;
   }
 

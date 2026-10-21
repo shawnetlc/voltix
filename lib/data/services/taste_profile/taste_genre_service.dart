@@ -61,6 +61,34 @@ class TasteGenreService {
         }
       }
 
+      // The server's full genre list: a 1000-title sample (in whatever order
+      // the server returns them) can miss whole genres.
+      try {
+        final genresRes = await _client.itemsApi
+            .getGenres(
+              userId: userId,
+              recursive: true,
+              includeItemTypes: const ['Movie', 'Series'],
+              sortBy: 'SortName',
+              limit: 500,
+            )
+            .timeout(const Duration(seconds: 15));
+        for (final g in (genresRes['Items'] as List? ?? const [])) {
+          if (g is! Map) continue;
+          final name = g['Name']?.toString().trim() ?? '';
+          if (name.isEmpty) continue;
+          final key = normalizeGenreKey(name);
+          genreDisplayLabels.putIfAbsent(key, () => name);
+          final c = (g['MovieCount'] as num?)?.toInt() ??
+              (g['ChildCount'] as num?)?.toInt() ??
+              0;
+          final current = genreLibraryCounts[key] ?? 0;
+          genreLibraryCounts[key] = c > current ? c : (current > 0 ? current : 1);
+        }
+      } catch (e) {
+        debugPrint('[TasteGenreService] Server genre list failed: $e');
+      }
+
       // If library search returned few or none, fallback to Genre items
       if (genreLibraryCounts.isEmpty) {
         try {
@@ -153,8 +181,27 @@ class TasteGenreService {
       'fitness',
       'instructional',
     };
+    // Entertainment genres that merely contain an excluded word.
+    // ("science fiction" contains "science" - that excluded Sci-Fi entirely.)
+    const keep = {
+      'science fiction',
+      'sci-fi',
+      'sci fi',
+      'scifi',
+      'sci-fi & fantasy',
+      'science fiction & fantasy',
+    };
+    if (keep.contains(lower) || lower.startsWith('sci-fi') || lower.startsWith('science fiction')) {
+      return false;
+    }
+    // Whole words only: "science" must not match "science fiction".
+    final words = lower.split(RegExp(r'[\s/&,-]+')).where((w) => w.isNotEmpty).toSet();
     for (final e in excluded) {
-      if (lower == e || lower.startsWith('$e ') || lower.endsWith(' $e') || lower.contains(e)) {
+      if (lower == e) return true;
+      if (!e.contains(' ') && !e.contains('-') && !e.contains('&') && words.contains(e)) {
+        return true;
+      }
+      if ((e.contains(' ') || e.contains('-') || e.contains('&')) && lower.contains(e)) {
         return true;
       }
     }
