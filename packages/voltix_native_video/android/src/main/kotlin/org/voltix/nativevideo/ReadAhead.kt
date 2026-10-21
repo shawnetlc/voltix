@@ -51,10 +51,32 @@ object ReadAhead {
     // through a disk cache layer - a suspect for the 1080p hang at 0.9 s and the
     // NullPointerException in the loader after an audio change. Off, the player
     // reads straight from the server exactly like the official Jellyfin app.
-    const val ENABLED = false
+    // Now switched per source by the app (see [configureFor]): ON only for a 4K
+    // film whose bitrate is above what one connection gives the TV, and only
+    // when the admin switch "4K read-ahead" is on. Everything else (1080p,
+    // live, HLS, IPTV) reads straight from the server as before.
+    // test-connections.ps1 (supersilo): 1 conn 148 Mbps, 2 = 207, 4 = 357,
+    // 6 = 522, no blocks - extra connections do add speed.
+    @Volatile var enabled = false
+        private set
+    @Volatile private var enabledKey: String? = null
 
     const val CHUNK_BYTES = 8 * MB
-    const val PARALLEL = 4
+    @Volatile var parallel = 3
+        private set
+
+    /** Turns read-ahead on for exactly this source ([connections] > 0), or off. */
+    fun configureFor(url: String?, connections: Int) {
+        if (url == null || connections <= 0) {
+            enabled = false
+            enabledKey = null
+            return
+        }
+        parallel = connections.coerceIn(1, 6)
+        enabledKey = try { keyFor(Uri.parse(url)) } catch (_: Throwable) { null }
+        enabled = enabledKey != null
+        android.util.Log.i(TAG, "On for this source with $parallel connections")
+    }
 
     @Volatile private var cache: SimpleCache? = null
     @Volatile private var initTried = false
@@ -64,7 +86,7 @@ object ReadAhead {
     /** Shared on-disk cache, or null when the device is short on storage. */
     @Synchronized
     fun cache(context: Context): SimpleCache? {
-        if (!ENABLED) return null
+        if (!enabled) return null
         if (initTried) return cache
         initTried = true
         return try {
@@ -105,14 +127,15 @@ object ReadAhead {
 
     /** Jellyfin direct-play (static) file over http(s); never live, HLS or IPTV. */
     fun isEligible(uri: Uri?): Boolean {
-        if (!ENABLED || uri == null) return false
+        if (!enabled || uri == null) return false
         val scheme = uri.scheme?.lowercase() ?: return false
         if (scheme != "http" && scheme != "https") return false
         val path = uri.path?.lowercase() ?: return false
         if (path.endsWith(".m3u8") || path.endsWith(".ts") || path.contains("/live/")) return false
         val isStatic = uri.getQueryParameter("static")?.equals("true", ignoreCase = true) == true ||
             uri.getQueryParameter("Static")?.equals("true", ignoreCase = true) == true
-        return isStatic && path.contains("/videos/") && path.contains("/stream")
+        return isStatic && path.contains("/videos/") && path.contains("/stream") &&
+            enabledKey == keyFor(uri)
     }
 
     /** Cache key without the auth token, so a refreshed token keeps the cached bytes. */
@@ -227,7 +250,7 @@ object ReadAhead {
             }
         }
 
-        private val pool: ExecutorService = Executors.newFixedThreadPool(PARALLEL) { r ->
+        private val pool: ExecutorService = Executors.newFixedThreadPool(parallel) { r ->
             Thread(r, "voltix-readahead").apply {
                 isDaemon = true
                 priority = Thread.NORM_PRIORITY - 1
@@ -299,7 +322,7 @@ object ReadAhead {
 
             // Nearest missing pieces first, at most PARALLEL downloads at a time.
             var chunk = first
-            while (chunk <= last && inFlight.size < PARALLEL) {
+            while (chunk <= last && inFlight.size < parallel) {
                 val start = chunk * CHUNK_BYTES
                 val len = minOf(CHUNK_BYTES, length - start)
                 if (len > 0 && !inFlight.containsKey(chunk) && !cache.isCached(k, start, len)) {

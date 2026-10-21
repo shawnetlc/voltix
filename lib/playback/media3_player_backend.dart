@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
+
+import 'package:dio/dio.dart' as dio_pkg;
 
 import 'package:flutter/services.dart';
 import 'package:get_it/get_it.dart';
@@ -15,6 +18,48 @@ import 'device_profile_builder.dart';
 import 'known_defects.dart';
 
 class Media3PlayerBackend extends PlayerBackend {
+  // ── 4K read-ahead ──────────────────────────────────────────────────────────
+  /// Connections for 4K read-ahead (0 = off). Set from the admin portal via
+  /// /api/voltix/playback-config; refreshed at most every 15 minutes.
+  static int readAhead4kConnections = 0;
+  static DateTime _readAheadConfigAt = DateTime.fromMillisecondsSinceEpoch(0);
+  /// The TV's own one-connection speed (Mbps) from its last tv-speed test.
+  static double? lastTvSingleMbps;
+
+  static Future<void> refreshPlaybackConfig({bool force = false}) async {
+    if (!force && DateTime.now().difference(_readAheadConfigAt) < const Duration(minutes: 15)) {
+      return;
+    }
+    try {
+      if (!GetIt.instance.isRegistered<VoltixApiService>()) return;
+      _readAheadConfigAt = DateTime.now();
+      final base = GetIt.instance<VoltixApiService>().baseUrl;
+      final res = await dio_pkg.Dio(dio_pkg.BaseOptions(
+        connectTimeout: const Duration(seconds: 6),
+        receiveTimeout: const Duration(seconds: 8),
+      )).get('$base/api/voltix/playback-config');
+      final data = res.data is String ? jsonDecode(res.data as String) : res.data;
+      if (data is Map && data['readAhead4kConnections'] is num) {
+        readAhead4kConnections = (data['readAhead4kConnections'] as num).toInt().clamp(0, 6);
+      }
+    } catch (_) {}
+  }
+
+  /// Read-ahead connections for this source: only a 4K picture whose bitrate
+  /// one connection (as measured on this TV) can't comfortably deliver.
+  static int readAheadConnectionsFor(Map payload) {
+    final conns = readAhead4kConnections;
+    if (conns <= 0) return 0;
+    final w = (payload['videoWidth'] as num?)?.toInt() ?? 0;
+    final h = (payload['videoHeight'] as num?)?.toInt() ?? 0;
+    if (w < 3200 && h < 1800) return 0; // not 4K
+    final mbps = ((payload['videoBitrate'] as num?)?.toDouble() ?? 0) / 1e6;
+    final tv = lastTvSingleMbps;
+    if (tv != null && mbps > 0 && tv >= mbps * 1.3) return 0; // one connection is plenty
+    if (tv == null && mbps > 0 && mbps < 30) return 0; // light 4K: not needed
+    return conns;
+  }
+
   static const _discontinuityWindowMs = 15000;
   static const _discontinuityThreshold = 3;
 
@@ -202,6 +247,8 @@ class Media3PlayerBackend extends PlayerBackend {
         }
       case 'tv-speed':
         // The TV's raw download speed from the server (outside the player).
+        final single = double.tryParse(map['mbps']?.toString() ?? '');
+        if (single != null && single > 0) lastTvSingleMbps = single;
         try {
           if (GetIt.instance.isRegistered<VoltixApiService>()) {
             GetIt.instance<VoltixApiService>().directStreamingDiag('tv-speed', {
@@ -600,8 +647,22 @@ class Media3PlayerBackend extends PlayerBackend {
           .get(UserPreferences.refreshRateSwitchingBehavior)
           .name,
     });
+    unawaited(refreshPlaybackConfig());
+    final readAheadConns = readAheadConnectionsFor(payload);
+    if (readAheadConns > 0) {
+      try {
+        if (GetIt.instance.isRegistered<VoltixApiService>()) {
+          GetIt.instance<VoltixApiService>().directStreamingDiag('read-ahead', {
+            'connections': '$readAheadConns',
+            'mbps': (((payload['videoBitrate'] as num?)?.toDouble() ?? 0) / 1e6).toStringAsFixed(0),
+            'tvMbps': lastTvSingleMbps?.toStringAsFixed(1) ?? '',
+          });
+        }
+      } catch (_) {}
+    }
     await _invoke<void>('setSource', {
       'url': url,
+      'readAheadConnections': readAheadConns,
       // Unknown (no stream info) -> keep the add-on reader as before.
       'hasAssSubtitles': payload['hasAssSubtitles'] != false,
       'headers': headers,

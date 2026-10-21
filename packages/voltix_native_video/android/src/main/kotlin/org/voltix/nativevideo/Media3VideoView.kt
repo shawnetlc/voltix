@@ -352,7 +352,51 @@ internal val sharedOkHttp: okhttp3.OkHttpClient by lazy {
         // squeezed through a single connection (~40 Mbps from supersilo). With
         // HTTP/1.1 each download gets its own connection.
         .protocols(listOf(okhttp3.Protocol.HTTP_1_1))
+        .addInterceptor(FrontEnd404RetryInterceptor())
         .build()
+}
+
+/**
+ * supersilo's front end (openresty) briefly answers a plain-text
+ * "404 page not found" when an account sends a quick burst of requests - as a
+ * 4K start does (version check, playback info, then the player reading the
+ * start and the end of the file). The file is fine: the same request works a
+ * few seconds later (test-4k.ps1). Jellyfin's own 404s are JSON
+ * ({"Error":"NotFound",...}), so only the plain-text one is retried, up to
+ * 3 times (1.5 s, 3 s, 5 s), instead of failing playback with a source error.
+ * Runs on Media3's loader thread, so waiting here doesn't block the UI.
+ */
+internal class FrontEnd404RetryInterceptor : okhttp3.Interceptor {
+    override fun intercept(chain: okhttp3.Interceptor.Chain): okhttp3.Response {
+        val request = chain.request()
+        var response = chain.proceed(request)
+        val delays = longArrayOf(1500, 3000, 5000)
+        for (delayMs in delays) {
+            if (!isFrontEnd404(response)) return response
+            response.close()
+            android.util.Log.w("VoltixPlayer", "Front-end 404 for ${request.url.host}; retrying in ${delayMs}ms")
+            try {
+                Thread.sleep(delayMs)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return chain.proceed(request)
+            }
+            if (chain.call().isCanceled()) return chain.proceed(request)
+            response = chain.proceed(request)
+        }
+        return response
+    }
+
+    private fun isFrontEnd404(response: okhttp3.Response): Boolean {
+        if (response.code != 404) return false
+        val type = response.header("Content-Type")?.lowercase() ?: ""
+        if (type.contains("json")) return false
+        return try {
+            response.peekBody(64).string().trim().lowercase().startsWith("404 page not found")
+        } catch (_: Throwable) {
+            false
+        }
+    }
 }
 
 
@@ -526,6 +570,35 @@ class Media3VideoView(
 
     private var ticker: Runnable? = null
     private var currentUrl: String? = null
+    private var noPlayableAudioReportedFor: String? = null
+
+    /**
+     * The file has audio, but no track this TV can play (e.g. DTS-only on a TV
+     * without a DTS decoder). Media3 then plays the picture SILENTLY instead of
+     * failing, so nothing used to trigger the fallback. Report it once per
+     * source as "unsupported_audio": the app then switches to a compatible
+     * track, or has the server convert only the audio.
+     */
+    private fun maybeReportNoPlayableAudio(tracks: androidx.media3.common.Tracks) {
+        val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+        if (audioGroups.isEmpty()) return
+        val anyPlayable = audioGroups.any { g -> (0 until g.length).any { g.isTrackSupported(it) } }
+        if (anyPlayable) return
+        val key = currentUrl ?: return
+        if (noPlayableAudioReportedFor == key) return
+        noPlayableAudioReportedFor = key
+        val codecs = audioGroups.flatMap { g -> (0 until g.length).map { g.getTrackFormat(it).sampleMimeType ?: "?" } }
+        android.util.Log.w("VoltixPlayer", "No playable audio track: ${codecs.joinToString()}")
+        Media3Bridge.emitEvent(
+            mapOf(
+                "event" to "playerError",
+                "recoverable" to true,
+                "kind" to "unsupported_audio",
+                "code" to PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+                "message" to "No playable audio track (${codecs.joinToString()})",
+            ),
+        )
+    }
     private var currentHeaders: Map<String, String> = emptyMap()
     private lateinit var httpDataSourceFactory: androidx.media3.datasource.okhttp.OkHttpDataSource.Factory
 
@@ -1147,6 +1220,7 @@ class Media3VideoView(
                     pendingAudioIndex = null
                 }
             }
+            maybeReportNoPlayableAudio(tracks)
             emitTracksChanged()
             emitState()
         }
@@ -2026,6 +2100,13 @@ class Media3VideoView(
 
         currentUrl = url
         resetRebufferTracking()
+        // 4K read-ahead (0 = off): decided by the app per source.
+        val readAheadConnections = (args["readAheadConnections"] as? Number)?.toInt() ?: 0
+        if (readAheadConnections <= 0 || readAheadConnections != ReadAhead.parallel || !ReadAhead.enabled) {
+            try { readAheadPrefetcher?.shutdown(deleteCached = false) } catch (_: Throwable) {}
+            readAheadPrefetcher = null
+        }
+        ReadAhead.configureFor(if (readAheadConnections > 0) url else null, readAheadConnections)
         startReadAhead(url)
         currentHeaders = (args["headers"] as? Map<*, *>)
             ?.mapNotNull { (k, v) ->

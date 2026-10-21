@@ -292,6 +292,13 @@ class PlaybackManager implements AudioOwnable {
     return <String, dynamic>{
       'url': url,
       'hasAssSubtitles': hasAssSubtitles,
+      // Size / bitrate of the picture: the player uses these to decide on
+      // 4K read-ahead.
+      if (videoStream != null) ...{
+        if (videoStream['Width'] is num) 'videoWidth': (videoStream['Width'] as num).toInt(),
+        if (videoStream['Height'] is num) 'videoHeight': (videoStream['Height'] as num).toInt(),
+        if (videoStream['BitRate'] is num) 'videoBitrate': (videoStream['BitRate'] as num).toInt(),
+      },
       if (container != null && container.isNotEmpty) 'container': container,
       if (videoRangeType != null && videoRangeType.isNotEmpty)
         'videoRangeType': videoRangeType,
@@ -822,6 +829,30 @@ class PlaybackManager implements AudioOwnable {
     // play. A server transcode is the last resort: shared servers such as
     // supersilo can't convert 4K in real time ("Playback session not found").
     if (await _tryCompatibleAudioTrack(resolution, queueItem)) return;
+    // No compatible track (e.g. DTS-only 4K file): let the server convert
+    // ONLY the audio and pass the video through untouched. Far lighter than a
+    // full 4K conversion, which supersilo refuses. Once per title.
+    if (resolution != null && resolution.playMethod == StreamPlayMethod.directPlay) {
+      _unsupportedAudioRecoveryInFlight = true;
+      try {
+        if (await useServerStreamForCurrentItem()) {
+          try {
+            errorReporter?.call({
+              'event': 'audio-server-stream',
+              'from': resolution.mediaStreams
+                      .where((m) => m['Type'] == 'Audio')
+                      .map((m) => m['Codec']?.toString() ?? '')
+                      .join('/'),
+              'playMethod': resolution.playMethod.name,
+            });
+          } catch (_) {}
+          return;
+        }
+      } catch (_) {
+      } finally {
+        _unsupportedAudioRecoveryInFlight = false;
+      }
+    }
     await recoverViaTranscode();
   }
 

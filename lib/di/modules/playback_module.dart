@@ -485,6 +485,8 @@ void registerPlaybackModule() {
   PlaybackManager.onForceOriginal = (id) {
     JellyfinMediaStreamResolver.forceOriginalItems.add(id);
   };
+  // 4K read-ahead setting from the admin portal (refreshed on later plays).
+  unawaited(Media3PlayerBackend.refreshPlaybackConfig(force: true));
   JellyfinMediaStreamResolver.onDiag = (stage, data) {
     try {
       if (_getIt.isRegistered<VoltixApiService>()) {
