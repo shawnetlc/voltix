@@ -3915,7 +3915,12 @@ class _ContentRowsState extends State<_ContentRows>
                 );
               }
             }
-            final artwork = voltixMyMediaArtwork(rawName);
+            // The Streamverse tile is ours, not a server library: always use
+            // its bundled artwork (also fixes copies cached under the old
+            // "Vault" name).
+            final artwork = item.id == VaultService.tileId
+                ? ('Streamverse', '${kAppAssetImagePrefix}assets/categories/vault.jpg')
+                : voltixMyMediaArtwork(rawName);
             final branding = artwork == null
                 ? voltixLibraryBranding(rawName, serverName)
                 : null;
@@ -3923,7 +3928,8 @@ class _ContentRowsState extends State<_ContentRows>
               // App-bundled My Media artwork (assets/categories).
               effectiveCardTitle = artwork.$1;
               effectiveImageUrl = artwork.$2;
-              fallbackImageUrl = imageUrl;
+              fallbackImageUrl =
+                  item.id == VaultService.tileId ? null : imageUrl;
             } else if (branding != null) {
               effectiveCardTitle = branding.displayName;
               // Category image injection disabled for now (new server) — keep

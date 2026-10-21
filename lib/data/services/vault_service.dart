@@ -8,10 +8,10 @@ import 'package:get_it/get_it.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:server_core/server_core.dart';
 
-import '../../auth/store/voltix_session_store.dart';
+import 'package:playback_core/playback_core.dart';
+
 import '../../util/platform_detection.dart';
 import '../models/aggregated_item.dart';
-import 'azure_blob_storage_service.dart';
 import 'taste_profile/foreign_content_filter.dart';
 import 'voltix_api_service.dart';
 
@@ -42,10 +42,12 @@ class VaultListDef {
 /// the next candidate is tried until the list has 30. "Newest" lists come from
 /// the server itself (premiere date).
 ///
-/// Rebuilt once a week. The result is kept on the device and in Azure
-/// (recommendations/<user>_vault.json), so it opens instantly and survives a
-/// reinstall; a rebuild runs in the background and replaces lists as they
-/// finish.
+/// Shared per media server through the Voltix backend: the finished lists are
+/// downloaded (fast) instead of every app matching on its own. Once a week, at
+/// night (backend decides: 00:00-06:00 local), ONE idle app gets a lease, does
+/// the matching and uploads the result for everyone on that server. The
+/// backend itself never signs in to the media server. A copy is also kept on
+/// the device so Streamverse opens instantly, even offline.
 class VaultService extends ChangeNotifier {
   VaultService._();
   static final VaultService instance = VaultService._();
@@ -90,7 +92,7 @@ class VaultService extends ChangeNotifier {
         serverId: serverId,
         rawData: const {
           'Id': tileId,
-          'Name': 'Streamverse',
+          'Name': 'Vault',
           'CollectionType': tileCollectionType,
           'Type': 'CollectionFolder',
         },
@@ -113,8 +115,12 @@ class VaultService extends ChangeNotifier {
   // "Movie:12345" -> server item id ('' = not on the server). Reused between
   // weekly rebuilds so known titles need no new lookup.
   final Map<String, String> _matches = {};
+  // Items re-checked in bulk for the list being built (id -> item).
+  final Map<String, Map<String, dynamic>> _verified = {};
   DateTime? _builtAt;
+  String? _week;
   String? _cacheKey;
+  Timer? _timer;
   bool _building = false;
   bool _loaded = false;
   String? _buildingKey;
@@ -148,40 +154,40 @@ class VaultService extends ChangeNotifier {
     }
   }
 
-  String? _username() {
-    try {
-      final u = GetIt.instance<VoltixSessionStore>().username?.trim().toLowerCase();
-      return (u == null || u.isEmpty) ? null : u;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  String? _blobName() {
-    final u = _username();
-    if (u == null) return null;
-    int? profile;
-    try {
-      profile = GetIt.instance<VoltixSessionStore>().activeProfileId;
-    } catch (_) {}
-    return profile != null
-        ? 'recommendations/${u}_profile${profile}_vault.json'
-        : 'recommendations/${u}_vault.json';
-  }
-
   String _keyNow() {
     final c = _client();
     return '${c?.baseUrl ?? ''}|${c?.userId ?? ''}';
   }
 
-  bool get _fresh =>
-      _builtAt != null &&
-      DateTime.now().difference(_builtAt!) < refreshEvery &&
-      _items.values.any((l) => l.isNotEmpty);
+  String _apiBase() {
+    try {
+      return GetIt.instance<VoltixApiService>().baseUrl;
+    } catch (_) {
+      return VoltixApiService.defaultBaseUrl;
+    }
+  }
 
-  /// Loads the saved Vault (device, else Azure) and rebuilds it in the
-  /// background when it is older than a week. Safe to call often.
+  Dio _dio({Duration receive = const Duration(seconds: 20)}) => Dio(BaseOptions(
+        connectTimeout: const Duration(seconds: 10),
+        receiveTimeout: receive,
+      ));
+
+  /// Something is playing on this device (don't add load while streaming).
+  bool _playing() {
+    try {
+      return GetIt.instance<PlaybackManager>().currentResolution != null;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Shows the device copy, then picks up the server's shared copy and, when
+  /// the backend asks for this week's build, does it. Safe to call often.
+  /// [force] is accepted for compatibility; builds are scheduled by the backend.
   Future<void> ensure({bool force = false}) {
+    // TVs often sit on the home screen overnight: check every 30 minutes so
+    // the night-time build and new weeks are picked up.
+    _timer ??= Timer.periodic(const Duration(minutes: 30), (_) => ensure());
     if (_ensureFuture != null && !force) return _ensureFuture!;
     final f = _ensure(force: force);
     _ensureFuture = f;
@@ -197,15 +203,100 @@ class VaultService extends ChangeNotifier {
       _items.clear();
       _matches.clear();
       _builtAt = null;
+      _week = null;
       _loaded = false;
       _cacheKey = key;
     }
     if (!_loaded) {
       _loaded = true;
-      if (!await _loadLocal(key)) await _loadAzure(key);
+      await _loadLocal(key);
       notifyListeners();
     }
-    if (force || !_fresh) unawaited(_build());
+    await _syncShared(key);
+  }
+
+  /// Downloads the server's shared lists; claims and runs the weekly build
+  /// when the backend says it is due and allowed now.
+  Future<void> _syncShared(String key) async {
+    final client = _client();
+    if (client == null || (client.userId ?? '').isEmpty || _building) return;
+    Map? status;
+    try {
+      final res = await _dio().get('${_apiBase()}/api/voltix/streamverse',
+          queryParameters: {'server': client.baseUrl});
+      status = res.data is Map ? res.data as Map : null;
+    } catch (e) {
+      debugPrint('[Vault] Shared lists unavailable: $e');
+      return;
+    }
+    if (status == null || _keyNow() != key) return;
+
+    final sharedBuilt = DateTime.tryParse(status['builtAt']?.toString() ?? '');
+    final lists = status['lists'];
+    if (sharedBuilt != null &&
+        lists is Map &&
+        (_builtAt == null || sharedBuilt.isAfter(_builtAt!))) {
+      _items
+        ..clear()
+        ..addAll({
+          for (final e in lists.entries)
+            if (e.value is List)
+              e.key.toString(): [
+                for (final r in e.value as List)
+                  if (r is Map) Map<String, dynamic>.from(r),
+              ],
+        });
+      _builtAt = sharedBuilt;
+      _week = status['week']?.toString();
+      await _saveLocal();
+      notifyListeners();
+      debugPrint('[Vault] Using shared lists for week $_week');
+    }
+
+    if (status['due'] == true && status['buildAllowed'] == true && !_playing()) {
+      unawaited(_claimAndBuild(client.baseUrl, key));
+    }
+  }
+
+  Future<void> _claimAndBuild(String server, String key) async {
+    Map? claim;
+    try {
+      final res = await _dio().post('${_apiBase()}/api/voltix/streamverse/claim',
+          data: {'server': server});
+      claim = res.data is Map ? res.data as Map : null;
+    } catch (_) {
+      return;
+    }
+    if (claim == null || claim['granted'] != true || _keyNow() != key) return;
+    final leaseId = claim['leaseId'].toString();
+    final m = claim['matches'];
+    if (m is Map) {
+      for (final e in m.entries) {
+        _matches.putIfAbsent(e.key.toString(), () => e.value?.toString() ?? '');
+      }
+    }
+    debugPrint('[Vault] Building week ${claim['week']} for everyone on $server');
+    final ok = await _build();
+    if (!ok || _keyNow() != key) return;
+    try {
+      await _dio(receive: const Duration(seconds: 60)).post(
+        '${_apiBase()}/api/voltix/streamverse/result',
+        data: {
+          'server': server,
+          'leaseId': leaseId,
+          'lists': {
+            for (final e in _items.entries)
+              e.key: [for (final r in e.value) Map.of(r)..remove('UserData')],
+          },
+          'matches': _matches,
+        },
+      );
+      _week = claim['week']?.toString();
+      await _saveLocal();
+      debugPrint('[Vault] Shared lists uploaded');
+    } catch (e) {
+      debugPrint('[Vault] Upload failed: $e');
+    }
   }
 
   // ── Persistence ─────────────────────────────────────────────────────────
@@ -219,6 +310,7 @@ class VaultService extends ChangeNotifier {
   Map<String, dynamic> _toJson() => {
         'key': _cacheKey,
         'builtAt': _builtAt?.toIso8601String(),
+        'week': _week,
         'lists': _items,
         'matches': _matches,
       };
@@ -244,6 +336,7 @@ class VaultService extends ChangeNotifier {
         ..addAll({for (final e in m.entries) e.key.toString(): e.value?.toString() ?? ''});
     }
     _builtAt = DateTime.tryParse(data['builtAt']?.toString() ?? '');
+    _week = data['week']?.toString();
     return true;
   }
 
@@ -258,44 +351,18 @@ class VaultService extends ChangeNotifier {
     }
   }
 
-  Future<bool> _loadAzure(String key) async {
-    final blob = _blobName();
-    final user = _username();
-    if (blob == null || user == null) return false;
-    try {
-      final data = await AzureBlobStorageService()
-          .downloadUserJsonBlob(username: user, blobName: blob)
-          .timeout(const Duration(seconds: 10));
-      if (data == null || !_apply(data, key)) return false;
-      await _saveLocal();
-      debugPrint('[Vault] Restored from Azure');
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
-
   Future<void> _saveLocal() async {
     try {
       await (await _file()).writeAsString(jsonEncode(_toJson()), flush: true);
     } catch (_) {}
   }
 
-  Future<void> _saveAzure() async {
-    final blob = _blobName();
-    final user = _username();
-    if (blob == null || user == null) return;
-    try {
-      await AzureBlobStorageService()
-          .uploadUserJsonBlob(username: user, blobName: blob, data: _toJson());
-    } catch (_) {}
-  }
-
   // ── Build ───────────────────────────────────────────────────────────────
-  Future<void> _build() async {
-    if (_building) return;
+  /// Matches every list on this device. True when it finished.
+  Future<bool> _build() async {
+    if (_building) return false;
     final client = _client();
-    if (client == null || (client.userId ?? '').isEmpty) return;
+    if (client == null || (client.userId ?? '').isEmpty) return false;
     _building = true;
     notifyListeners();
     final started = DateTime.now();
@@ -305,7 +372,11 @@ class VaultService extends ChangeNotifier {
     try {
       final candidates = await _fetchCandidates();
       for (final def in lists) {
-        if (_keyNow() != _cacheKey) return; // user/server changed meanwhile
+        if (_keyNow() != _cacheKey) return false; // user/server changed meanwhile
+        // Pause while this device is streaming.
+        while (_playing()) {
+          await Future<void>.delayed(const Duration(seconds: 30));
+        }
         _buildingKey = def.key;
         notifyListeners();
         List<Map<String, dynamic>> found;
@@ -326,7 +397,6 @@ class VaultService extends ChangeNotifier {
       }
       _builtAt = DateTime.now();
       await _saveLocal();
-      unawaited(_saveAzure());
       debugPrint('[Vault] Built in ${DateTime.now().difference(started).inSeconds}s: '
           '${lists.map((d) => '${d.key}=${countFor(d.key)}').join(', ')}');
       _diag({
@@ -334,9 +404,11 @@ class VaultService extends ChangeNotifier {
         'secs': '${DateTime.now().difference(started).inSeconds}',
         'counts': lists.map((d) => '${d.key}:${countFor(d.key)}').join(','),
       });
+      return true;
     } catch (e) {
       debugPrint('[Vault] Build failed: $e');
       _diag({'result': 'failed', 'error': '$e'.substring(0, '$e'.length.clamp(0, 160))});
+      return false;
     } finally {
       _building = false;
       _buildingKey = null;
@@ -354,17 +426,8 @@ class VaultService extends ChangeNotifier {
 
   /// The week's ranked TMDB candidates per list, from the Voltix backend.
   Future<Map<String, List<Map<String, dynamic>>>> _fetchCandidates() async {
-    String base;
-    try {
-      base = GetIt.instance<VoltixApiService>().baseUrl;
-    } catch (_) {
-      base = VoltixApiService.defaultBaseUrl;
-    }
-    final dio = Dio(BaseOptions(
-      connectTimeout: const Duration(seconds: 10),
-      receiveTimeout: const Duration(seconds: 90), // first build of the week
-    ));
-    final res = await dio.get('$base/api/voltix/vault-lists');
+    final res = await _dio(receive: const Duration(seconds: 90))
+        .get('${_apiBase()}/api/voltix/vault-lists');
     final out = <String, List<Map<String, dynamic>>>{};
     final data = res.data;
     if (data is Map && data['lists'] is List) {
@@ -379,7 +442,7 @@ class VaultService extends ChangeNotifier {
     return out;
   }
 
-  /// Keep what a list item needs (smaller cache / Azure copy).
+  /// Keep what a list item needs (smaller device / shared copy).
   static Map<String, dynamic> _slim(Map<String, dynamic> r) => {
         for (final k in const [
           'Id', 'Name', 'Type', 'ProductionYear', 'PremiereDate', 'ImageTags',
@@ -425,6 +488,29 @@ class VaultService extends ChangeNotifier {
     final out = <Map<String, dynamic>>[];
     final seen = <String>{};
     const batch = 4;
+    // Titles found last week: re-check them in a few bulk calls instead of
+    // one search each.
+    final knownIds = <String>[
+      for (final c in candidates)
+        if ((_matches['$type:${c['tmdbId']}'] ?? '').isNotEmpty)
+          _matches['$type:${c['tmdbId']}']!,
+    ];
+    _verified.clear();
+    for (var i = 0; i < knownIds.length; i += 50) {
+      try {
+        final res = await client.itemsApi.getItems(
+          ids: knownIds.sublist(i, (i + 50).clamp(0, knownIds.length)),
+          fields: _fields,
+          enableTotalRecordCount: false,
+          enableImageTypes: 'Primary',
+          imageTypeLimit: 1,
+        ).timeout(const Duration(seconds: 30));
+        for (final r in (res['Items'] as List? ?? const []).whereType<Map<String, dynamic>>()) {
+          final id = r['Id']?.toString();
+          if (id != null) _verified[id] = r;
+        }
+      } catch (_) {}
+    }
     for (var i = 0; i < candidates.length && out.length < itemsPerList; i += batch) {
       final slice = candidates.sublist(i, (i + batch).clamp(0, candidates.length));
       final results = await Future.wait(slice.map((c) => _find(client, type, c)));
@@ -457,6 +543,7 @@ class VaultService extends ChangeNotifier {
     final memoKey = '$type:$tmdbId';
     final known = _matches[memoKey];
     if (known != null && known.isEmpty) return null; // known miss
+    if (known != null && _verified.containsKey(known)) return _slim(_verified[known]!);
     final titles = <String>{
       c['title']?.toString() ?? '',
       c['originalTitle']?.toString() ?? '',

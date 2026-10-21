@@ -342,9 +342,12 @@ class HomeViewModel extends ChangeNotifier {
 
   /// Adds the Vault tile to the end of the My Media row.
   HomeRow _withVaultTile(HomeRow row) {
-    if (row.items.any((i) => i.id == VaultService.tileId)) return row;
+    // Always a fresh tile (a cached row may hold an older copy of it).
     return row.copyWith(
-      items: [...row.items, VaultService.tile(_serverId)],
+      items: [
+        ...row.items.where((i) => i.id != VaultService.tileId),
+        VaultService.tile(_serverId),
+      ],
     );
   }
 
