@@ -121,6 +121,17 @@ class VaultService extends ChangeNotifier {
   String? _week;
   String? _cacheKey;
   Timer? _timer;
+  // Current shared build: where to upload each finished list, and which lists
+  // an earlier (interrupted) run of this week's build already delivered.
+  String? _leaseId;
+  String? _leaseServer;
+  Set<String> _skipKeys = const {};
+  final Set<String> _doneThisRun = {};
+  // When each list was last built ON THIS DEVICE. Lets a build that was
+  // interrupted before it could upload anything (or by an app update) skip
+  // the lists this device already finished this week.
+  final Map<String, DateTime> _listBuiltAt = {};
+  bool _freshBuild = false;
   bool _building = false;
   bool _loaded = false;
   String? _buildingKey;
@@ -269,6 +280,17 @@ class VaultService extends ChangeNotifier {
     }
     if (claim == null || claim['granted'] != true || _keyNow() != key) return;
     final leaseId = claim['leaseId'].toString();
+    _leaseId = leaseId;
+    _leaseServer = server;
+    _doneThisRun.clear();
+    final doneBefore = claim['done'];
+    _skipKeys = doneBefore is List ? doneBefore.map((e) => e.toString()).toSet() : <String>{};
+    // Admin "Rebuild" asks for every list to be redone, even ones this device
+    // finished recently.
+    _freshBuild = claim['fresh'] == true;
+    if (_skipKeys.isNotEmpty) {
+      debugPrint('[Vault] Resuming: ${_skipKeys.length} lists already done');
+    }
     final m = claim['matches'];
     if (m is Map) {
       for (final e in m.entries) {
@@ -276,26 +298,48 @@ class VaultService extends ChangeNotifier {
       }
     }
     debugPrint('[Vault] Building week ${claim['week']} for everyone on $server');
-    final ok = await _build();
-    if (!ok || _keyNow() != key) return;
+    bool ok = false;
     try {
-      await _dio(receive: const Duration(seconds: 60)).post(
+      ok = await _build();
+      if (!ok || _keyNow() != key) return;
+      if (await _upload(partial: false)) {
+        _week = claim['week']?.toString();
+        await _saveLocal();
+        debugPrint('[Vault] Shared lists uploaded');
+      }
+    } finally {
+      _leaseId = null;
+      _leaseServer = null;
+      _skipKeys = const {};
+    }
+  }
+
+  /// Sends the lists to the backend. Partial uploads (after every list) let
+  /// everyone see Streamverse fill up, renew the lease, and let a closed app's
+  /// build be resumed from where it stopped.
+  Future<bool> _upload({required bool partial}) async {
+    final leaseId = _leaseId, server = _leaseServer;
+    if (leaseId == null || server == null) return false;
+    try {
+      final res = await _dio(receive: const Duration(seconds: 60)).post(
         '${_apiBase()}/api/voltix/streamverse/result',
         data: {
           'server': server,
           'leaseId': leaseId,
+          'partial': partial,
+          'done': _doneThisRun.toList(),
           'lists': {
             for (final e in _items.entries)
               e.key: [for (final r in e.value) Map.of(r)..remove('UserData')],
           },
           'matches': _matches,
         },
+        options: Options(validateStatus: (_) => true),
       );
-      _week = claim['week']?.toString();
-      await _saveLocal();
-      debugPrint('[Vault] Shared lists uploaded');
+      return (res.statusCode ?? 0) < 300;
     } catch (e) {
       debugPrint('[Vault] Upload failed: $e');
+      return false;
     }
   }
 
@@ -311,6 +355,9 @@ class VaultService extends ChangeNotifier {
         'key': _cacheKey,
         'builtAt': _builtAt?.toIso8601String(),
         'week': _week,
+        'listBuiltAt': {
+          for (final e in _listBuiltAt.entries) e.key: e.value.toIso8601String(),
+        },
         'lists': _items,
         'matches': _matches,
       };
@@ -337,6 +384,14 @@ class VaultService extends ChangeNotifier {
     }
     _builtAt = DateTime.tryParse(data['builtAt']?.toString() ?? '');
     _week = data['week']?.toString();
+    final lb = data['listBuiltAt'];
+    _listBuiltAt.clear();
+    if (lb is Map) {
+      for (final e in lb.entries) {
+        final t = DateTime.tryParse(e.value?.toString() ?? '');
+        if (t != null) _listBuiltAt[e.key.toString()] = t;
+      }
+    }
     return true;
   }
 
@@ -371,11 +426,35 @@ class VaultService extends ChangeNotifier {
     _matches.removeWhere((_, v) => v.isEmpty);
     try {
       final candidates = await _fetchCandidates();
+      if (!candidates.values.any((l) => l.isNotEmpty)) {
+        // Backend had no TMDB lists (e.g. TMDB key problem): don't publish a
+        // half-empty week; try again later.
+        throw Exception('no TMDB candidates from backend');
+      }
       for (final def in lists) {
         if (_keyNow() != _cacheKey) return false; // user/server changed meanwhile
-        // Pause while this device is streaming.
+        if (_skipKeys.contains(def.key)) continue; // done before the app closed
+        // Finished on this device in the last 6 days (e.g. before the app was
+        // closed or updated) and still has titles: reuse it, and include it
+        // in this build's uploads.
+        final builtAt = _listBuiltAt[def.key];
+        if (!_freshBuild &&
+            builtAt != null &&
+            DateTime.now().difference(builtAt) < const Duration(days: 6) &&
+            (_items[def.key]?.isNotEmpty ?? false)) {
+          _doneThisRun.add(def.key);
+          continue;
+        }
+        // Pause while this device is streaming; give the job up after 5
+        // minutes so another idle app can carry on (lease expires).
+        var waited = 0;
         while (_playing()) {
+          if (waited >= 300) {
+            debugPrint('[Vault] Paused too long for playback; handing the build back');
+            return false;
+          }
           await Future<void>.delayed(const Duration(seconds: 30));
+          waited += 30;
         }
         _buildingKey = def.key;
         notifyListeners();
@@ -392,8 +471,11 @@ class VaultService extends ChangeNotifier {
         if (found.isNotEmpty || (_items[def.key]?.isEmpty ?? true)) {
           _items[def.key] = found;
         }
+        _doneThisRun.add(def.key);
+        if (found.isNotEmpty) _listBuiltAt[def.key] = DateTime.now();
         notifyListeners();
         unawaited(_saveLocal());
+        if (_leaseId != null) await _upload(partial: true);
       }
       _builtAt = DateTime.now();
       await _saveLocal();
