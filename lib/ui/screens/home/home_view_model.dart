@@ -340,13 +340,22 @@ class HomeViewModel extends ChangeNotifier {
     unawaited(VaultService.instance.ensure());
   }
 
-  /// Adds the Vault tile to the end of the My Media row.
+  /// My Media row: Streamverse first, Collections hidden (still reachable
+  /// from the libraries themselves).
   HomeRow _withVaultTile(HomeRow row) {
+    bool isCollections(AggregatedItem i) {
+      final type = (i.rawData['CollectionType'] as String? ?? '').toLowerCase();
+      final name = (i.rawData['Name'] as String? ?? '').trim().toLowerCase();
+      return type == 'boxsets' || name == 'collections';
+    }
+
     // Always a fresh tile (a cached row may hold an older copy of it).
     return row.copyWith(
       items: [
-        ...row.items.where((i) => i.id != VaultService.tileId),
         VaultService.tile(_serverId),
+        ...row.items.where(
+          (i) => i.id != VaultService.tileId && !isCollections(i),
+        ),
       ],
     );
   }
