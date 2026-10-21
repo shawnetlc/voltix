@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import '../../../data/services/taste_profile/taste_learning_service.dart';
+import '../../../data/services/vault_service.dart';
 import 'dart:convert';
 import 'dart:io';
 
@@ -334,6 +335,17 @@ class HomeViewModel extends ChangeNotifier {
     // profile, the taste and genre rows are refreshed.
     TasteLearningService.instance.start();
     TasteLearningService.profileLearned.addListener(_onTasteLearned);
+    // Vault lists: load the saved copy, rebuild in the background when it is
+    // more than a week old.
+    unawaited(VaultService.instance.ensure());
+  }
+
+  /// Adds the Vault tile to the end of the My Media row.
+  HomeRow _withVaultTile(HomeRow row) {
+    if (row.items.any((i) => i.id == VaultService.tileId)) return row;
+    return row.copyWith(
+      items: [...row.items, VaultService.tile(_serverId)],
+    );
   }
 
   /// Continue Watching / Next Up come from the Voltix user's registry; when
@@ -1863,25 +1875,29 @@ class HomeViewModel extends ChangeNotifier {
         ];
       case HomeSectionType.libraryTilesSmall:
         return [
-          _multiServerEnabled
-              ? await _multiServerRepo.getAggregatedLibraryTiles(
-                  rowType: HomeRowType.libraryTiles,
-                )
-              : await _dataSource.loadLibraryTiles(
-                  _serverId,
-                  HomeRowType.libraryTiles,
-                ),
+          _withVaultTile(
+            _multiServerEnabled
+                ? await _multiServerRepo.getAggregatedLibraryTiles(
+                    rowType: HomeRowType.libraryTiles,
+                  )
+                : await _dataSource.loadLibraryTiles(
+                    _serverId,
+                    HomeRowType.libraryTiles,
+                  ),
+          ),
         ];
       case HomeSectionType.libraryButtons:
         return [
-          _multiServerEnabled
-              ? await _multiServerRepo.getAggregatedLibraryTiles(
-                  rowType: HomeRowType.libraryTilesSmall,
-                )
-              : await _dataSource.loadLibraryTiles(
-                  _serverId,
-                  HomeRowType.libraryTilesSmall,
-                ),
+          _withVaultTile(
+            _multiServerEnabled
+                ? await _multiServerRepo.getAggregatedLibraryTiles(
+                    rowType: HomeRowType.libraryTilesSmall,
+                  )
+                : await _dataSource.loadLibraryTiles(
+                    _serverId,
+                    HomeRowType.libraryTilesSmall,
+                  ),
+          ),
         ];
       case HomeSectionType.liveTv:
         try {

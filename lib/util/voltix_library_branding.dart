@@ -48,6 +48,7 @@ const Map<String, (String, String)> _voltixMyMediaArtwork = {
   'playlists': ('Playlists', 'assets/categories/playlists.jpg'),
   'sports': ('Sport', 'assets/categories/sport.jpg'),
   'sports events': ('Sport Events', 'assets/categories/sport_events.jpg'),
+  'streamverse': ('Streamverse', 'assets/categories/vault.jpg'),
   // supersilo library names
   'television': ('TV Series', 'assets/categories/series.jpg'),
   'movies 3d': ('3D Movies', 'assets/categories/3d_movies.jpg'),

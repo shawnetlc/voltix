@@ -1,10 +1,10 @@
 name: voltix
 description: "Voltix Streaming"
 publish_to: 'none'
-version: 2.0.85+40000466
+version: 2.0.86+40000468
 
 voltix:
-  android_tv_build_number: 40000467
+  android_tv_build_number: 40000469
 
 environment:
   sdk: ^3.11.0
@@ -240,6 +240,7 @@ flutter:
     - assets/images/
     - assets/categories/
     - assets/vault/
+    - assets/vault_posters/
     - assets/avatars/
     - assets/icons/
     - assets/icons/ratings/

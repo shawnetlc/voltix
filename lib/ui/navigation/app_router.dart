@@ -27,6 +27,7 @@ import '../screens/auth/profile_edit_screen.dart';
 import '../../data/models/voltix_profile.dart';
 import '../screens/auth/voltix_register_screen.dart';
 import '../screens/browse/all_genres_screen.dart';
+import '../screens/vault/vault_screen.dart';
 import '../screens/browse/collection_screen.dart';
 import '../screens/browse/favorites_screen.dart';
 import '../screens/browse/folder_browse_screen.dart';
@@ -442,6 +443,15 @@ final appRouter = GoRouter(
     GoRoute(
       path: Destinations.allGenres,
       builder: (context, state) => const AllGenresScreen(),
+    ),
+    GoRoute(
+      path: Destinations.vault,
+      builder: (context, state) => const VaultScreen(),
+    ),
+    GoRoute(
+      path: Destinations.vaultListRoute,
+      builder: (context, state) =>
+          VaultListScreen(listKey: state.pathParameters['listKey'] ?? ''),
     ),
     GoRoute(
       path: Destinations.allFavorites,

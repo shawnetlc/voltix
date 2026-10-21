@@ -1,4 +1,5 @@
 import 'dart:async';
+import '../../../data/services/vault_service.dart';
 import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
@@ -4358,6 +4359,9 @@ class _ContentRowsState extends State<_ContentRows>
         return;
       case 'livetv':
         context.push(Destinations.liveTvGuide);
+        return;
+      case VaultService.tileCollectionType:
+        context.push(Destinations.vault);
         return;
       default:
         context.push(Destinations.library(item.id, serverId: item.serverId));

@@ -78,6 +78,9 @@ class Destinations {
   // Browsing
   static const libraryBrowse = '/library/:libraryId';
   static const allGenres = '/genres';
+  static const vault = '/streamverse';
+  static const vaultListRoute = '/streamverse/:listKey';
+  static String vaultList(String key) => '/streamverse/${Uri.encodeComponent(key)}';
   static const allFavorites = '/favorites';
   static const folderView = '/folders';
   static const folderBrowse = '/folder/:folderId';
