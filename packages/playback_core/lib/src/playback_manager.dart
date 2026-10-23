@@ -44,6 +44,12 @@ class PlaybackManager implements AudioOwnable {
   )?
   _backendSelector;
   bool Function(StreamResolutionResult resolution)? _transcodeSelector;
+  /// Bitrate cap (Mbps) for the server stream chosen by [_transcodeSelector]
+  /// (e.g. 4K on a TV whose connection can't carry the original file).
+  int? Function(StreamResolutionResult resolution)? _serverStreamCapSelector;
+  void setServerStreamCapSelector(int? Function(StreamResolutionResult resolution)? selector) {
+    _serverStreamCapSelector = selector;
+  }
   Duration Function(dynamic item, Duration startPosition)?
   _startPositionAdjuster;
   Future<PlaybackStartupRecoveryDecision> Function(
@@ -1206,13 +1212,20 @@ class PlaybackManager implements AudioOwnable {
         enableTranscoding &&
         resolution.playMethod != StreamPlayMethod.transcode &&
         transcodeSelector(resolution)) {
-      await _playCurrentItem(
-        startPosition: startPosition,
-        enableDirectPlay: false,
-        enableDirectStream: false,
-        enableTranscoding: true,
-        allowStartupRecovery: allowStartupRecovery,
-      );
+      final previousOverride = _maxBitrateOverrideMbps;
+      final cap = previousOverride == null ? _serverStreamCapSelector?.call(resolution) : null;
+      if (cap != null) _maxBitrateOverrideMbps = cap;
+      try {
+        await _playCurrentItem(
+          startPosition: startPosition,
+          enableDirectPlay: false,
+          enableDirectStream: false,
+          enableTranscoding: true,
+          allowStartupRecovery: allowStartupRecovery,
+        );
+      } finally {
+        if (cap != null) _maxBitrateOverrideMbps = previousOverride;
+      }
       return;
     }
 

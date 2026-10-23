@@ -38,6 +38,9 @@ class StreamResolutionResult {
   final List<String> transcodingReasons;
   final String? hybridAudioUrl;
 
+  /// Bitrate of the source file (bits per second), when the server reports it.
+  final int? sourceBitrate;
+
   /// True when [streamUrl] is a local file path served from the downloads
   /// store rather than a server stream URL.
   final bool isLocalMedia;
@@ -60,6 +63,7 @@ class StreamResolutionResult {
     this.transcodingReasons = const [],
     this.hybridAudioUrl,
     this.isLocalMedia = false,
+    this.sourceBitrate,
   });
 
   /// Bits per second actually being delivered, when that differs from the

@@ -593,6 +593,15 @@ class ClientMetadata {
 
 /// Unified versioned profile document (schemaVersion: 1).
 class TasteProfile {
+  /// Personalization rows switched on for every profile (the wizard adds its
+  /// suggestions to these).
+  static const coreHomeRows = <PersonalizationRowType>[
+    PersonalizationRowType.becauseYouWatched,
+    PersonalizationRowType.recommendedForYou,
+    PersonalizationRowType.seriesYouMightBinge,
+    PersonalizationRowType.wellKnownTitles,
+  ];
+
   final int schemaVersion; // 1
   final String profileId;
   final String serverId; // primary server ID

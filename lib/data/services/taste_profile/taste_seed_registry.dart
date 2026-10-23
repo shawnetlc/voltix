@@ -4,6 +4,7 @@ import 'package:server_core/server_core.dart';
 
 import '../../../preference/user_preferences.dart';
 import '../../models/aggregated_item.dart';
+import '../recently_watched_source.dart';
 
 /// Hands out "because you watched X" seeds so that two rows never pick the
 /// same title.
@@ -32,7 +33,7 @@ class TasteSeedRegistry {
   final Map<String, DateTime> _claims = {};
   List<AggregatedItem>? _pool;
   DateTime? _poolFetchedAt;
-  static const _poolTtl = Duration(minutes: 30);
+  static const _poolTtl = Duration(minutes: 5); // new titles count soon after you watch
 
   /// Positions Voltix Recommends will consume from the top of the list.
   ///
@@ -66,7 +67,11 @@ class TasteSeedRegistry {
     _expireClaims();
 
     // Skip the leading positions Voltix Recommends is using.
-    final available = pool.skip(reservedCount).toList();
+    // With only a few titles watched, sharing one with Voltix Recommends beats
+    // having no "Because you watched" row at all.
+    final available = pool.length > reservedCount
+        ? pool.skip(reservedCount).toList()
+        : pool.toList();
     if (available.isEmpty) return null;
 
     final unclaimed = available.where((i) => !_claims.containsKey(i.id));
@@ -110,6 +115,24 @@ class TasteSeedRegistry {
         fetchedAt != null &&
         DateTime.now().difference(fetchedAt) < _poolTtl) {
       return cached;
+    }
+
+    // The app's own watch record first: titles still being watched count, and
+    // it doesn't depend on the server's IsPlayed / DatePlayed (unreliable on
+    // supersilo). The server query below is only the fallback.
+    final fromRegistry = await RecentlyWatchedSource.fetch(
+      client,
+      fields: 'Genres,People,ProviderIds,ProductionYear,ImageTags',
+      limit: _poolSize,
+    );
+    if (fromRegistry.isNotEmpty) {
+      final seeds = [
+        for (final r in fromRegistry)
+          AggregatedItem(id: r['Id'].toString(), serverId: serverId, rawData: r),
+      ];
+      _pool = seeds;
+      _poolFetchedAt = DateTime.now();
+      return seeds;
     }
 
     try {

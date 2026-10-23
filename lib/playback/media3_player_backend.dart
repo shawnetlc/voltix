@@ -26,6 +26,47 @@ class Media3PlayerBackend extends PlayerBackend {
   /// The TV's own one-connection speed (Mbps) from its last tv-speed test.
   static double? lastTvSingleMbps;
 
+  /// 4K mode from the admin portal: 'auto' (server stream when the original
+  /// file is heavier than the TV's connection), 'server' (always), 'original'.
+  static String fourKMode = 'auto';
+
+  static bool _is4k(StreamResolutionResult r) => r.mediaStreams.any((s) =>
+      s['Type'] == 'Video' &&
+      (((s['Width'] as num?) ?? 0) >= 3200 || ((s['Height'] as num?) ?? 0) >= 1800));
+
+  /// Bitrate of the 4K original, Mbps (0 = unknown).
+  static double _sourceMbps(StreamResolutionResult r) {
+    final b = r.sourceBitrate ??
+        r.mediaStreams
+            .where((s) => s['Type'] == 'Video')
+            .map((s) => (s['BitRate'] as num?)?.toInt() ?? 0)
+            .fold<int>(0, (a, b) => a > b ? a : b);
+    return b / 1e6;
+  }
+
+  /// Play this 4K title as the server's converted stream?
+  static bool wantsServerStreamFor4k(StreamResolutionResult r) {
+    if (fourKMode == 'original') return false;
+    if (r.playMethod != StreamPlayMethod.directPlay || r.isLocalMedia) return false;
+    if (!_is4k(r)) return false;
+    if (fourKMode == 'server') return true;
+    // auto: the original fits when the TV's measured speed is 1.3x the file's
+    // bitrate. Unknown speed: assume ~35 Mbps (what this TV measured).
+    final need = _sourceMbps(r);
+    final have = lastTvSingleMbps ?? 35;
+    if (need <= 0) return true; // unknown 4K bitrate: assume a heavy remux
+    return have < need * 1.3;
+  }
+
+  /// Bitrate cap for that stream: 80 % of the TV's measured speed, 20-60 Mbps.
+  /// (supersilo: a 40 Mbps cap gave a ~29 Mbps stream, 80 gave ~49.)
+  static int? serverStreamCapMbpsFor(StreamResolutionResult r) {
+    if (!wantsServerStreamFor4k(r)) return null;
+    final tv = lastTvSingleMbps;
+    if (tv == null) return 40;
+    return (tv * 0.8).round().clamp(20, 60);
+  }
+
   static Future<void> refreshPlaybackConfig({bool force = false}) async {
     if (!force && DateTime.now().difference(_readAheadConfigAt) < const Duration(minutes: 15)) {
       return;
@@ -41,6 +82,10 @@ class Media3PlayerBackend extends PlayerBackend {
       final data = res.data is String ? jsonDecode(res.data as String) : res.data;
       if (data is Map && data['readAhead4kConnections'] is num) {
         readAhead4kConnections = (data['readAhead4kConnections'] as num).toInt().clamp(0, 6);
+      }
+      if (data is Map && data['fourKMode'] is String) {
+        final m = data['fourKMode'] as String;
+        if (m == 'auto' || m == 'server' || m == 'original') fourKMode = m;
       }
     } catch (_) {}
   }

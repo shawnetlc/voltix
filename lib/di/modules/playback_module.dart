@@ -500,6 +500,14 @@ void registerPlaybackModule() {
       return false;
     }
 
+    // 4K the TV's connection can't carry as the original file: play the
+    // server's converted stream instead, exactly as the web player does
+    // (test-hls.ps1 on supersilo: 3.6-4.3x real time, first chunk in
+    // ~0.4 s). Controlled from the admin portal (4K mode).
+    if (Media3PlayerBackend.wantsServerStreamFor4k(resolution)) {
+      return true;
+    }
+
     // Never send a Dolby Vision title with a playable HDR10/SDR base layer to
     // the server for a 4K transcode: shared servers (e.g. supersilo) can't do
     // that in real time, so it sat on "Loading stream" forever. The TV plays
@@ -535,6 +543,8 @@ void registerPlaybackModule() {
 
     return false;
   });
+  // Bitrate for that 4K server stream: fits the TV's measured connection.
+  manager.setServerStreamCapSelector(Media3PlayerBackend.serverStreamCapMbpsFor);
   manager.setStartPositionAdjuster((_, startPosition) {
     final prefs = _getIt<UserPreferences>();
     final raw = prefs.get(UserPreferences.resumeSubtractDuration);

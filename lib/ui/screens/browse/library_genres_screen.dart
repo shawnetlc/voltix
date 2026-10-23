@@ -114,10 +114,12 @@ class _LibraryGenresScreenState extends State<LibraryGenresScreen> {
                   (data['ArtistCount'] as int? ?? 0) +
                   (data['MusicVideoCount'] as int? ?? 0),
         );
-      }).where((genre) {
-        if (_collectionType == 'music') return true;
-        return genre.itemCount > 0;
       }).toList();
+      // Keep zero-count genres when the server reports 0 for all of them
+      // (supersilo doesn't fill in genre item counts).
+      if (_collectionType != 'music' && _genres.any((g) => g.itemCount > 0)) {
+        _genres = _genres.where((g) => g.itemCount > 0).toList();
+      }
     } catch (_) {}
 
     _isLoading = false;

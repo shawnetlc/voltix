@@ -110,8 +110,13 @@ class _AllGenresScreenState extends State<AllGenresScreen> {
               itemCount: itemCount,
             );
           })
-          .where((genre) => genre.itemCount > 0)
-          .toList();
+.toList();
+      // Some servers (supersilo) report 0 for every genre's item count. Then
+      // the counts mean nothing: keep every genre, and let the artwork lookup
+      // below (which asks for each genre's titles) drop the truly empty ones.
+      if (_genres.any((g) => g.itemCount > 0)) {
+        _genres = _genres.where((g) => g.itemCount > 0).toList();
+      }
     } catch (_) {}
 
     _isLoading = false;

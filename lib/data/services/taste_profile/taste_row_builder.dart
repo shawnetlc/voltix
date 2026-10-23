@@ -47,7 +47,7 @@ class TasteRowBuilder {
 
   /// Candidate headroom. The engine scores this pool down to [rowLimit], so a
   /// pool roughly three times the row gives it something to choose between.
-  static const _candidateLimit = 60;
+  static const _candidateLimit = 100; // more headroom: foreign / sport / shorts / watched titles are dropped after the fetch
   static const _rowLimit = 20;
 
   /// Rows shown on the home screen at once.

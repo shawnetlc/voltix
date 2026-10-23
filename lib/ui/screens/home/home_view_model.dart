@@ -7,6 +7,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:get_it/get_it.dart';
+import 'package:jellyfin_preference/jellyfin_preference.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:server_core/server_core.dart';
 
@@ -1617,9 +1618,35 @@ class HomeViewModel extends ChangeNotifier {
       return const [];
     }
 
+    // Once per device: make sure the watch-based core rows are on for
+    // profiles made before they were added ("Because you watched" etc.).
+    var effectiveProfile = profile;
+    if (GetIt.instance<PreferenceStore>().getBool('taste_core_rows_migrated_v1') != true) {
+      final rowsMap = Map<String, bool>.from(profile.enabledHomeRows);
+      var changed = false;
+      for (final r in TasteProfile.coreHomeRows) {
+        if (rowsMap[r.key] != true) {
+          rowsMap[r.key] = true;
+          changed = true;
+        }
+      }
+      if (changed) {
+        effectiveProfile = profile.copyWith(enabledHomeRows: rowsMap);
+        try {
+          final activeProfileId = GetIt.instance.isRegistered<VoltixSessionStore>()
+              ? GetIt.instance<VoltixSessionStore>().activeProfileId
+              : null;
+          await GetIt.instance<TasteProfileRepository>()
+              .saveProfile(effectiveProfile, profileId: activeProfileId);
+        } catch (_) {}
+      }
+      await GetIt.instance<PreferenceStore>().setBool('taste_core_rows_migrated_v1', true);
+    }
+
     final rows = await GetIt.instance<TasteRowBuilder>().buildHomeRows(
-      profile: profile,
+      profile: effectiveProfile,
       serverId: _serverId,
+      maxRows: 8,
     );
     diag({
       'result': 'built',

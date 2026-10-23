@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'recently_watched_source.dart';
 import 'genre_query.dart';
 import 'taste_profile/foreign_content_filter.dart';
 import 'dart:convert';
@@ -2139,7 +2140,20 @@ class RowDataSource {
 
     // Fetch the list of possible base items (specifying Tags and People fields to avoid subsequent detail calls)
     List<AggregatedItem> baseItems = [];
-    if (sourceItemType == SinceYouWatchedSourceItem.recentlyWatched) {
+    // Recently watched from the app's own watch record first (includes titles
+    // still being watched; the server's IsPlayed/DatePlayed is unreliable on
+    // supersilo). Falls back to the server query below when it has nothing.
+    final fromRegistry = sourceItemType == SinceYouWatchedSourceItem.recentlyWatched
+        ? await RecentlyWatchedSource.fetch(
+            _client,
+            fields: liteRecommendations ? _fields : '$_fields,Tags,People',
+            movies: sourceType != SinceYouWatchedSourceType.shows,
+            series: sourceType != SinceYouWatchedSourceType.movies,
+          )
+        : const <Map<String, dynamic>>[];
+    if (fromRegistry.isNotEmpty) {
+      baseItems = _parseItems({'Items': fromRegistry}, serverId);
+    } else if (sourceItemType == SinceYouWatchedSourceItem.recentlyWatched) {
       final rawBaseItems = await _searchVisibleLibraryItems(
         serverId,
         queryItemTypes,
@@ -2321,7 +2335,16 @@ class RowDataSource {
   }) async {
     try {
       final queryItemTypes = const ['Movie', 'Episode'];
-      final rawBaseItems = await _searchVisibleLibraryItems(
+      // The app's own watch record first (titles still being watched count
+      // too); the server's IsPlayed / DatePlayed query only as a fallback.
+      final fromRegistry = await RecentlyWatchedSource.fetch(
+        _client,
+        fields: '$_fields,Tags,People',
+        limit: 40,
+      );
+      final rawBaseItems = fromRegistry.isNotEmpty
+          ? _parseItems({'Items': fromRegistry}, serverId)
+          : await _searchVisibleLibraryItems(
         serverId,
         queryItemTypes,
         (parentId) => _getItemsWithFallback(
@@ -2335,7 +2358,7 @@ class RowDataSource {
           fields: liteRecommendations ? '$_fields,SeriesId' : '$_fields,Tags,People,SeriesId',
         ),
         merge: _byLastPlayed,
-      );
+            );
 
       if (rawBaseItems.isEmpty) return const [];
 
@@ -2411,15 +2434,24 @@ class RowDataSource {
             filters: filters,
             recursive: true,
             limit: 25,
-            fields: '$_fields,UserData',
+            fields: '$_fields,UserData,People',
             sortBy: 'CommunityRating,SortName',
             sortOrder: 'Descending',
           ),
         );
 
+        // Keep only titles that really have this actor (a server that ignores
+        // the PersonIds filter would otherwise fill the row with anything),
+        // and never foreign / sport titles.
+        final withActor = candidateItems.where((it) {
+          final people = it.rawData['People'];
+          if (people is! List) return false;
+          return people.any((p) => p is Map && p['Id']?.toString() == actor.id);
+        }).where((it) => !ForeignContentFilter.isExcludedItem(it.rawData)).toList();
+
         final eligibleItems = includeWatched
-            ? candidateItems
-            : candidateItems.where((it) => it.rawData['UserData']?['Played'] != true).toList();
+            ? withActor
+            : withActor.where((it) => it.rawData['UserData']?['Played'] != true).toList();
 
         final minCount = includeWatched ? 2 : 1;
         if (eligibleItems.length >= minCount) {

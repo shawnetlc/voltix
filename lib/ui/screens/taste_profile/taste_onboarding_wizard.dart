@@ -14,6 +14,7 @@ import '../../../data/models/taste_profile/taste_profile_models.dart';
 import '../../../data/repositories/taste_profile_repository.dart';
 import '../../../data/services/taste_profile/taste_recommendation_engine.dart';
 import '../../../data/services/taste_profile/foreign_content_filter.dart';
+import '../../../data/services/vault_service.dart';
 import '../../widgets/bounded_network_image.dart';
 import '../../../util/focus/key_event_utils.dart';
 import '../../../util/platform_detection.dart';
@@ -106,6 +107,17 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
       !ForeignContentFilter.isExcludedItem(i.rawData);
   List<AggregatedItem> _displayedMovies = [];
   List<AggregatedItem> _allSeries = [];
+  /// Well-known titles on this server: the Streamverse lists (TMDB trending,
+  /// popular on Netflix / Prime / Disney+ / Max..., best of all time) matched
+  /// to the server. Offered first in the wizard, so viewers rate titles they
+  /// recognise instead of a random slice of the library.
+  List<AggregatedItem> _wellKnownMovies = [];
+  List<AggregatedItem> _wellKnownSeries = [];
+  static const _wizardFields =
+      'Genres,PrimaryImageAspectRatio,UserData,CommunityRating,VoteCount,'
+      'CriticRating,ProductionYear,OfficialRating,RunTimeTicks,'
+      'OriginalLanguage,SpokenLanguages,CollectionId,'
+      'SeriesId,ImageTags,Overview,ProviderIds,ProductionLocations,Status';
   List<AggregatedItem> _displayedSeries = [];
   List<ServerGenreInfo> _serverGenres = [];
 
@@ -252,6 +264,8 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
 
     if (mounted) setState(() => _loading = false);
 
+    unawaited(_loadWellKnown());
+
     // Foreign-language titles are never offered in the wizard. Looked up in
     // the background; when the cached candidates (built by an older build)
     // still contain foreign titles, the candidate sync is rebuilt from the
@@ -350,11 +364,124 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
     );
   }
 
+  List<AggregatedItem> _filterDecade(List<AggregatedItem> list) {
+    if (_movieDecadeFilter == 'all') return list;
+    final year = int.tryParse(_movieDecadeFilter) ?? 0;
+    if (year > 0) {
+      return list
+          .where((m) => (m.productionYear ?? 0) >= year && (m.productionYear ?? 0) < year + 10)
+          .toList();
+    }
+    if (_movieDecadeFilter == 'classic') {
+      return list.where((m) => (m.productionYear ?? 0) < 1990).toList();
+    }
+    return list;
+  }
+
+  /// 36 well-known titles: already-rated ones kept, the rest drawn from the
+  /// most popular first (shuffled within the top of the list).
+  List<AggregatedItem> _pickWellKnown(List<AggregatedItem> pool, bool randomize) {
+    final rated = pool.where((i) =>
+        _movieRatings.containsKey(i.id) || _seriesRatings.containsKey(i.id)).toList();
+    final rest = pool.where((i) => !rated.contains(i)).toList();
+    if (randomize) {
+      // Mostly from the most popular 120, so Shuffle still shows names
+      // people know, with a little variety.
+      final head = rest.take(120).toList()..shuffle();
+      final tail = rest.skip(120).toList()..shuffle();
+      rest
+        ..clear()
+        ..addAll([...head, ...tail]);
+    }
+    return [...rated, ...rest].take(36).toList();
+  }
+
+  /// Fetches the well-known pool (Streamverse lists) with the fields the
+  /// wizard needs; foreign, sport and poster-less titles are dropped.
+  Future<void> _loadWellKnown() async {
+    try {
+      final vault = VaultService.instance;
+      await vault.ensure().timeout(const Duration(seconds: 15));
+      final client =
+          _tasteRepo.serverContext.getPrimaryClient(_resolveServerId()) ?? _client;
+      Future<List<AggregatedItem>> load(String suffix) async {
+        // Best-of and trending first, then the per-service popular lists.
+        final keys = VaultService.lists
+            .where((d) => d.key.endsWith(suffix) && !d.newestFromServer)
+            .map((d) => d.key)
+            .toList()
+          ..sort((a, b) => _wellKnownRank(a).compareTo(_wellKnownRank(b)));
+        final ids = <String>[];
+        final seen = <String>{};
+        // Interleave the lists so the top of each comes before the tail of any.
+        final perList = [for (final k in keys) vault.itemsFor(k).map((i) => i.id).toList()];
+        for (var rank = 0; rank < 30; rank++) {
+          for (final l in perList) {
+            if (rank < l.length && seen.add(l[rank])) ids.add(l[rank]);
+          }
+        }
+        final out = <AggregatedItem>[];
+        final serverId = _resolveServerId();
+        for (var i = 0; i < ids.length; i += 100) {
+          final chunk = ids.sublist(i, math.min(i + 100, ids.length));
+          final res = await client.itemsApi
+              .getItems(ids: chunk, fields: _wizardFields, enableTotalRecordCount: false)
+              .timeout(const Duration(seconds: 20));
+          final byId = <String, Map<String, dynamic>>{
+            for (final r in (res['Items'] as List? ?? const []).whereType<Map<String, dynamic>>())
+              if (r['Id'] != null) r['Id'].toString(): r,
+          };
+          for (final id in chunk) {
+            final raw = byId[id];
+            if (raw == null) continue;
+            raw.putIfAbsent('ProductionLocations', () => const <String>[]);
+            if (ForeignContentFilter.isExcludedItem(raw)) continue;
+            if ((_foreign?.isForeign(id) ?? false)) continue;
+            out.add(AggregatedItem(id: id, serverId: serverId, rawData: raw));
+          }
+        }
+        return out;
+      }
+
+      final movies = await load('_movies');
+      final series = await load('_shows');
+      if (!mounted) return;
+      setState(() {
+        _wellKnownMovies = movies;
+        _wellKnownSeries = series;
+        // Ratings / review step look titles up in the main pools.
+        final mIds = _allMovies.map((e) => e.id).toSet();
+        _allMovies.addAll(movies.where((m) => !mIds.contains(m.id)));
+        final sIds = _allSeries.map((e) => e.id).toSet();
+        _allSeries.addAll(series.where((m) => !sIds.contains(m.id)));
+        _splitRestoredRatings();
+        _applyMovieFilters();
+        _applySeriesFilters();
+      });
+      debugPrint('[TasteOnboarding] Well-known pool: ${movies.length} movies, ${series.length} series');
+    } catch (e) {
+      debugPrint('[TasteOnboarding] Well-known pool unavailable: $e');
+    }
+  }
+
+  static int _wellKnownRank(String key) {
+    if (key.startsWith('best_')) return 0;
+    if (key.startsWith('trending_')) return 1;
+    if (key.startsWith('netflix_')) return 2;
+    if (key.startsWith('disney_') || key.startsWith('hbo_max_')) return 3;
+    return 4;
+  }
+
   /// Candidates are re-drawn from the server-backed cache every time this
   /// runs, so each visit to the wizard offers a different set to rate rather
   /// than the same fixed 36 titles. The engine still draws from the
   /// top-scoring pool, so the picks stay recognisable.
   void _applyMovieFilters({bool randomize = true}) {
+    final known = _filterDecade(_wellKnownMovies.where(_notForeign).toList());
+    if (known.length >= 12) {
+      _displayedMovies = _pickWellKnown(known, randomize);
+      return;
+    }
     var list = _allMovies.where(_notForeign).toList();
 
     if (_movieDecadeFilter != 'all') {
@@ -379,6 +506,13 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
   }
 
   void _applySeriesFilters({bool randomize = true}) {
+    if (_seriesFormatFilter != 'limited' && _seriesFormatFilter != 'bingeable') {
+      final known = _wellKnownSeries.where(_notForeign).toList();
+      if (known.length >= 12) {
+        _displayedSeries = _pickWellKnown(known, randomize);
+        return;
+      }
+    }
     var list = _allSeries.where(_notForeign).toList();
 
     if (_seriesFormatFilter == 'limited') {
@@ -651,6 +785,11 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
         for (final r in PersonalizationRowType.values) r.key: false,
       };
       for (final row in suggestedRows) {
+        initialEnabledRows[row.key] = true;
+      }
+      // Rows everyone gets, on top of the suggested ones: they follow what
+      // the viewer actually watches.
+      for (final row in TasteProfile.coreHomeRows) {
         initialEnabledRows[row.key] = true;
       }
 
@@ -1621,6 +1760,18 @@ class _TasteOnboardingWizardState extends State<TasteOnboardingWizard> {
     required bool isMovies,
   }) async {
     if (isMovies ? _refreshingMovies : _refreshingSeries) return;
+    // Enough well-known titles: reshuffle those instead of drawing a random
+    // page of the library (which is mostly titles nobody recognises).
+    if ((isMovies ? _wellKnownMovies : _wellKnownSeries).length >= 48) {
+      setState(() {
+        if (isMovies) {
+          _applyMovieFilters(randomize: true);
+        } else {
+          _applySeriesFilters(randomize: true);
+        }
+      });
+      return;
+    }
     setState(() {
       if (isMovies) {
         _refreshingMovies = true;

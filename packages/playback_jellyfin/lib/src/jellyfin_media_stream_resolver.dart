@@ -373,7 +373,13 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
       });
     } catch (_) {}
 
-    if (playMethod == StreamPlayMethod.transcode || playMethod == StreamPlayMethod.directStream) {
+    // supersilo's own streaming system (/audio-v2/master.m3u8): played
+    // exactly as the server returned it, like the web player does. The usual
+    // rewrites (stream indexes, StartTimeTicks, api_key) are not part of that
+    // address and are the likely cause of "Playback session not found".
+    final isServerStreamV2 = url.contains('/audio-v2/');
+    if (!isServerStreamV2 &&
+        (playMethod == StreamPlayMethod.transcode || playMethod == StreamPlayMethod.directStream)) {
       url = MediaStreamResolver.applyStreamIndices(url, audioStreamIndex, subtitleStreamIndex);
       url = url
           .replaceFirst(RegExp(r'\?StartTimeTicks=\d+&', caseSensitive: false), '?')
@@ -381,7 +387,7 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
     }
 
     // Append auth token for mpv (which doesn't use our Dio interceptors).
-    url = _appendAuth(url);
+    if (!isServerStreamV2) url = _appendAuth(url);
 
     final externalSubs = MediaStreamResolver.extractExternalSubtitles(source.mediaStreams, _client.baseUrl);
     final authedSubs = externalSubs.map((s) => ExternalSubtitle(
@@ -444,6 +450,7 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
           : source.defaultAudioStreamIndex,
       transcodingReasons: source.transcodingReasons,
       hybridAudioUrl: hybridAudioUrl,
+      sourceBitrate: source.bitrate,
     );
   }
 
@@ -669,7 +676,13 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
         found = candidate;
         break;
       }
-      if (ok == null) undecided = true;
+      if (ok == null) {
+        // Unknown (slow server or a front-end block): don't spend another 5 s
+        // on the second address - play the usual one and let the player's own
+        // retry handle a brief block.
+        undecided = true;
+        break;
+      }
     }
     try {
       onDiag?.call('version-check', {
@@ -683,7 +696,27 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
   }
 
   /// true = the file answers, false = the server refused it, null = unknown.
+  ///
+  /// supersilo's front end briefly answers a plain-text "404 page not found"
+  /// to an account that sent a quick burst of requests (seen in test-4k.ps1:
+  /// the same file failed, then worked seconds later). That is NOT the file
+  /// being missing - Jellyfin's own 404s are JSON - so it is retried and, if
+  /// it persists, treated as "unknown": the version must not be marked
+  /// unplayable (that would hide a working 4K version on this device).
   Future<bool?> _probe(String url) async {
+    // One quick retry only: this check runs before anything is on screen.
+    for (var attempt = 0; attempt < 2; attempt++) {
+      final result = await _probeOnce(url);
+      if (result != _frontEnd404) return result as bool?;
+      if (attempt == 0) await Future<void>.delayed(const Duration(milliseconds: 1500));
+    }
+    return null;
+  }
+
+  static const Object _frontEnd404 = 'front-end-404';
+
+  /// true / false / null as [_probe], or [_frontEnd404].
+  Future<Object?> _probeOnce(String url) async {
     try {
       final cancel = CancelToken();
       final timer = Timer(const Duration(seconds: 5), () {
@@ -701,13 +734,24 @@ class JellyfinMediaStreamResolver implements MediaStreamResolver {
       } finally {
         timer.cancel();
       }
+      final code = r.statusCode ?? 0;
+      if (code == 404) {
+        var head = '';
+        try {
+          final chunk = await r.data?.stream.first.timeout(const Duration(seconds: 2));
+          if (chunk != null) {
+            head = String.fromCharCodes(chunk.take(64)).trim().toLowerCase();
+          }
+        } catch (_) {}
+        if (head.startsWith('404 page not found')) return _frontEnd404;
+        return false;
+      }
       // Don't wait for the (possibly huge) body: drop the connection.
       try {
         unawaited(r.data?.stream.listen(null).cancel() ?? Future.value());
       } catch (_) {}
-      final code = r.statusCode ?? 0;
       if (code == 200 || code == 206) return true;
-      if (code == 400 || code == 401 || code == 403 || code == 404 ||
+      if (code == 400 || code == 401 || code == 403 ||
           code == 410 || code == 500) {
         return false;
       }

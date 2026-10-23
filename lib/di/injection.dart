@@ -29,6 +29,7 @@ import '../data/services/voltix_api_service.dart';
 import '../data/services/voltix_session_service.dart';
 import '../platform/web_runtime_config.dart';
 import '../preference/preference_constants.dart';
+import '../preference/home_section_config.dart';
 import '../preference/user_preferences.dart';
 import '../util/platform_detection.dart';
 import 'modules/app_module.dart';
@@ -182,6 +183,42 @@ Future<String> _resolveAppVersion() async {
 Future<void> _migrateLegacyBitrateCap(PreferenceStore store) async {
   // Subtitles off by default: switched on once for every existing device;
   // anyone can turn subtitles back on under Settings > Subtitles afterwards.
+  // Watch-based home rows ("Since you watched", "More with <actor>") switched
+  // on once: older saved layouts (from the lite-query period) had them off.
+  const watchRowsMigration = 'home_rows_watch_based_migrated_v1';
+  if (store.getBool(watchRowsMigration) != true) {
+    try {
+      final raw = store.getString(UserPreferences.homeSectionsJson.key) ?? '';
+      if (raw.isNotEmpty) {
+        const turnOn = {
+          HomeSectionType.personalization,
+          HomeSectionType.sinceYouWatched1,
+          HomeSectionType.sinceYouWatched2,
+          HomeSectionType.moreWithActor1,
+          HomeSectionType.moreWithActor2,
+          HomeSectionType.moreWithActor3,
+        };
+        final configs = HomeSectionConfig.fromJsonString(raw);
+        final present = configs.where((c) => c.isBuiltin).map((c) => c.type).toSet();
+        final maxOrder = configs.fold<int>(0, (m, c) => c.order > m ? c.order : m);
+        var next = maxOrder + 1;
+        final updated = [
+          for (final c in configs)
+            (c.isBuiltin && turnOn.contains(c.type)) ? c.copyWith(enabled: true) : c,
+          for (final t in turnOn)
+            if (!present.contains(t)) HomeSectionConfig(type: t, enabled: true, order: next++),
+        ];
+        await store.setString(
+          UserPreferences.homeSectionsJson.key,
+          HomeSectionConfig.toJsonString(updated),
+        );
+      }
+      await store.setBool(UserPreferences.displaySinceYouWatchedRows.key, true);
+      await store.setBool(UserPreferences.displayMoreWithActorRows.key, true);
+    } catch (_) {}
+    await store.setBool(watchRowsMigration, true);
+  }
+
   const subtitlesOffMigration = 'subtitles_default_none_migrated_v1';
   if (store.getBool(subtitlesOffMigration) != true) {
     await store.setBool(UserPreferences.subtitlesDefaultToNone.key, true);
